@@ -94,6 +94,7 @@ LAYOUT_BLOCKING_WARNING_CODES = {
     "font_too_small",
     "font_scaled_too_small",
     "font_scaled_too_large",
+    "font_unavailable",
 }
 
 

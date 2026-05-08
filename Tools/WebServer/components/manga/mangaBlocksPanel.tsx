@@ -1,11 +1,13 @@
 import React from 'react';
 
 import { useI18n } from '../../contexts/I18nContext';
-import { MangaPageDetail } from '../../types/manga';
+import { MangaFontCatalogEntry, MangaPageDetail } from '../../types/manga';
+import { FontPicker } from './FontPicker';
 import { MangaBlockDraft } from './shared';
 
 export interface MangaBlocksPanelProps {
   page: MangaPageDetail | null;
+  fonts: MangaFontCatalogEntry[];
   blockDrafts: Record<string, MangaBlockDraft>;
   activeBlockId: string;
   busyAction: string;
@@ -26,6 +28,7 @@ const previewText = (value: string, emptyLabel: string) => {
 
 export const MangaBlocksPanel: React.FC<MangaBlocksPanelProps> = ({
   page,
+  fonts,
   blockDrafts,
   activeBlockId,
   busyAction,
@@ -147,11 +150,11 @@ export const MangaBlocksPanel: React.FC<MangaBlocksPanelProps> = ({
                   <div className="mt-3 grid grid-cols-3 gap-2">
                     <label className="col-span-3 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
                       {t('manga_field_font')}
-                      <input
-                        type="text"
-                        value={draft?.font_family ?? block.style.font_family}
-                        onChange={(event) => onUpdateDraft(block.block_id, { font_family: event.target.value })}
-                        className="mt-1 w-full rounded-md border border-slate-800 bg-slate-950/70 px-3 py-2 text-sm text-slate-200 outline-none focus:border-primary"
+                      <FontPicker
+                        fonts={fonts}
+                        fontId={draft?.font_id ?? block.style.font_id ?? ''}
+                        fontFamily={draft?.font_family ?? block.style.font_family}
+                        onChange={(patch) => onUpdateDraft(block.block_id, patch)}
                       />
                     </label>
 

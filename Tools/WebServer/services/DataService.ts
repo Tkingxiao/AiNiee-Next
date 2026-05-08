@@ -1,6 +1,6 @@
 import { AppConfig, TaskPayload, TaskStats, LogEntry, ChartDataPoint } from '../types';
 import type { MangaBrushStrokePayload } from '../components/manga/shared';
-import { MangaDeleteRuntimeValidationHistoryResult, MangaExportResult, MangaJob, MangaModelPackageStatus, MangaOpenProjectSummary, MangaOperationResult, MangaPageDetail, MangaProjectSummary, MangaRuntimeReadinessReport, MangaRuntimeValidationDiffResult, MangaRuntimeValidationHistoryItem, MangaRuntimeValidationResult, MangaSceneSummary } from '../types/manga';
+import { MangaDeleteRuntimeValidationHistoryResult, MangaExportResult, MangaFontCatalogEntry, MangaJob, MangaModelPackageStatus, MangaOpenProjectSummary, MangaOperationResult, MangaPageDetail, MangaProjectSummary, MangaRuntimeReadinessReport, MangaRuntimeValidationDiffResult, MangaRuntimeValidationHistoryItem, MangaRuntimeValidationResult, MangaSceneSummary } from '../types/manga';
 
 // Base API URL
 const API_BASE = '/api';
@@ -497,6 +497,16 @@ export const DataService = {
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || 'Failed to fetch manga page');
         return data;
+    },
+
+    async listMangaFonts(projectId?: string): Promise<MangaFontCatalogEntry[]> {
+        const url = projectId
+            ? `${API_BASE}/manga/projects/${projectId}/fonts`
+            : `${API_BASE}/manga/fonts`;
+        const res = await fetch(url);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Failed to fetch manga fonts');
+        return Array.isArray(data) ? data : [];
     },
 
     async applyMangaBrushMaskStroke(projectId: string, pageId: string, stroke: MangaBrushStrokePayload): Promise<any> {

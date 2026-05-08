@@ -7,6 +7,7 @@ from ModuleFolders.MangaCore.constants import DEFAULT_TEXT_STYLE
 
 @dataclass(slots=True)
 class TextStyle:
+    font_id: str = ""
     font_family: str = DEFAULT_TEXT_STYLE["font_family"]
     font_size: int = DEFAULT_TEXT_STYLE["font_size"]
     line_spacing: float = DEFAULT_TEXT_STYLE["line_spacing"]
@@ -22,6 +23,7 @@ class TextStyle:
         if not data:
             return cls()
         return cls(
+            font_id=str(data.get("font_id", "")),
             font_family=str(data.get("font_family", DEFAULT_TEXT_STYLE["font_family"])),
             font_size=int(data.get("font_size", DEFAULT_TEXT_STYLE["font_size"])),
             line_spacing=float(data.get("line_spacing", DEFAULT_TEXT_STYLE["line_spacing"])),

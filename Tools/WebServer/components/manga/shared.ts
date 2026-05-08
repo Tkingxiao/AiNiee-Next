@@ -13,6 +13,7 @@ export interface MangaBlockDraft {
   bbox: number[];
   source_text: string;
   translation: string;
+  font_id?: string;
   font_family: string;
   font_size: number;
   line_spacing: number;

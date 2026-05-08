@@ -7,7 +7,7 @@ from PIL import Image, ImageDraw
 
 from ModuleFolders.MangaCore.project.page import MangaPage
 from ModuleFolders.MangaCore.project.session import MangaProjectSession
-from ModuleFolders.MangaCore.render.font import load_font
+from ModuleFolders.MangaCore.render.font import load_font, resolve_requested_font_path
 from ModuleFolders.MangaCore.render.layout import build_layout_plan
 from ModuleFolders.MangaCore.render.layoutPlan import LayoutPlan
 from ModuleFolders.MangaCore.render.templates import get_render_template
@@ -53,6 +53,7 @@ class MangaRenderer:
     def __init__(self, *, use_source_text_fallback: bool = False) -> None:
         self.use_source_text_fallback = use_source_text_fallback
         self.last_layout_plans: list[LayoutPlan] = []
+        self._project_path: Path | None = None
 
     def render_page(self, session: MangaProjectSession, page: MangaPage, *, write_final: bool = True) -> Path:
         template = get_render_template(session.scene.render_preset)
@@ -60,6 +61,7 @@ class MangaRenderer:
         rendered_path = session.project_path / page.layers.rendered
         rendered_path.parent.mkdir(parents=True, exist_ok=True)
         self.last_layout_plans = []
+        self._project_path = session.project_path
 
         with Image.open(base_path) as source_image:
             canvas = source_image.convert("RGBA")
@@ -121,18 +123,23 @@ class MangaRenderer:
         base_size = self._estimate_base_font_size(block, text, box_width, box_height)
         initial_size = max(10, int(block.style.font_size))
         min_size = max(10, min(22, int(base_size * 0.58)))
+        font_unavailable = self._requested_font_unavailable(block)
 
         last_font = load_font(
             size=base_size,
+            font_id=getattr(block.style, "font_id", ""),
             font_family=block.style.font_family,
             font_prediction=block.font_prediction,
+            project_path=self._project_path,
         )
         last_plan: LayoutPlan | None = None
         for size in range(base_size, min_size - 1, -2):
             font = load_font(
                 size=size,
+                font_id=getattr(block.style, "font_id", ""),
                 font_family=block.style.font_family,
                 font_prediction=block.font_prediction,
+                project_path=self._project_path,
             )
             plan = build_layout_plan(
                 draw=draw,
@@ -149,6 +156,9 @@ class MangaRenderer:
             )
             if plan.fit_ok:
                 plan.initial_font_size = initial_size
+                if font_unavailable:
+                    plan.warnings = sorted({*plan.warnings, "font_unavailable"})
+                    plan.fit_ok = False
                 return font, plan
             last_font = font
             last_plan = plan
@@ -171,8 +181,23 @@ class MangaRenderer:
         if fallback_plan.font_size <= min_size:
             fallback_plan.warnings = sorted({*fallback_plan.warnings, "font_too_small"})
             fallback_plan.fit_ok = False
+        if font_unavailable:
+            fallback_plan.warnings = sorted({*fallback_plan.warnings, "font_unavailable"})
+            fallback_plan.fit_ok = False
         fallback_plan.initial_font_size = initial_size
         return last_font, fallback_plan
+
+    def _requested_font_unavailable(self, block) -> bool:
+        requested_font_id = str(getattr(block.style, "font_id", "") or "").strip()
+        requested_family = str(getattr(block.style, "font_family", "") or "").strip()
+        if not requested_font_id and not requested_family:
+            return False
+        return resolve_requested_font_path(
+            font_id=requested_font_id,
+            font_family=requested_family,
+            font_prediction="" if requested_font_id or requested_family else block.font_prediction,
+            project_path=self._project_path,
+        ) is None
 
     @staticmethod
     def _estimate_base_font_size(block, text: str, box_width: int, box_height: int) -> int:
@@ -239,7 +264,7 @@ def _merge_layout_flags(flags: list[str], plan: LayoutPlan) -> list[str]:
             or flag.startswith("fit_ok:")
             or flag.startswith("rendered_font_size:")
             or flag.startswith("font_scale_ratio:")
-            or flag in {"font_too_small", "empty_text"}
+            or flag in {"font_too_small", "font_unavailable", "empty_text"}
         )
     ]
     preserved.append(f"fit_ok:{str(plan.fit_ok).lower()}")

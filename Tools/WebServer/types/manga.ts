@@ -209,6 +209,7 @@ export interface MangaSceneSummary {
 }
 
 export interface MangaTextBlockStyle {
+  font_id?: string;
   font_family: string;
   font_size: number;
   line_spacing: number;
@@ -233,6 +234,20 @@ export interface MangaTextBlock {
   editable: boolean;
   style: MangaTextBlockStyle;
   flags: string[];
+}
+
+export interface MangaFontCatalogEntry {
+  font_id: string;
+  display_name: string;
+  css_family: string;
+  source: string;
+  available: boolean;
+  path_or_url?: string;
+  scripts?: string[];
+  preview_text?: string;
+  family?: string;
+  style?: string;
+  postscript_name?: string;
 }
 
 export interface MangaPageDetail {

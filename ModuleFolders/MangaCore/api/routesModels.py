@@ -7,6 +7,8 @@ from fastapi import APIRouter, HTTPException
 from ModuleFolders.MangaCore.pipeline.modelStore import MangaModelStore
 from ModuleFolders.MangaCore.pipeline.progress import JobRegistry
 from ModuleFolders.MangaCore.pipeline.runtimeReadiness import build_manga_runtime_readiness
+from ModuleFolders.MangaCore.project.session import SessionRegistry
+from ModuleFolders.MangaCore.render.font import list_font_catalog
 
 router = APIRouter(prefix="/api/manga", tags=["manga"])
 
@@ -68,6 +70,19 @@ def _run_download_job(job_id: str, model_id: str) -> None:
 @router.get("/models")
 def list_models() -> list[dict[str, object]]:
     return MangaModelStore().list_statuses()
+
+
+@router.get("/fonts")
+def list_fonts() -> list[dict[str, object]]:
+    return [entry.to_dict() for entry in list_font_catalog()]
+
+
+@router.get("/projects/{project_id}/fonts")
+def list_project_fonts(project_id: str) -> list[dict[str, object]]:
+    session = SessionRegistry.get(project_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Manga project is not open: {project_id}")
+    return [entry.to_dict() for entry in list_font_catalog(session.project_path)]
 
 
 @router.get("/models/{model_id}")

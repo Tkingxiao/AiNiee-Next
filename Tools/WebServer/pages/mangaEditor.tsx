@@ -10,7 +10,7 @@ import { MangaTopBar } from '../components/manga/mangaTopBar';
 import { useI18n } from '../contexts/I18nContext';
 import { MangaBlockDraft, MangaBrushStrokePayload, MangaCanvasCommand, MangaCanvasPointer, MangaCanvasRuntimeBox, MangaCanvasRuntimeOverlay, MangaEngineCard, MangaLayerControls, MangaOverlayLayerKey, MangaViewMode, translateMangaEnum } from '../components/manga/shared';
 import { DataService } from '../services/DataService';
-import { MangaExportResult, MangaJob, MangaOpenProjectSummary, MangaPageDetail, MangaProjectSummary, MangaRuntimeValidationDiffResult, MangaRuntimeValidationHistoryItem, MangaRuntimeValidationResult, MangaRuntimeValidationStage, MangaSceneSummary } from '../types/manga';
+import { MangaExportResult, MangaFontCatalogEntry, MangaJob, MangaOpenProjectSummary, MangaPageDetail, MangaProjectSummary, MangaRuntimeValidationDiffResult, MangaRuntimeValidationHistoryItem, MangaRuntimeValidationResult, MangaRuntimeValidationStage, MangaSceneSummary } from '../types/manga';
 
 type NoticeTone = 'info' | 'success' | 'warning' | 'error';
 
@@ -256,6 +256,7 @@ const isBlockDirty = (block: MangaPageDetail['blocks'][number], draft?: MangaBlo
     !areBboxesEqual(draft.bbox, block.bbox)
     || draft.source_text !== (block.source_text || '')
     || draft.translation !== (block.translation || '')
+    || (draft.font_id || '') !== (block.style.font_id || '')
     || draft.font_family !== block.style.font_family
     || draft.font_size !== block.style.font_size
     || draft.line_spacing !== block.style.line_spacing
@@ -338,6 +339,7 @@ export const MangaEditor: React.FC = () => {
   const [runtimeValidationHistory, setRuntimeValidationHistory] = useState<MangaRuntimeValidationHistoryItem[]>([]);
   const [runtimeValidationDiff, setRuntimeValidationDiff] = useState<MangaRuntimeValidationDiffResult | null>(null);
   const [activeRuntimeStage, setActiveRuntimeStage] = useState('');
+  const [fontCatalog, setFontCatalog] = useState<MangaFontCatalogEntry[]>([]);
   const [blockDrafts, setBlockDrafts] = useState<Record<string, MangaBlockDraft>>({});
   const [canvasCommand, setCanvasCommand] = useState<MangaCanvasCommand>({ kind: 'fit', token: 0 });
   const [canvasZoomPercent, setCanvasZoomPercent] = useState(100);
@@ -522,6 +524,7 @@ export const MangaEditor: React.FC = () => {
         bbox: block.bbox.slice(0, 4),
         source_text: block.source_text || '',
         translation: block.translation || '',
+        font_id: block.style.font_id || '',
         font_family: block.style.font_family,
         font_size: block.style.font_size,
         line_spacing: block.style.line_spacing,
@@ -546,6 +549,7 @@ export const MangaEditor: React.FC = () => {
           bbox: [0, 0, 0, 0],
           source_text: '',
           translation: '',
+          font_id: '',
           font_family: '',
           font_size: 42,
           line_spacing: 1.2,
@@ -599,6 +603,18 @@ export const MangaEditor: React.FC = () => {
     const sceneSummary = await DataService.getMangaScene(projectId);
     setScene(sceneSummary);
     return sceneSummary;
+  };
+
+  const refreshFontCatalog = async (projectId?: string) => {
+    try {
+      setFontCatalog(await DataService.listMangaFonts(projectId));
+    } catch {
+      try {
+        setFontCatalog(await DataService.listMangaFonts());
+      } catch {
+        setFontCatalog([]);
+      }
+    }
   };
 
   const refreshCurrentPage = async (projectId: string, pageId?: string) => {
@@ -669,6 +685,7 @@ export const MangaEditor: React.FC = () => {
       if (!areBboxesEqual(draft.bbox, block.bbox)) patch.bbox = draft.bbox.slice(0, 4).map((value) => Math.round(value));
       if (draft.source_text !== (block.source_text || '')) patch.source_text = draft.source_text;
       if (draft.translation !== (block.translation || '')) patch.translation = draft.translation;
+      if ((draft.font_id || '') !== (block.style.font_id || '')) patch['style.font_id'] = draft.font_id || '';
       if (draft.font_family !== block.style.font_family) patch['style.font_family'] = draft.font_family;
       if (draft.font_size !== block.style.font_size) patch['style.font_size'] = draft.font_size;
       if (draft.line_spacing !== block.style.line_spacing) patch['style.line_spacing'] = draft.line_spacing;
@@ -730,6 +747,7 @@ export const MangaEditor: React.FC = () => {
       setActiveJob(null);
       setActiveBlockId('');
       setRecentProjectPaths(rememberRecentProjectPath(nextPath));
+      void refreshFontCatalog(opened.project_id);
 
       const requestedPageId = getInitialPageId();
       const firstPageId = (
@@ -1235,6 +1253,7 @@ export const MangaEditor: React.FC = () => {
 
   useEffect(() => {
     void refreshOpenProjects();
+    void refreshFontCatalog();
     if (projectPath) {
       void openProject(projectPath);
     }
@@ -1503,6 +1522,7 @@ export const MangaEditor: React.FC = () => {
           />
           <MangaBlocksPanel
             page={page}
+            fonts={fontCatalog}
             blockDrafts={blockDrafts}
             activeBlockId={activeBlockId}
             busyAction={busyAction}
