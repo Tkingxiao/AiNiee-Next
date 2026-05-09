@@ -36,6 +36,13 @@ class BatchTranslateRequest(BaseModel):
     auto_export: bool = False
 
 
+class PsdExportRequest(BaseModel):
+    page_ids: list[str] = Field(default_factory=list)
+    script_only: bool = False
+    include_blocked: bool = True
+    package: bool = False
+
+
 class ApplyOpsRequest(BaseModel):
     ops: list[dict[str, Any]]
 

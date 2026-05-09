@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from time import monotonic
 
 from fastapi import APIRouter, HTTPException
@@ -82,6 +83,10 @@ def _scene_page_summary(project_id: str, page_ref, quality_gate: dict[str, objec
     return payload
 
 
+def _now_iso() -> str:
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
 def _project_main_payload(session: MangaProjectSession, *, include_runtime: bool = False, include_quality: bool = False) -> dict[str, object]:
     payload: dict[str, object] = {
         "project_id": session.manifest.project_id,
@@ -123,16 +128,27 @@ def _runtime_status_payload(session: MangaProjectSession) -> dict[str, object]:
             return {
                 "engines": payload.get("engines", {}),
                 "runtime_readiness": payload.get("runtime_readiness", {}),
+                "checked_at": payload.get("checked_at", ""),
+                "cache_ttl_ms": int(RUNTIME_STATUS_CACHE_TTL_SECONDS * 1000),
+                "cache_hit": True,
+                "stale": False,
+                "refreshing": False,
             }
 
     payload = {
         "engines": build_engine_status(session.config_snapshot),
         "runtime_readiness": build_manga_runtime_readiness(config_snapshot=session.config_snapshot).to_dict(),
+        "checked_at": _now_iso(),
     }
     _runtime_status_cache[cache_key] = (now, payload)
     return {
         "engines": payload["engines"],
         "runtime_readiness": payload["runtime_readiness"],
+        "checked_at": payload["checked_at"],
+        "cache_ttl_ms": int(RUNTIME_STATUS_CACHE_TTL_SECONDS * 1000),
+        "cache_hit": False,
+        "stale": False,
+        "refreshing": False,
     }
 
 

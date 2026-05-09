@@ -1,6 +1,6 @@
 import { AppConfig, TaskPayload, TaskStats, LogEntry, ChartDataPoint } from '../types';
 import type { MangaBrushStrokePayload } from '../components/manga/shared';
-import { MangaDeleteRuntimeValidationHistoryResult, MangaExportResult, MangaFontCatalogEntry, MangaJob, MangaModelPackageStatus, MangaOpenProjectSummary, MangaOperationResult, MangaPageDetail, MangaPageQualityGate, MangaProjectSummary, MangaRuntimeReadinessReport, MangaRuntimeStatusSummary, MangaRuntimeValidationDiffResult, MangaRuntimeValidationHistoryItem, MangaRuntimeValidationResult, MangaSceneSummary } from '../types/manga';
+import { MangaDeleteRuntimeValidationHistoryResult, MangaExportFormat, MangaExportResult, MangaFontCatalogEntry, MangaJob, MangaModelPackageStatus, MangaOpenProjectSummary, MangaOperationResult, MangaPageDetail, MangaPageQualityGate, MangaProjectSummary, MangaPsdExportOptions, MangaRuntimeReadinessReport, MangaRuntimeStatusSummary, MangaRuntimeValidationDiffResult, MangaRuntimeValidationHistoryItem, MangaRuntimeValidationResult, MangaSceneSummary } from '../types/manga';
 
 // Base API URL
 const API_BASE = '/api';
@@ -786,10 +786,56 @@ export const DataService = {
         return data;
     },
 
-    async exportMangaProject(projectId: string, format: 'pdf' | 'epub' | 'cbz' | 'zip' | 'rar'): Promise<MangaExportResult> {
-        const res = await fetch(`${API_BASE}/manga/projects/${projectId}/export/${format}`, { method: 'POST' });
+    async exportMangaProject(
+        projectId: string,
+        format: MangaExportFormat,
+        psdOptions: MangaPsdExportOptions = {},
+    ): Promise<MangaExportResult> {
+        const init: RequestInit = format === 'psd'
+            ? {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    page_ids: psdOptions.page_ids || [],
+                    script_only: Boolean(psdOptions.script_only),
+                    include_blocked: psdOptions.include_blocked ?? true,
+                    package: Boolean(psdOptions.package),
+                })
+            }
+            : { method: 'POST' };
+        const res = await fetch(`${API_BASE}/manga/projects/${projectId}/export/${format}`, init);
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || `Failed to export manga project as ${format}`);
+        return data;
+    },
+
+    async getMangaPsdPhotoshopStatus(): Promise<NonNullable<MangaExportResult['photoshop']>> {
+        const res = await fetch(`${API_BASE}/manga/export/psd/photoshop`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Failed to fetch Photoshop status');
+        return data;
+    },
+
+    async startMangaPsdExport(projectId: string, psdOptions: MangaPsdExportOptions = {}): Promise<MangaJob> {
+        const res = await fetch(`${API_BASE}/manga/projects/${projectId}/export/psd/start`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                page_ids: psdOptions.page_ids || [],
+                script_only: Boolean(psdOptions.script_only),
+                include_blocked: psdOptions.include_blocked ?? true,
+                package: Boolean(psdOptions.package),
+            })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Failed to start PSD export');
+        return data;
+    },
+
+    async stopMangaPsdExport(projectId: string): Promise<MangaJob> {
+        const res = await fetch(`${API_BASE}/manga/projects/${projectId}/export/psd/stop`, { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Failed to cancel PSD export');
         return data;
     },
 

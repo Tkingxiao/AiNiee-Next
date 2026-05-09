@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Loader2, RefreshCw, Star } from 'lucide-react';
+import { FileArchive, Layers3, Loader2, RefreshCw, Star, X } from 'lucide-react';
 import { MangaBlocksPanel } from '../components/manga/mangaBlocksPanel';
 import { MangaCanvas } from '../components/manga/mangaCanvas';
 import { MangaInspector } from '../components/manga/mangaInspector';
@@ -10,9 +10,10 @@ import { MangaTopBar } from '../components/manga/mangaTopBar';
 import { useI18n } from '../contexts/I18nContext';
 import { MangaBlockDraft, MangaBrushStrokePayload, MangaCanvasCommand, MangaCanvasPointer, MangaCanvasRuntimeBox, MangaCanvasRuntimeOverlay, MangaEngineCard, MangaLayerControls, MangaOverlayLayerKey, MangaViewMode, translateMangaEnum } from '../components/manga/shared';
 import { DataService } from '../services/DataService';
-import { MangaExportResult, MangaFontCatalogEntry, MangaJob, MangaOpenProjectSummary, MangaPageDetail, MangaProjectSummary, MangaRuntimeValidationDiffResult, MangaRuntimeValidationHistoryItem, MangaRuntimeValidationResult, MangaRuntimeValidationStage, MangaSceneSummary } from '../types/manga';
+import { MangaExportFormat, MangaExportResult, MangaFontCatalogEntry, MangaJob, MangaOpenProjectSummary, MangaPageDetail, MangaProjectSummary, MangaPsdExportOptions, MangaRuntimeValidationDiffResult, MangaRuntimeValidationHistoryItem, MangaRuntimeValidationResult, MangaRuntimeValidationStage, MangaSceneSummary } from '../types/manga';
 
 type NoticeTone = 'info' | 'success' | 'warning' | 'error';
+type PsdExportScope = 'current' | 'selected' | 'all';
 
 const getInitialProjectPath = () => {
   const hash = window.location.hash || '';
@@ -194,6 +195,27 @@ const getExportResultMessage = (
     t,
   );
 
+  if (format === 'psd') {
+    const psdCount = Array.isArray(result.psd_paths) ? result.psd_paths.length : 0;
+    const scriptCount = Array.isArray(result.script_paths) ? result.script_paths.length : 0;
+    const missingFontCount = Array.isArray(result.missing_fonts) ? result.missing_fonts.length : 0;
+    const warnings = Array.isArray(result.warnings) ? result.warnings.filter(Boolean) : [];
+    const psdComplete = result.ok && result.complete !== false;
+    const summary = t(
+      psdComplete ? 'manga_notice_psd_export_summary' : 'manga_notice_psd_export_incomplete_summary',
+      psdCount,
+      scriptCount,
+      result.layer_manifest_path || '',
+    );
+    const details = [
+      backendMessage,
+      missingFontCount > 0 ? t('manga_notice_psd_missing_fonts', missingFontCount) : '',
+      warnings[0] ? t('manga_notice_psd_warning', warnings[0]) : '',
+      result.photoshop?.available === false ? t('manga_notice_psd_photoshop_missing') : '',
+    ].filter(Boolean);
+    return details.length ? `${summary} ${details.join(' ')}` : summary;
+  }
+
   if (result.ok) {
     const exportedMessage = t('manga_notice_exported_to', formatLabel, result.path || '');
     return backendMessage ? `${exportedMessage} ${backendMessage}` : exportedMessage;
@@ -231,6 +253,7 @@ const ACTION_LABEL_KEYS: Record<string, string> = {
   'export epub': 'manga_export_epub',
   'export zip': 'manga_export_zip',
   'export rar': 'manga_export_rar',
+  'export psd': 'manga_export_psd',
 };
 
 const getActionLabelKey = (action: string) => (
@@ -384,6 +407,17 @@ export const MangaEditor: React.FC = () => {
   const [runtimeValidationDiff, setRuntimeValidationDiff] = useState<MangaRuntimeValidationDiffResult | null>(null);
   const [activeRuntimeStage, setActiveRuntimeStage] = useState('');
   const [fontCatalog, setFontCatalog] = useState<MangaFontCatalogEntry[]>([]);
+  const [psdExportOpen, setPsdExportOpen] = useState(false);
+  const [psdExportScope, setPsdExportScope] = useState<PsdExportScope>('current');
+  const [psdScriptOnly, setPsdScriptOnly] = useState(false);
+  const [psdIncludeBlocked, setPsdIncludeBlocked] = useState(true);
+  const [psdPackage, setPsdPackage] = useState(false);
+  const [psdPhotoshopStatus, setPsdPhotoshopStatus] = useState<NonNullable<MangaExportResult['photoshop']> | null>(null);
+  const [psdPhotoshopChecking, setPsdPhotoshopChecking] = useState(false);
+  const [lastPsdExportResult, setLastPsdExportResult] = useState<MangaExportResult | null>(null);
+  const [psdExportProgressOpen, setPsdExportProgressOpen] = useState(false);
+  const [psdExportJob, setPsdExportJob] = useState<MangaJob | null>(null);
+  const [psdExportCancelling, setPsdExportCancelling] = useState(false);
   const [blockDrafts, setBlockDrafts] = useState<Record<string, MangaBlockDraft>>({});
   const [canvasCommand, setCanvasCommand] = useState<MangaCanvasCommand>({ kind: 'fit', token: 0 });
   const [canvasZoomPercent, setCanvasZoomPercent] = useState(100);
@@ -392,6 +426,11 @@ export const MangaEditor: React.FC = () => {
   const [brushRadius, setBrushRadius] = useState(24);
 
   const selectedCount = selectedPageIds.length || (selectedPageId ? 1 : 0);
+  const psdScopePageCount = useMemo(() => {
+    if (psdExportScope === 'all') return scene?.pages.length || project?.page_count || 0;
+    if (psdExportScope === 'selected') return selectedPageIds.length;
+    return selectedPageId ? 1 : 0;
+  }, [project?.page_count, psdExportScope, scene?.pages.length, selectedPageId, selectedPageIds.length]);
   const unpinnedRecentProjectPaths = useMemo(
     () => recentProjectPaths.filter((path) => !pinnedProjectPaths.includes(path)),
     [pinnedProjectPaths, recentProjectPaths],
@@ -811,9 +850,9 @@ export const MangaEditor: React.FC = () => {
     await loadPage(projectId, targetPageId);
   };
 
-  const hydrateProjectRuntimeState = async (projectId: string) => {
+  const hydrateProjectRuntimeState = async (projectId: string, refresh = false) => {
     try {
-      const runtimeStatus = await DataService.getMangaRuntimeStatus(projectId);
+      const runtimeStatus = await DataService.getMangaRuntimeStatus(projectId, refresh);
       setScene((current) => (
         current
           ? {
@@ -827,6 +866,17 @@ export const MangaEditor: React.FC = () => {
       // The editor can continue with the lightweight project manifest; page detail actions will surface concrete errors.
     }
   };
+
+  useEffect(() => {
+    if (!project?.project_id) return undefined;
+    const refreshRuntimeOnFocus = () => {
+      void hydrateProjectRuntimeState(project.project_id, true);
+    };
+    window.addEventListener('focus', refreshRuntimeOnFocus);
+    return () => {
+      window.removeEventListener('focus', refreshRuntimeOnFocus);
+    };
+  }, [project?.project_id]);
 
   const syncProjectState = async (projectId: string, preferredPageId?: string) => {
       const nextScene = await refreshScene(projectId);
@@ -980,7 +1030,7 @@ export const MangaEditor: React.FC = () => {
         setSelectedPageId('');
         setLoadingPageId('');
       }
-      void hydrateProjectRuntimeState(opened.project_id);
+      void hydrateProjectRuntimeState(opened.project_id, true);
       void refreshOpenProjects();
     } catch (err: any) {
       setError(err.message || t('manga_error_open_project_failed'));
@@ -1127,6 +1177,7 @@ export const MangaEditor: React.FC = () => {
           : settled.error_message || settled.message || t('manga_notice_model_prepare_warning', modelLabel),
       );
       await refreshScene(project.project_id);
+      await hydrateProjectRuntimeState(project.project_id, true);
       if (settled.status === 'completed' && runtimeValidation) {
         showNotice('info', t('manga_notice_model_ready_rerun_runtime'));
       }
@@ -1406,12 +1457,138 @@ export const MangaEditor: React.FC = () => {
     });
   };
 
-  const handleExport = async (format: 'pdf' | 'epub' | 'cbz' | 'zip' | 'rar') => {
+  const refreshPsdPhotoshopStatus = async () => {
+    setPsdPhotoshopChecking(true);
+    try {
+      const status = await DataService.getMangaPsdPhotoshopStatus();
+      setPsdPhotoshopStatus(status);
+      if (!status.available) setPsdScriptOnly(true);
+    } catch (_error) {
+      setPsdPhotoshopStatus({ available: false, message: t('manga_psd_photoshop_status_error') });
+      setPsdScriptOnly(true);
+    } finally {
+      setPsdPhotoshopChecking(false);
+    }
+  };
+
+  const openPsdExportDialog = () => {
+    if (!project) return;
+    setPsdExportScope(selectedPageIds.length > 0 ? 'selected' : (selectedPageId ? 'current' : 'all'));
+    setPsdScriptOnly(false);
+    setPsdExportOpen(true);
+    void refreshPsdPhotoshopStatus();
+  };
+
+  const getPsdExportPageIds = (scope: PsdExportScope) => {
+    if (scope === 'all') return [];
+    if (scope === 'selected') return selectedPageIds;
+    return selectedPageId ? [selectedPageId] : [];
+  };
+
+  const handlePsdExportFromDialog = async () => {
+    if (!project) return;
+    const pageIds = getPsdExportPageIds(psdExportScope);
+    if (psdExportScope !== 'all' && pageIds.length === 0) {
+      showNotice('warning', t('manga_notice_psd_select_page_scope'));
+      return;
+    }
+    setPsdExportOpen(false);
+    const psdOptions: MangaPsdExportOptions = {
+      page_ids: pageIds,
+      script_only: psdScriptOnly || psdPhotoshopStatus?.available === false,
+      include_blocked: psdIncludeBlocked,
+      package: psdPackage,
+    };
+
+    setPsdExportCancelling(false);
+    setPsdExportProgressOpen(true);
+    setPsdExportJob({
+      job_id: '',
+      stage: 'psd_export_preparing',
+      status: 'running',
+      progress: 0,
+      message: t('manga_psd_export_saving_drafts'),
+      result: {},
+    });
+
+    await withBusyAction('export psd', async () => {
+      let latestPsdJob: MangaJob | null = null;
+      try {
+        await applyDraftChanges(true);
+        setPsdExportJob((current) => ({
+          job_id: current?.job_id || '',
+          stage: 'psd_export_starting',
+          status: 'running',
+          progress: Math.max(1, Number(current?.progress || 0)),
+          message: t('manga_psd_export_starting'),
+          result: current?.result || {},
+        }));
+
+        const initialJob = await DataService.startMangaPsdExport(project.project_id, psdOptions);
+        latestPsdJob = initialJob;
+        setPsdExportJob(initialJob);
+        setActiveJob(initialJob);
+
+        let latest = initialJob;
+        while (!['completed', 'failed', 'cancelled'].includes(latest.status)) {
+          await delay(700);
+          latest = await DataService.getMangaJob(project.project_id, initialJob.job_id);
+          latestPsdJob = latest;
+          setPsdExportJob(latest);
+          setActiveJob(latest);
+        }
+
+        if (latest.status === 'completed' && latest.result) {
+          setLastPsdExportResult(latest.result as MangaExportResult);
+        }
+        setPsdExportCancelling(false);
+        setPsdExportJob(latest);
+      } catch (err: any) {
+        const message = err.message || t('manga_psd_export_failed');
+        const failedJob: MangaJob = {
+          job_id: latestPsdJob?.job_id || 'psd_export_failed_local',
+          stage: 'psd_export_failed',
+          status: 'failed',
+          progress: Math.max(0, Math.min(100, Number(latestPsdJob?.progress || 0))),
+          message,
+          error_message: message,
+          result: latestPsdJob?.result || {},
+        };
+        setPsdExportCancelling(false);
+        setPsdExportJob(failedJob);
+        setActiveJob(failedJob);
+        throw err;
+      }
+    });
+  };
+
+  const handleCancelPsdExport = async () => {
+    if (!project || !psdExportJob || psdExportJob.status !== 'running' || !psdExportJob.job_id) return;
+    setPsdExportCancelling(true);
+    try {
+      const job = await DataService.stopMangaPsdExport(project.project_id);
+      setPsdExportJob(job);
+      setActiveJob(job);
+    } catch (err: any) {
+      setError(err.message || t('manga_psd_export_cancel_failed'));
+    }
+  };
+
+  const handleExport = async (format: MangaExportFormat, options: MangaPsdExportOptions = {}) => {
     if (!project) return;
 
     await withBusyAction(`export ${format}`, async () => {
+      const psdOptions: MangaPsdExportOptions = { ...options };
+      if (format === 'psd') {
+        const photoshopStatus = await DataService.getMangaPsdPhotoshopStatus();
+        psdOptions.script_only = Boolean(psdOptions.script_only) || !photoshopStatus.available;
+        if (!photoshopStatus.available) {
+          showNotice('info', t('manga_notice_psd_photoshop_missing'));
+        }
+      }
       await applyDraftChanges(true);
-      const result = await DataService.exportMangaProject(project.project_id, format);
+      const result = await DataService.exportMangaProject(project.project_id, format, psdOptions);
+      if (format === 'psd') setLastPsdExportResult(result);
       showNotice(
         result.ok ? 'success' : 'warning',
         getExportResultMessage(format, result, t),
@@ -1495,6 +1672,85 @@ export const MangaEditor: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const psdEffectiveScriptOnly = psdScriptOnly || psdPhotoshopStatus?.available === false;
+  const psdPhotoshopStatusText = psdPhotoshopChecking
+    ? t('manga_psd_photoshop_status_checking')
+    : psdPhotoshopStatus?.available
+      ? t('manga_psd_photoshop_status_ready', psdPhotoshopStatus.executable_path || psdPhotoshopStatus.source || '')
+      : t('manga_psd_photoshop_status_missing');
+  const psdExportProgress = Math.max(0, Math.min(100, Number(psdExportJob?.progress || 0)));
+  const psdExportRunning = psdExportJob?.status === 'running';
+  const psdExportResultPayload = (psdExportJob?.result || {}) as Record<string, any>;
+  const psdExportProgressPayload = (
+    psdExportResultPayload.progress && typeof psdExportResultPayload.progress === 'object'
+      ? psdExportResultPayload.progress
+      : psdExportResultPayload
+  ) as Record<string, any>;
+  const psdExportProgressStage = String(psdExportProgressPayload.stage || psdExportJob?.stage || '');
+  const psdExportProgressPageNumber = Number(psdExportProgressPayload.page_number || 0);
+  const psdExportProgressPageCount = Number(psdExportProgressPayload.page_count || 0);
+  const psdExportOutputKind = String(psdExportProgressPayload.output_kind || (psdEffectiveScriptOnly ? 'jsx' : 'psd')).toUpperCase();
+  const psdExportOutputCount = Number(psdExportProgressPayload.output_count || 0);
+  const psdExportOutputTargetCount = Number(psdExportProgressPayload.output_target_count || psdExportProgressPageCount || psdScopePageCount || 0);
+  const psdExportOutputFailedCount = Number(psdExportProgressPayload.output_failed_count || 0);
+  const psdExportElapsedSeconds = Number(psdExportProgressPayload.elapsed_seconds || 0);
+  const psdExportOutputProgressText = psdExportOutputTargetCount > 0
+    ? t('manga_psd_export_generated_progress', psdExportOutputCount, psdExportOutputTargetCount, psdExportOutputKind)
+    : '';
+  const psdExportAttemptDetail = psdExportProgressPageNumber && psdExportProgressPageCount
+    ? (
+        psdExportOutputFailedCount > 0
+          ? t('manga_psd_export_attempt_detail_with_failed', psdExportProgressPageNumber, psdExportProgressPageCount, psdExportOutputFailedCount)
+          : t('manga_psd_export_attempt_detail', psdExportProgressPageNumber, psdExportProgressPageCount)
+      )
+    : '';
+  const psdExportProgressMetric = psdExportOutputTargetCount > 0
+    ? `${psdExportOutputCount}/${psdExportOutputTargetCount} · ${psdExportProgress}%`
+    : `${psdExportProgress}%`;
+  const psdExportActualComplete = psdExportJob?.status === 'completed' && psdExportProgressPayload.complete !== false;
+  const psdExportActualIncomplete = psdExportProgressPayload.complete === false || psdExportProgressStage === 'psd_export_incomplete';
+  const psdExportProgressMessage = psdExportActualComplete
+    ? t('manga_psd_export_completed')
+    : psdExportJob?.status === 'cancelled'
+      ? t('manga_psd_export_cancelled')
+      : psdExportActualIncomplete
+        ? t('manga_psd_export_incomplete')
+      : psdExportJob?.status === 'failed'
+        ? (psdExportJob.error_message || t('manga_psd_export_failed'))
+        : (psdExportCancelling || psdExportJob?.cancel_requested)
+          ? t('manga_psd_export_cancelling')
+          : psdExportProgressStage === 'psd_export_preparing'
+            ? t('manga_psd_export_saving_drafts')
+            : psdExportProgressStage === 'psd_export_starting'
+              ? t('manga_psd_export_starting')
+              : psdExportProgressStage === 'psd_export_photoshop'
+                ? (psdExportOutputProgressText || t('manga_psd_export_running'))
+                : psdExportOutputProgressText
+                  ? psdExportOutputProgressText
+                  : (psdExportJob?.message || t('manga_psd_export_running'));
+  const psdExportProgressDetail = psdExportActualComplete
+    ? t('manga_psd_export_completed')
+    : psdExportActualIncomplete
+      ? [
+          psdExportOutputProgressText,
+          psdExportAttemptDetail,
+        ].filter(Boolean).join(' · ')
+    : psdExportJob?.status === 'failed'
+      ? (psdExportJob.error_message || psdExportJob.message || t('manga_psd_export_failed'))
+      : psdExportJob?.status === 'cancelled'
+        ? t('manga_psd_export_cancelled')
+        : psdExportProgressStage === 'psd_export_photoshop'
+          ? [
+              t('manga_psd_export_waiting_for_psd', psdExportElapsedSeconds),
+              psdExportAttemptDetail,
+            ].filter(Boolean).join(' · ')
+          : psdExportAttemptDetail
+            ? [
+              psdExportAttemptDetail,
+              psdExportOutputProgressText,
+            ].filter(Boolean).join(' · ')
+            : (psdExportJob?.message || t('manga_psd_export_waiting'));
+
   return (
     <div className="h-screen bg-background text-slate-100 flex flex-col overflow-hidden">
       <MangaTopBar
@@ -1531,6 +1787,7 @@ export const MangaEditor: React.FC = () => {
         onExportEpub={() => { void handleExport('epub'); }}
         onExportZip={() => { void handleExport('zip'); }}
         onExportRar={() => { void handleExport('rar'); }}
+        onExportPsd={openPsdExportDialog}
       />
 
       {!project && (
@@ -1672,6 +1929,74 @@ export const MangaEditor: React.FC = () => {
         </div>
       )}
 
+      {lastPsdExportResult && (
+        <div className="mx-4 mt-3 rounded-lg border border-cyan-300/20 bg-cyan-300/10 px-4 py-3 text-sm text-cyan-100">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2 font-bold">
+              <Layers3 size={15} />
+              {t('manga_psd_result_title')}
+            </div>
+            <button
+              type="button"
+              onClick={() => setLastPsdExportResult(null)}
+              title={t('manga_psd_result_close')}
+              className="flex h-7 w-7 items-center justify-center rounded-md text-cyan-100/70 transition-colors hover:bg-cyan-300/12 hover:text-cyan-50"
+            >
+              <X size={14} />
+            </button>
+          </div>
+          <div className="mt-2 grid gap-2 text-xs text-cyan-50/80 lg:grid-cols-2">
+            <div>{t('manga_psd_result_psd_count', lastPsdExportResult.psd_paths?.length || 0)}</div>
+            <div>{t('manga_psd_result_jsx_count', lastPsdExportResult.script_paths?.length || 0)}</div>
+            {lastPsdExportResult.path && <div className="truncate" title={lastPsdExportResult.path}>{t('manga_psd_result_package', lastPsdExportResult.path)}</div>}
+            {lastPsdExportResult.layer_manifest_path && <div className="truncate" title={lastPsdExportResult.layer_manifest_path}>{t('manga_psd_result_manifest', lastPsdExportResult.layer_manifest_path)}</div>}
+            {lastPsdExportResult.photoshop?.source && <div className="truncate">{t('manga_psd_result_photoshop', lastPsdExportResult.photoshop.source)}</div>}
+            {(lastPsdExportResult.missing_fonts?.length || 0) > 0 && (
+              <div className="truncate" title={(lastPsdExportResult.missing_fonts || []).map((font) => font.requested).join(', ')}>
+                {t('manga_psd_result_missing_fonts', lastPsdExportResult.missing_fonts?.length || 0)}
+              </div>
+            )}
+          </div>
+          {(lastPsdExportResult.psd_paths?.length || 0) > 0 && (
+            <div className="mt-2 rounded-md border border-cyan-300/15 bg-slate-950/35 px-2 py-1.5">
+              <div className="mb-1 text-[11px] font-bold uppercase tracking-[0.14em] text-cyan-100/60">{t('manga_psd_result_psd_paths')}</div>
+              <div className="space-y-1">
+                {(lastPsdExportResult.psd_paths || []).slice(0, 4).map((path) => (
+                  <div key={path} className="truncate text-xs text-cyan-50/80" title={path}>{path}</div>
+                ))}
+              </div>
+            </div>
+          )}
+          {(lastPsdExportResult.script_paths?.length || 0) > 0 && (
+            <div className="mt-2 rounded-md border border-cyan-300/15 bg-slate-950/35 px-2 py-1.5">
+              <div className="mb-1 text-[11px] font-bold uppercase tracking-[0.14em] text-cyan-100/60">{t('manga_psd_result_jsx_paths')}</div>
+              <div className="space-y-1">
+                {(lastPsdExportResult.script_paths || []).slice(0, 4).map((path) => (
+                  <div key={path} className="truncate text-xs text-cyan-50/80" title={path}>{path}</div>
+                ))}
+              </div>
+            </div>
+          )}
+          {(lastPsdExportResult.missing_fonts?.length || 0) > 0 && (
+            <div className="mt-2 rounded-md border border-amber-300/20 bg-amber-300/10 px-2 py-1.5 text-xs text-amber-100">
+              {t(
+                'manga_psd_result_missing_font_names',
+                (lastPsdExportResult.missing_fonts || [])
+                  .map((font) => font.requested || font.block_id)
+                  .filter(Boolean)
+                  .slice(0, 6)
+                  .join(', '),
+              )}
+            </div>
+          )}
+          {(lastPsdExportResult.warnings?.length || 0) > 0 && (
+            <div className="mt-2 rounded-md border border-amber-300/20 bg-amber-300/10 px-2 py-1.5 text-xs text-amber-100">
+              {t('manga_psd_result_warnings', (lastPsdExportResult.warnings || []).slice(0, 2).join(' / '))}
+            </div>
+          )}
+        </div>
+      )}
+
       {pageQualityGate?.blocked_from_final && (
         <div className="mx-4 mt-3 rounded-lg border border-amber-400/25 bg-amber-300/10 px-4 py-3 text-sm text-amber-100">
           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1773,6 +2098,185 @@ export const MangaEditor: React.FC = () => {
           />
         </aside>
       </div>
+
+      {psdExportOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/78 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-lg rounded-xl border border-slate-800 bg-slate-950 shadow-2xl shadow-black/40">
+            <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
+              <div className="flex items-center gap-2">
+                <span className="flex h-8 w-8 items-center justify-center rounded-lg border border-cyan-300/25 bg-cyan-300/10 text-cyan-100">
+                  <Layers3 size={16} />
+                </span>
+                <div>
+                  <div className="text-sm font-bold text-slate-100">{t('manga_psd_export_title')}</div>
+                  <div className="text-xs text-slate-500">{t('manga_psd_export_page_count', psdScopePageCount)}</div>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPsdExportOpen(false)}
+                className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-slate-900 hover:text-slate-100"
+                title={t('manga_psd_cancel')}
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="space-y-4 px-4 py-4">
+              <div>
+                <div className="mb-2 text-xs font-bold uppercase tracking-[0.16em] text-slate-500">{t('manga_psd_export_scope')}</div>
+                <div className="grid grid-cols-3 gap-2">
+                  {([
+                    { scope: 'current' as PsdExportScope, label: t('manga_psd_scope_current'), disabled: !selectedPageId },
+                    { scope: 'selected' as PsdExportScope, label: t('manga_psd_scope_selected'), disabled: selectedPageIds.length === 0 },
+                    { scope: 'all' as PsdExportScope, label: t('manga_psd_scope_all'), disabled: false },
+                  ]).map((item) => (
+                    <button
+                      key={item.scope}
+                      type="button"
+                      onClick={() => setPsdExportScope(item.scope)}
+                      disabled={item.disabled}
+                      className={`h-10 rounded-lg border px-3 text-xs font-bold transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${
+                        psdExportScope === item.scope
+                          ? 'border-cyan-300/45 bg-cyan-300/16 text-cyan-100'
+                          : 'border-slate-800 bg-slate-900/70 text-slate-300 hover:border-slate-600 hover:text-slate-100'
+                      }`}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-slate-800 bg-slate-900/45 px-3 py-2 text-xs text-slate-300">
+                <div className="flex items-center gap-2">
+                  {psdPhotoshopChecking && <Loader2 size={14} className="animate-spin text-cyan-200" />}
+                  <span>{psdPhotoshopStatusText}</span>
+                </div>
+              </div>
+
+              <div className="grid gap-2">
+                <label className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-900/45 px-3 py-2.5">
+                  <span className="text-sm font-semibold text-slate-200">{t('manga_psd_option_script_only')}</span>
+                  <input
+                    type="checkbox"
+                    checked={psdEffectiveScriptOnly}
+                    disabled={psdPhotoshopStatus?.available === false}
+                    onChange={(event) => setPsdScriptOnly(event.target.checked)}
+                    className="h-4 w-4 accent-cyan-300"
+                  />
+                </label>
+                <label className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-900/45 px-3 py-2.5">
+                  <span className="text-sm font-semibold text-slate-200">{t('manga_psd_option_include_blocked')}</span>
+                  <input
+                    type="checkbox"
+                    checked={psdIncludeBlocked}
+                    onChange={(event) => setPsdIncludeBlocked(event.target.checked)}
+                    className="h-4 w-4 accent-cyan-300"
+                  />
+                </label>
+                <label className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-900/45 px-3 py-2.5">
+                  <span className="text-sm font-semibold text-slate-200">{t('manga_psd_option_package')}</span>
+                  <input
+                    type="checkbox"
+                    checked={psdPackage}
+                    onChange={(event) => setPsdPackage(event.target.checked)}
+                    className="h-4 w-4 accent-cyan-300"
+                  />
+                </label>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 border-t border-slate-800 px-4 py-3">
+              <button
+                type="button"
+                onClick={() => setPsdExportOpen(false)}
+                className="inline-flex h-9 items-center justify-center rounded-lg border border-slate-800 bg-slate-900/70 px-3 text-xs font-bold text-slate-300 transition-colors hover:border-slate-600 hover:text-slate-100"
+              >
+                {t('manga_psd_cancel')}
+              </button>
+              <button
+                type="button"
+                onClick={() => { void handlePsdExportFromDialog(); }}
+                disabled={Boolean(busyAction) || psdScopePageCount <= 0}
+                className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-cyan-300/35 bg-cyan-300 px-3 text-xs font-bold text-slate-950 transition-colors hover:bg-cyan-200 disabled:cursor-not-allowed disabled:opacity-45"
+              >
+                <FileArchive size={14} />
+                {t('manga_psd_start_export')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {psdExportProgressOpen && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-950/78 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-lg rounded-xl border border-slate-800 bg-slate-950 shadow-2xl shadow-black/40">
+            <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
+              <div className="flex items-center gap-2">
+                <span className="flex h-8 w-8 items-center justify-center rounded-lg border border-cyan-300/25 bg-cyan-300/10 text-cyan-100">
+                  {psdExportRunning ? <Loader2 size={16} className="animate-spin" /> : <Layers3 size={16} />}
+                </span>
+                <div>
+                  <div className="text-sm font-bold text-slate-100">{t('manga_psd_export_progress_title')}</div>
+                  <div className="text-xs text-slate-500">{psdExportProgressMessage}</div>
+                </div>
+              </div>
+              {!psdExportRunning && (
+                <button
+                  type="button"
+                  onClick={() => setPsdExportProgressOpen(false)}
+                  className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-slate-900 hover:text-slate-100"
+                  title={t('manga_psd_result_close')}
+                >
+                  <X size={16} />
+                </button>
+              )}
+            </div>
+
+            <div className="space-y-4 px-4 py-4">
+              <div className="rounded-lg border border-slate-800 bg-slate-900/45 px-3 py-3">
+                <div className="mb-2 flex items-center justify-between gap-3 text-xs font-semibold text-slate-300">
+                  <span>{psdExportProgressMessage}</span>
+                  <span>{psdExportProgressMetric}</span>
+                </div>
+                <div className="h-2 overflow-hidden rounded-full bg-slate-800">
+                  <div
+                    className="h-full rounded-full bg-cyan-300 transition-all duration-300"
+                    style={{ width: `${psdExportProgress}%` }}
+                  />
+                </div>
+              </div>
+
+              <div className="text-xs leading-relaxed text-slate-400">
+                {psdExportProgressDetail}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 border-t border-slate-800 px-4 py-3">
+              {psdExportRunning ? (
+                <button
+                  type="button"
+                  onClick={() => { void handleCancelPsdExport(); }}
+                  disabled={!psdExportJob?.job_id || psdExportCancelling || Boolean(psdExportJob?.cancel_requested)}
+                  className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-amber-300/35 bg-amber-300/12 px-3 text-xs font-bold text-amber-100 transition-colors hover:bg-amber-300/18 disabled:cursor-not-allowed disabled:opacity-45"
+                >
+                  {psdExportCancelling || psdExportJob?.cancel_requested ? <Loader2 size={14} className="animate-spin" /> : <X size={14} />}
+                  {t('manga_psd_export_cancel')}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setPsdExportProgressOpen(false)}
+                  className="inline-flex h-9 items-center justify-center rounded-lg border border-slate-800 bg-slate-900/70 px-3 text-xs font-bold text-slate-300 transition-colors hover:border-slate-600 hover:text-slate-100"
+                >
+                  {t('manga_psd_result_close')}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       <MangaStatusBar leftText={statusLeftText} centerText={statusCenterText} rightText={statusRightText} />
     </div>

@@ -76,6 +76,7 @@ export interface MangaTopBarProps {
   onExportEpub: () => void;
   onExportZip: () => void;
   onExportRar: () => void;
+  onExportPsd: () => void;
 }
 
 const BUTTON_STYLES: Record<ButtonTone, string> = {
@@ -140,6 +141,7 @@ const BUSY_LABEL_KEYS: Record<string, string> = {
   'export epub': 'manga_busy_export_epub',
   'export zip': 'manga_busy_export_zip',
   'export rar': 'manga_busy_export_rar',
+  'export psd': 'manga_busy_export_psd',
 };
 
 const getBusyLabelKey = (busyAction: string) => (
@@ -182,6 +184,7 @@ export const MangaTopBar: React.FC<MangaTopBarProps> = ({
   onExportEpub,
   onExportZip,
   onExportRar,
+  onExportPsd,
 }) => {
   const { t } = useI18n();
   const [moreFormatsOpen, setMoreFormatsOpen] = useState(false);
@@ -359,6 +362,7 @@ export const MangaTopBar: React.FC<MangaTopBarProps> = ({
               <ToolbarButton label={t('manga_format_epub')} onClick={() => runExtraExport(onExportEpub)} disabled={exportDisabled} busy={busyAction === 'export epub'} icon={<FileText size={16} />} />
               <ToolbarButton label={t('manga_format_zip')} onClick={() => runExtraExport(onExportZip)} disabled={exportDisabled} busy={busyAction === 'export zip'} icon={<FileArchive size={16} />} />
               <ToolbarButton label={t('manga_format_rar')} onClick={() => runExtraExport(onExportRar)} disabled={exportDisabled} busy={busyAction === 'export rar'} icon={<FileArchive size={16} />} />
+              <ToolbarButton label={t('manga_format_psd')} onClick={() => runExtraExport(onExportPsd)} disabled={exportDisabled} busy={busyAction === 'export psd'} icon={<Layers3 size={16} />} />
             </div>
           )}
         </ToolbarGroup>

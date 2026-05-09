@@ -31,6 +31,21 @@ export interface MangaOperationResult {
   message?: string;
 }
 
+export type MangaExportFormat = 'pdf' | 'epub' | 'cbz' | 'zip' | 'rar' | 'psd';
+
+export interface MangaPsdExportOptions {
+  page_ids?: string[];
+  script_only?: boolean;
+  include_blocked?: boolean;
+  package?: boolean;
+}
+
+export interface MangaPsdMissingFont {
+  page_id: string;
+  block_id: string;
+  requested: string;
+}
+
 export interface MangaExportResult {
   ok: boolean;
   path?: string | null;
@@ -38,6 +53,24 @@ export interface MangaExportResult {
   message_args?: any[];
   blocked_pages?: MangaBlockedExportPage[];
   warnings?: string[];
+  script_paths?: string[];
+  psd_paths?: string[];
+  missing_fonts?: MangaPsdMissingFont[];
+  layer_manifest_path?: string | null;
+  skipped_pages?: string[];
+  output_kind?: string;
+  output_count?: number;
+  output_target_count?: number;
+  output_failed_count?: number;
+  complete?: boolean;
+  progress?: Record<string, any>;
+  photoshop?: {
+    available: boolean;
+    executable_path?: string;
+    source?: string;
+    checked_at?: string;
+    message?: string;
+  };
 }
 
 export interface MangaQualityIssue {
@@ -253,6 +286,11 @@ export interface MangaSceneSummary {
 export interface MangaRuntimeStatusSummary {
   engines: MangaSceneEngineStatus;
   runtime_readiness: MangaRuntimeReadinessReport;
+  checked_at?: string;
+  cache_ttl_ms?: number;
+  cache_hit?: boolean;
+  stale?: boolean;
+  refreshing?: boolean;
 }
 
 export interface MangaTextBlockStyle {
