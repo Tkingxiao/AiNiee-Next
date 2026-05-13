@@ -38,7 +38,10 @@ def detect_system_language():
         except Exception:
             lang_code = ""
 
-    if lang_code.startswith("zh"):
+    normalized = lang_code.replace("-", "_").lower()
+    if normalized in ("zh_tw", "zh_hk", "zh_mo", "zh_hant"):
+        return "zh_CNTW"
+    if normalized.startswith("zh"):
         return "zh_CN"
     if lang_code.startswith("ja"):
         return "ja"
@@ -88,6 +91,7 @@ def switch_runtime_language(project_root, lang):
 def get_base_interface_language_name(lang):
     return {
         "zh_CN": "简中",
+        "zh_CNTW": "繁中",
         "ja": "日本語",
         "en": "英语",
     }.get(lang, "英语")

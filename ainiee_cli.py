@@ -132,7 +132,7 @@ class CLIMenu:
     def apply_interface_language(self, lang):
         global current_lang, i18n
 
-        if lang not in ("zh_CN", "ja", "en"):
+        if lang not in ("zh_CN", "zh_CNTW", "ja", "en"):
             lang = detect_system_language()
 
         current_lang = lang
@@ -909,20 +909,21 @@ class CLIMenu:
 
     def first_time_lang_setup(self):
         detected = detect_system_language()
-        default_idx = {"zh_CN": 1, "ja": 2, "en": 3}.get(detected, 3)
-        
-        console.print(Panel(f"[bold cyan]Language Setup / 语言设置 / 言語設定[/bold cyan]"))
+        default_idx = {"zh_CN": 1, "zh_CNTW": 2, "ja": 3, "en": 4}.get(detected, 4)
+
+        console.print(Panel(f"[bold cyan]Language Setup / 语言设置 / 語言設定 / 言語設定[/bold cyan]"))
         console.print(f"[dim]Detected System Language: {detected}[/dim]\n")
-        
+
         table = Table(show_header=False, box=None)
         table.add_row("[cyan]1.[/]", "中文 (简体)")
-        table.add_row("[cyan]2.[/]", "日本語")
-        table.add_row("[cyan]3.[/]", "English")
+        table.add_row("[cyan]2.[/]", "中文 (繁體)")
+        table.add_row("[cyan]3.[/]", "日本語")
+        table.add_row("[cyan]4.[/]", "English")
         console.print(table)
-        
-        c = IntPrompt.ask("\nSelect / 选择 / 選択", choices=["1", "2", "3"], default=default_idx, show_choices=False)
-        
-        selected_lang = {"1": "zh_CN", "2": "ja", "3": "en"}[str(c)]
+
+        c = IntPrompt.ask("\nSelect / 选择 / 選擇 / 選択", choices=["1", "2", "3", "4"], default=default_idx, show_choices=False)
+
+        selected_lang = {"1": "zh_CN", "2": "zh_CNTW", "3": "ja", "4": "en"}[str(c)]
         self.apply_interface_language(selected_lang)
         self.save_config()
 
@@ -1777,8 +1778,12 @@ class CLIMenu:
                     report_table.add_row(f"[cyan]{i18n.get('label_report_total_tokens')}:[/]", f"[bold]{tokens}[/]")
                     report_table.add_row(f"[cyan]{i18n.get('label_report_total_time')}:[/]", f"[bold]{duration:.1f}s[/]")
                     console.print("\n"); console.print(Panel(report_table, title=f"[bold green]✓ {i18n.get('msg_task_report_title')}[/bold green]", expand=False))
+                    if self.config.get("enable_github_promotion", True):
+                        console.print(f"[bold green]{i18n.get('msg_github_promotion')}[/bold green]")
                 else:
                     print(f"[STATS] RPM: 0.00 | TPM: 0.00k | Progress: {lines}/{lines} | Tokens: {tokens}") # Final Stat
+                    if self.config.get("enable_github_promotion", True):
+                        print(i18n.get("msg_github_promotion"))
 
             if success.is_set() and is_middleware_converted:
                 try:

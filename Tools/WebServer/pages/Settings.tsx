@@ -548,31 +548,6 @@ export const Settings: React.FC = () => {
               </div>
             )}
 
-            <div className="col-span-1 md:col-span-2 p-4 bg-slate-900/50 border border-slate-700 rounded-lg flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-                <div className="flex items-center gap-2">
-                    <Globe size={18} className="text-primary" />
-                    <span className="text-sm font-semibold text-slate-200">{t('ui_language')}</span>
-                </div>
-                <div className="flex flex-wrap gap-2 w-full sm:w-auto">
-                    {availableLanguages.map(lang => (
-                        <button
-                            key={lang.code}
-                            onClick={() => {
-                                setLanguage(lang.code);
-                                handleChange('interface_language', lang.code);
-                            }}
-                            className={`flex-1 sm:flex-none px-3 py-1.5 rounded text-xs font-bold transition-all ${
-                                language === lang.code 
-                                    ? 'bg-primary text-slate-900 shadow-md shadow-cyan-500/20' 
-                                    : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
-                            }`}
-                        >
-                            {lang.label}
-                        </button>
-                    ))}
-                </div>
-            </div>
-
             <div className="space-y-2 col-span-1 md:col-span-2">
               <label className="text-xs font-semibold text-slate-400 uppercase">{t('setting_input_path')}</label>
               <input type="text" value={config.label_input_path} onChange={(e) => handleChange('label_input_path', e.target.value)}
@@ -1204,6 +1179,41 @@ export const Settings: React.FC = () => {
                          </div>
                      ))}
                  </div>
+             </div>
+
+             <div className="col-span-1 md:col-span-2 mt-4 pt-4 border-t border-slate-700">
+                <h4 className="mb-3 text-sm md:text-base font-bold text-slate-300">{t('label_category_project_general')}</h4>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4">
+                    <div className="p-4 bg-slate-900/50 border border-slate-700 rounded-lg flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                        <div className="flex items-center gap-2">
+                            <Globe size={18} className="text-primary" />
+                            <span className="text-sm font-semibold text-slate-200">{t('ui_language')}</span>
+                        </div>
+                        <div className="flex flex-wrap gap-2 w-full sm:w-auto">
+                            {availableLanguages.map(lang => (
+                                <button
+                                    key={lang.code}
+                                    onClick={() => {
+                                        setLanguage(lang.code);
+                                        handleChange('interface_language', lang.code);
+                                    }}
+                                    className={`flex-1 sm:flex-none px-3 py-1.5 rounded text-xs font-bold transition-all ${
+                                        language === lang.code
+                                            ? 'bg-primary text-slate-900 shadow-md shadow-cyan-500/20'
+                                            : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                                    }`}
+                                >
+                                    {lang.label}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                    <Toggle
+                      field="enable_github_promotion"
+                      label={t('setting_github_promotion')}
+                      desc={t('setting_github_promotion_desc')}
+                    />
+                </div>
              </div>
           </div>
         )}

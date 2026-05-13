@@ -100,7 +100,7 @@ class SettingsMenuBuilder:
         self.menu_items = []  # [(id, key, item)]
 
     def build_menu_items(self):
-        """构建菜单项列表，按分类组织，高级在前，界面语言永远在底部。"""
+        """构建菜单项列表，按分类组织，高级在前，一般项目设置永远在底部。"""
         self.menu_items = []
         idx = 1
 
@@ -118,7 +118,7 @@ class SettingsMenuBuilder:
             ("automation", "label_category_automation"),
             ("manga", "label_category_manga"),
             ("advanced", "label_category_advanced"),
-            ("interface_language", "label_category_interface_language"),
+            ("project_general", "label_category_project_general"),
         ]
 
         # 按分类组织配置项

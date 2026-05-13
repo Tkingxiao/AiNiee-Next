@@ -303,6 +303,7 @@ export interface AppConfig {
   show_detailed_logs: boolean;
   recent_projects: string[];
   interface_language: string;
+  enable_github_promotion: boolean;
   enable_cache_backup: boolean;
   enable_auto_restore_ebook: boolean;
   enable_xlsx_conversion: boolean;

@@ -115,6 +115,7 @@ class TaskConfig(Base):
         self.enable_retry_backoff = True
         self.enable_session_logging = True
         self.enable_task_notification = True
+        self.enable_github_promotion = True
         self.exclude_rule_str = ""
         self.think_switch = False
         self.think_depth = 0

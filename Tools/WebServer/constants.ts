@@ -73,6 +73,9 @@ export const ZH_CN_LOCALE: Record<string, string> = {
     "setting_auto_heal": "开启缓存损坏自动恢复",
     "setting_retry_backoff": "开启请求失败自动重试 (指数退避)",
     "setting_task_notification": "开启任务完成通知 (音效+弹窗)",
+    "setting_github_promotion": "启用GitHub推广信息",
+    "setting_github_promotion_desc": "任务完成后显示 GitHub star 支持提示",
+    "label_category_project_general": "项目一般设置",
     "setting_session_logging": "开启运行日志自动归档",
     "prompt_limit_val": "设置限制值",
     "msg_task_report_title": "任务执行总结报告",
@@ -1234,6 +1237,9 @@ export const EN_LOCALE: Record<string, string> = {
     "setting_enable_xlsx_conversion": "XLSX Auto Conversion (XLSX ↔ CSV)",
     "setting_dry_run": "Dry Run (First Item Preview)",
     "setting_retry_backoff": "Auto Retry on Request Failure (Exponential Backoff)",
+    "setting_github_promotion": "Enable GitHub promotion message",
+    "setting_github_promotion_desc": "Show a GitHub star support message after tasks complete",
+    "label_category_project_general": "General Project Settings",
     "setting_session_logging": "Session Logging",
     "setting_enable_smart_round_limit": "Smart Round Limit",
     "setting_enable_rate_limit": "Enable Rate Limiting",
@@ -2220,6 +2226,7 @@ export const EN_LOCALE: Record<string, string> = {
 
 export const DEFAULT_CONFIG: AppConfig = {
   interface_language: 'zh_CN',
+  enable_github_promotion: true,
   // Basic
   label_input_path: '',
   label_output_path: '',

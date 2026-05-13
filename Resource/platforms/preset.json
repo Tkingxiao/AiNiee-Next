@@ -57,6 +57,7 @@
     "enable_retry_backoff": true,
     "enable_session_logging": true,
     "enable_task_notification": true,
+    "enable_github_promotion": true,
     "exclude_rule_str": "",
     "think_switch": false,
     "think_depth": 0,

@@ -162,8 +162,8 @@ register_config(ConfigItem(
     config_type=ConfigType.CHOICE,
     i18n_key="setting_interface_language",
     i18n_desc_key="setting_interface_language_desc",
-    choices=["zh_CN", "ja", "en"],
-    category="interface_language"
+    choices=["zh_CN", "zh_CNTW", "ja", "en"],
+    category="project_general"
 ))
 
 # --- 翻译核心配置 (USER) ---
@@ -631,6 +631,16 @@ register_config(ConfigItem(
     config_type=ConfigType.BOOL,
     i18n_key="setting_task_notification",
     category="feature"
+))
+
+register_config(ConfigItem(
+    key="enable_github_promotion",
+    default=True,
+    level=ConfigLevel.USER,
+    config_type=ConfigType.BOOL,
+    i18n_key="setting_github_promotion",
+    i18n_desc_key="setting_github_promotion_desc",
+    category="project_general"
 ))
 
 register_config(ConfigItem(
