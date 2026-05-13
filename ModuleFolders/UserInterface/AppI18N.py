@@ -43,8 +43,14 @@ def detect_system_language():
         return "zh_CNTW"
     if normalized.startswith("zh"):
         return "zh_CN"
-    if lang_code.startswith("ja"):
+    if normalized.startswith("ja"):
         return "ja"
+    if normalized.startswith("ko"):
+        return "ko"
+    if normalized.startswith("ru"):
+        return "ru"
+    if normalized.startswith("es"):
+        return "es"
     return "en"
 
 
@@ -93,5 +99,8 @@ def get_base_interface_language_name(lang):
         "zh_CN": "简中",
         "zh_CNTW": "繁中",
         "ja": "日本語",
+        "ko": "英语",
+        "ru": "英语",
+        "es": "英语",
         "en": "英语",
     }.get(lang, "英语")

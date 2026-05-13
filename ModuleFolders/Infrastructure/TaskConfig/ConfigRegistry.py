@@ -162,7 +162,7 @@ register_config(ConfigItem(
     config_type=ConfigType.CHOICE,
     i18n_key="setting_interface_language",
     i18n_desc_key="setting_interface_language_desc",
-    choices=["zh_CN", "zh_CNTW", "ja", "en"],
+    choices=["zh_CN", "zh_CNTW", "ja", "en", "ko", "ru", "es"],
     category="project_general"
 ))
 

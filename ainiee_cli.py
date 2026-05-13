@@ -132,7 +132,7 @@ class CLIMenu:
     def apply_interface_language(self, lang):
         global current_lang, i18n
 
-        if lang not in ("zh_CN", "zh_CNTW", "ja", "en"):
+        if lang not in ("zh_CN", "zh_CNTW", "ja", "en", "ko", "ru", "es"):
             lang = detect_system_language()
 
         current_lang = lang
@@ -909,7 +909,7 @@ class CLIMenu:
 
     def first_time_lang_setup(self):
         detected = detect_system_language()
-        default_idx = {"zh_CN": 1, "zh_CNTW": 2, "ja": 3, "en": 4}.get(detected, 4)
+        default_idx = {"zh_CN": 1, "zh_CNTW": 2, "ja": 3, "en": 4, "ko": 5, "ru": 6, "es": 7}.get(detected, 4)
 
         console.print(Panel(f"[bold cyan]Language Setup / 语言设置 / 語言設定 / 言語設定[/bold cyan]"))
         console.print(f"[dim]Detected System Language: {detected}[/dim]\n")
@@ -919,11 +919,14 @@ class CLIMenu:
         table.add_row("[cyan]2.[/]", "中文 (繁體)")
         table.add_row("[cyan]3.[/]", "日本語")
         table.add_row("[cyan]4.[/]", "English")
+        table.add_row("[cyan]5.[/]", "한국어")
+        table.add_row("[cyan]6.[/]", "Русский")
+        table.add_row("[cyan]7.[/]", "Español")
         console.print(table)
 
-        c = IntPrompt.ask("\nSelect / 选择 / 選擇 / 選択", choices=["1", "2", "3", "4"], default=default_idx, show_choices=False)
+        c = IntPrompt.ask("\nSelect / 选择 / 選擇 / 選択", choices=["1", "2", "3", "4", "5", "6", "7"], default=default_idx, show_choices=False)
 
-        selected_lang = {"1": "zh_CN", "2": "zh_CNTW", "3": "ja", "4": "en"}[str(c)]
+        selected_lang = {"1": "zh_CN", "2": "zh_CNTW", "3": "ja", "4": "en", "5": "ko", "6": "ru", "7": "es"}[str(c)]
         self.apply_interface_language(selected_lang)
         self.save_config()
 
