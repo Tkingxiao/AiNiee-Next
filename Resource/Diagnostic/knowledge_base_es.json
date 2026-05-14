@@ -1,0 +1,162 @@
+{
+  "version": "1.0",
+  "items": [
+    {
+      "id": "kb_001",
+      "question": "Problema de configuración de API Key",
+      "keywords": [
+        "api_key",
+        "api key",
+        "401",
+        "autenticación",
+        "authentication",
+        "invalid key",
+        "unauthorized"
+      ],
+      "answer": "Los problemas de API Key suelen deberse a:\n1. La clave no se copió correctamente, sobre todo por espacios al inicio o al final\n2. La clave caducó o fue desactivada\n3. La clave no tiene permiso para usar el modelo seleccionado\n\nCómo solucionarlo:\n1. Copia de nuevo la API Key\n2. Revisa el estado de la clave en el panel del proveedor de API\n3. Confirma que la cuenta tenga saldo o cuota suficiente",
+      "category": "Configuración",
+      "hit_count": 0
+    },
+    {
+      "id": "kb_002",
+      "question": "Problema de conexión de red",
+      "keywords": [
+        "connection",
+        "timeout",
+        "red",
+        "proxy",
+        "ssl",
+        "refused",
+        "conexión"
+      ],
+      "answer": "Pasos para revisar problemas de red:\n1. Comprueba que la conexión de red funcione correctamente\n2. Si usas proxy, confirma que la configuración sea correcta\n3. Algunas API pueden requerir proxy en determinadas regiones\n4. Los errores SSL suelen estar relacionados con proxy, certificados o el entorno de red local",
+      "category": "Red",
+      "hit_count": 0
+    },
+    {
+      "id": "kb_003",
+      "question": "Problema de selección de modelo",
+      "keywords": [
+        "model",
+        "modelo",
+        "KeyError",
+        "not found",
+        "no existe",
+        "unknown model"
+      ],
+      "answer": "Comprobaciones relacionadas con el modelo:\n1. Asegúrate de haber seleccionado un modelo en la interfaz y de haber guardado la configuración\n2. Verifica que el nombre del modelo sea correcto\n3. Algunos modelos requieren permisos adicionales\n4. En plataformas personalizadas, introduce el nombre exacto del modelo que acepta el proveedor",
+      "category": "Configuración",
+      "hit_count": 0
+    },
+    {
+      "id": "kb_004",
+      "question": "Problema de lectura de archivos",
+      "keywords": [
+        "file",
+        "archivo",
+        "ruta",
+        "path",
+        "FileNotFoundError",
+        "permission"
+      ],
+      "answer": "Pasos para revisar problemas de archivo:\n1. Confirma que la ruta del archivo sea correcta\n2. Comprueba si el archivo está siendo usado por otro programa\n3. Confirma que el usuario actual tenga permisos de lectura y escritura\n4. Evita caracteres especiales poco comunes en la ruta siempre que sea posible",
+      "category": "Archivo",
+      "hit_count": 0
+    },
+    {
+      "id": "kb_005",
+      "question": "Archivo de configuración dañado",
+      "keywords": [
+        "config",
+        "configuración",
+        "json",
+        "JSONDecodeError",
+        "formato",
+        "parse"
+      ],
+      "answer": "Cómo resolver problemas de configuración:\n1. No edites los archivos de configuración manualmente salvo que sea necesario\n2. Si el archivo está dañado, elimina Resource/config.json para que el programa lo genere de nuevo\n3. Haz una copia de los ajustes importantes antes de eliminar el archivo",
+      "category": "Configuración",
+      "hit_count": 0
+    },
+    {
+      "id": "kb_006",
+      "question": "Problema de dependencias",
+      "keywords": [
+        "import",
+        "module",
+        "dependencia",
+        "paquete",
+        "pip",
+        "install",
+        "ModuleNotFoundError",
+        "uv"
+      ],
+      "answer": "Cómo resolver problemas de dependencias:\n1. Ejecuta: uv sync\n2. O instala un paquete concreto: uv add <paquete>\n3. Si usas pip mediante uv: uv pip install -r requirements.txt\n4. Asegúrate de estar usando la versión correcta de Python",
+      "category": "Entorno",
+      "hit_count": 0
+    },
+    {
+      "id": "kb_007",
+      "question": "Problema de límite de solicitudes",
+      "keywords": [
+        "429",
+        "rate limit",
+        "límite",
+        "too many",
+        "quota",
+        "cuota"
+      ],
+      "answer": "Cómo actuar ante límites de solicitudes:\n1. Reduce la configuración de concurrencia\n2. Aumenta el intervalo entre solicitudes\n3. Comprueba si la cuenta tiene una restricción de cuota\n4. Considera actualizar el plan de API si el límite es demasiado bajo",
+      "category": "API",
+      "hit_count": 0
+    },
+    {
+      "id": "kb_008",
+      "question": "Longitud de contexto excedida",
+      "keywords": [
+        "context",
+        "token",
+        "length",
+        "too long",
+        "demasiado largo",
+        "max",
+        "contexto"
+      ],
+      "answer": "Cómo resolver errores de longitud de contexto:\n1. Reduce la cantidad de texto enviada en una sola solicitud de traducción\n2. Ajusta la configuración de división de texto\n3. Usa un modelo con una ventana de contexto más larga\n4. Reduce el prompt si es demasiado grande",
+      "category": "API",
+      "hit_count": 0
+    },
+    {
+      "id": "kb_009",
+      "question": "Error del servidor (500/502/503)",
+      "keywords": [
+        "500",
+        "502",
+        "503",
+        "server error",
+        "bad gateway",
+        "service unavailable",
+        "servidor",
+        "gateway"
+      ],
+      "answer": "Los errores de servidor suelen estar del lado del proveedor de API:\n\n500 Internal Server Error:\n- Error interno del servidor de API. Reintenta más tarde.\n\n502 Bad Gateway:\n- Error de gateway, a menudo causado por sobrecarga del servidor.\n- Espera unos minutos y reintenta.\n\n503 Service Unavailable:\n- El servicio no está disponible temporalmente o está en mantenimiento.\n- Consulta la página de estado del proveedor de API.\n\nCómo solucionarlo:\n1. Espera unos minutos y reintenta\n2. Reduce la concurrencia\n3. Revisa el estado del proveedor de API",
+      "category": "API",
+      "hit_count": 0
+    },
+    {
+      "id": "kb_010",
+      "question": "Error de permisos (403)",
+      "keywords": [
+        "403",
+        "forbidden",
+        "permission",
+        "permiso",
+        "acceso denegado",
+        "authorization"
+      ],
+      "answer": "Causas frecuentes del error 403:\n1. La API Key no tiene acceso al modelo seleccionado\n2. La cuenta está restringida o suspendida\n3. El recurso solicitado no está permitido\n\nCómo solucionarlo:\n1. Revisa los permisos de la API Key\n2. Confirma que el estado de la cuenta sea normal\n3. Contacta con el proveedor de API para confirmar el acceso",
+      "category": "API",
+      "hit_count": 0
+    }
+  ]
+}

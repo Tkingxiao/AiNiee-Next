@@ -7,16 +7,20 @@
 3. 向量检索 - 可选本地模型(免费)或API
 """
 
-import os
 import hashlib
+import os
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
+
 try:
     import rapidjson as json
 except ImportError:
     import json
-from typing import Optional, List, Dict, Tuple
-from dataclasses import dataclass
 
 from ModuleFolders.Diagnostic.i18n import get_text
+
+
+SUPPORTED_KB_LANGS = {"zh_CN", "zh_CNTW", "en", "ja", "ko", "ru", "es"}
 
 
 @dataclass
@@ -45,12 +49,13 @@ class KnowledgeBase:
             base_path = os.path.join(".", "Resource", "Diagnostic")
 
         self.base_path = base_path
-        self.lang = lang
-        self.kb_path = os.path.join(base_path, "knowledge_base.json")
-        self.faq_cache_path = os.path.join(base_path, "faq_cache.json")
+        self.lang = self._normalize_lang(lang)
 
         # 确保目录存在
         os.makedirs(base_path, exist_ok=True)
+
+        self.kb_path = self._knowledge_path("zh_CN")
+        self.faq_cache_path = os.path.join(base_path, self._faq_cache_filename(self.lang))
 
         # 加载数据
         self.knowledge_items: Dict[str, KnowledgeItem] = {}
@@ -59,26 +64,69 @@ class KnowledgeBase:
         self._load_knowledge_base()
         self._load_faq_cache()
 
+    @staticmethod
+    def _normalize_lang(lang: str) -> str:
+        if not lang:
+            return "en"
+
+        normalized = str(lang).replace("-", "_")
+        lowered = normalized.lower()
+        if lowered in ("zh_tw", "zh_hk", "zh_mo", "zh_hant", "zh_cntw"):
+            return "zh_CNTW"
+        if lowered.startswith("zh"):
+            return "zh_CN"
+
+        for supported in SUPPORTED_KB_LANGS:
+            if lowered == supported.lower():
+                return supported
+
+        return "en"
+
+    @staticmethod
+    def _knowledge_filename(lang: str) -> str:
+        return "knowledge_base.json" if lang == "zh_CN" else f"knowledge_base_{lang}.json"
+
+    @staticmethod
+    def _faq_cache_filename(lang: str) -> str:
+        return "faq_cache.json" if lang == "zh_CN" else f"faq_cache_{lang}.json"
+
+    def _knowledge_path(self, lang: str) -> str:
+        return os.path.join(self.base_path, self._knowledge_filename(lang))
+
+    def _knowledge_candidate_paths(self) -> List[str]:
+        candidates = []
+        for lang in (self.lang, "en", "zh_CN"):
+            path = self._knowledge_path(lang)
+            if path not in candidates:
+                candidates.append(path)
+        return candidates
+
     def _load_knowledge_base(self):
         """加载知识库"""
-        if not os.path.exists(self.kb_path):
-            self._init_default_knowledge()
-            return
+        for path in self._knowledge_candidate_paths():
+            if not os.path.exists(path):
+                continue
 
-        try:
-            with open(self.kb_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                for item_data in data.get("items", []):
-                    item = KnowledgeItem(**item_data)
-                    self.knowledge_items[item.id] = item
-        except Exception:
-            self._init_default_knowledge()
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    self.knowledge_items.clear()
+                    for item_data in data.get("items", []):
+                        item = KnowledgeItem(**item_data)
+                        self.knowledge_items[item.id] = item
+                    self.kb_path = path
+                    return
+            except Exception:
+                self.knowledge_items.clear()
+
+        self.kb_path = self._knowledge_path("zh_CN")
+        self._init_default_knowledge()
 
     def _load_faq_cache(self):
         """加载FAQ缓存"""
         if os.path.exists(self.faq_cache_path):
             try:
-                with open(self.faq_cache_path, 'r', encoding='utf-8') as f:
+                with open(self.faq_cache_path, "r", encoding="utf-8") as f:
                     self.faq_cache = json.load(f)
             except Exception:
                 self.faq_cache = {}
@@ -86,7 +134,7 @@ class KnowledgeBase:
     def _save_faq_cache(self):
         """保存FAQ缓存"""
         try:
-            with open(self.faq_cache_path, 'w', encoding='utf-8') as f:
+            with open(self.faq_cache_path, "w", encoding="utf-8") as f:
                 json.dump(self.faq_cache, f, ensure_ascii=False, indent=2)
         except Exception:
             pass
@@ -94,7 +142,7 @@ class KnowledgeBase:
     def _hash_query(self, query: str) -> str:
         """生成查询的hash"""
         # 简单标准化: 小写 + 去除多余空格
-        normalized = ' '.join(query.lower().split())
+        normalized = " ".join(query.lower().split())
         return hashlib.md5(normalized.encode()).hexdigest()[:16]
 
     def search_faq_cache(self, query: str) -> Optional[dict]:
@@ -254,7 +302,7 @@ class KnowledgeBase:
                     for item in self.knowledge_items.values()
                 ]
             }
-            with open(self.kb_path, 'w', encoding='utf-8') as f:
+            with open(self.kb_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
         except Exception:
             pass

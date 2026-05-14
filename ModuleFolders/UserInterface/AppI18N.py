@@ -92,15 +92,3 @@ def switch_runtime_language(project_root, lang):
     i18n = I18NLoader(project_root, lang)
     Base.i18n = i18n
     return i18n
-
-
-def get_base_interface_language_name(lang):
-    return {
-        "zh_CN": "简中",
-        "zh_CNTW": "繁中",
-        "ja": "日本語",
-        "ko": "英语",
-        "ru": "英语",
-        "es": "英语",
-        "en": "英语",
-    }.get(lang, "英语")

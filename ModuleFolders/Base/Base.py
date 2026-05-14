@@ -89,6 +89,7 @@ def get_logger(name: str = "ainiee") -> logging.Logger:
         logger.setLevel(logging.DEBUG)
     return logger
 
+
 # 事件列表
 class Event():
 
@@ -110,7 +111,6 @@ class Event():
     CACHE_FILE_AUTO_SAVE = 300                      # 缓存文件自动保存
     SYSTEM_STATUS_UPDATE = 310               # 系统状态更新 (用于 TUI)
 
-
     APP_UPDATE_CHECK: int = 600                             # 检查更新
     APP_UPDATE_CHECK_DONE: int = 610                        # 检查更新完成
     APP_UPDATE_DOWNLOAD: int = 620                          # 下载应用
@@ -122,10 +122,10 @@ class Event():
     TABLE_TRANSLATE_START = 800                      # 表格翻译 开始
     TABLE_TRANSLATE_DONE = 801                       # 表格翻译 完成
     TABLE_POLISH_START = 810                      # 表格润色 开始
-    TABLE_POLISH_DONE = 811                      # 表格润色 完成    
+    TABLE_POLISH_DONE = 811                      # 表格润色 完成
 
     TERM_EXTRACTION_START = 830                  # 术语提取开始
-    TERM_EXTRACTION_DONE = 831                     
+    TERM_EXTRACTION_DONE = 831
 
     TERM_TRANSLATE_SAVE_START = 832              # 实体提取开始
     TERM_TRANSLATE_SAVE_DONE = 833
@@ -133,12 +133,13 @@ class Event():
     TERM_MULTI_TRANSLATE_START = 834             # 术语多翻译开始
     TERM_MULTI_TRANSLATE_DONE = 835              # 术语多翻译完成
 
-    TRANSLATION_CHECK_START = 840                # 语言检查开始    
+    TRANSLATION_CHECK_START = 840                # 语言检查开始
 
     TABLE_UPDATE = 898                             # 表格更新
     TABLE_FORMAT = 899                             # 表格重排
 
     APP_SHUT_DOWN = 99999                          # 应用关闭
+
 
 # 软件运行状态列表
 class Status():
@@ -147,10 +148,11 @@ class Status():
     TASKING = 1001                                  # 任务中
     STOPING = 1002                                  # 停止中
     TASKSTOPPED = 1003                              # 任务已停止
-    
+
     API_TEST = 2000                                 # 接口测试中
     GLOSS_TASK = 3000                               # 术语表翻译中
     TABLE_TASK = 4001                               # 表格任务中
+
 
 class Base():
 
@@ -165,29 +167,17 @@ class Base():
 
     # 类线程锁
     CONFIG_FILE_LOCK = threading.Lock()
-    
+
     # 全局输入队列 (用于 TUI 交互)
     global_input_queue = queue.Queue()
 
-    # 多语言界面配置信息 (类变量)
-    multilingual_interface_dict = {}
-
-    # 当前语言 (类变量)
-    current_interface_language = "简中"
-
-    # 多语言配置路径
-    translation_json_file = os.path.join(".", "Resource", "Localization")
-
     # UI文本翻译
-    @classmethod # 类方法，因为要访问类变量
-    def tra(cls, text): # 修改为 cls
-        translation = cls.multilingual_interface_dict.get(text) # 使用 cls.multilingual_interface_dict
-        if translation:
-            translation_text = translation.get(cls.current_interface_language) # 使用 cls.current_interface_language
-            if translation_text:
-                return translation_text
+    @classmethod
+    def tra(cls, text):
+        i18n = getattr(cls, "i18n", None)
+        if i18n is not None:
+            return i18n.get(text)
         return text
-
 
     # 类级别的 logger
     _logger = None
@@ -209,28 +199,6 @@ class Base():
 
         # 类变量
         Base.work_status = Base.STATUS.IDLE if not hasattr(Base, "work_status") else Base.work_status
-
-
-    # 读取多语言配置信息方法
-    def load_translations(cls, folder_path):
-        combined_data = {}
-        if not os.path.exists(folder_path):
-            return combined_data
-            
-        for filename in os.listdir(folder_path):
-            if filename.endswith(".json"):
-                filepath = os.path.join(folder_path, filename)
-                try: 
-                    with open(filepath, 'r', encoding='utf-8') as f:
-                        data = json.load(f)
-                        for top_level_key in data:
-                            for key, value in data[top_level_key].items():
-                                combined_data[key] = value
-                except Exception as e:
-                    rich_print(f"[red]Error loading translation file {filename}: {e}[/red]")
-                    traceback.print_exc()
-        return combined_data
-
 
     # 检查是否处于调试模式
     def is_debug(self) -> bool:
@@ -296,7 +264,7 @@ class Base():
 
         with Base.CONFIG_FILE_LOCK:
             if os.path.exists(Base.CONFIG_PATH):
-                with open(Base.CONFIG_PATH, "r", encoding = "utf-8") as reader:
+                with open(Base.CONFIG_PATH, "r", encoding="utf-8") as reader:
                     config = json.load(reader)
             else:
                 # Silently ignore if config doesn't exist, or warn lightly
@@ -312,7 +280,7 @@ class Base():
         # 读取配置文件
         with Base.CONFIG_FILE_LOCK:
             if os.path.exists(Base.CONFIG_PATH):
-                with open(Base.CONFIG_PATH, "r", encoding = "utf-8") as reader:
+                with open(Base.CONFIG_PATH, "r", encoding="utf-8") as reader:
                     old = json.load(reader)
 
         # 对比新旧数据是否一致
@@ -330,8 +298,8 @@ class Base():
         with Base.CONFIG_FILE_LOCK:
             # Ensure directory exists
             os.makedirs(os.path.dirname(Base.CONFIG_PATH), exist_ok=True)
-            with open(Base.CONFIG_PATH, "w", encoding = "utf-8") as writer:
-                writer.write(json.dumps(old, indent = 4, ensure_ascii = False))
+            with open(Base.CONFIG_PATH, "w", encoding="utf-8") as writer:
+                writer.write(json.dumps(old, indent=4, ensure_ascii=False))
 
         return old
 
@@ -350,13 +318,13 @@ class Base():
     def load_config_from_default(self) -> None:
         # 1. 加载已有配置
         config = self.load_config()  # 从文件读取用户配置
-        
+
         # 2. 合并默认配置
         config = self.fill_config(
             old=config,  # 用户现有配置
             new=getattr(self, "default", {})  # 当前类的默认配置
         )
-        
+
         # 3. 返回合并结果
         return config
 

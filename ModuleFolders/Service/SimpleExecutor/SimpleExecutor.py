@@ -810,14 +810,14 @@ class SimpleExecutor(Base):
         target_language = data.get("target_language", "Chinese")
 
         if not filtered_terms:
-            self.warning(Base.tra("术语多翻译任务中止：没有需要翻译的术语。"))
+            self.warning(Base.tra("msg_no_terms_found"))
             self.emit(Base.EVENT.TERM_MULTI_TRANSLATE_DONE, {"status": "no_result", "results": []})
             return
 
-        self.info(Base.tra("开始执行术语多翻译任务..."))
-        self.info(f"{Base.tra('术语数量')}: {len(filtered_terms)}")
-        self.info(f"{Base.tra('翻译轮次')}: {rounds}")
-        self.info(f"{Base.tra('目标语言')}: {target_language}")
+        self.info(Base.tra("msg_starting_multi_translate"))
+        self.info(f"{Base.tra('label_term')}: {len(filtered_terms)}")
+        self.info(f"{Base.tra('msg_rounds')}: {rounds}")
+        self.info(f"{Base.tra('param_target_lang')}: {target_language}")
 
         # 准备翻译配置
         if not platform_config:
@@ -831,7 +831,7 @@ class SimpleExecutor(Base):
         total = len(filtered_terms)
 
         for idx, (src, term_data) in enumerate(filtered_terms.items(), 1):
-            self.info(f"[{idx}/{total}] {Base.tra('正在翻译')}: {src}")
+            self.info(f"[{idx}/{total}] {Base.tra('msg_translating')}: {src}")
             options = []
             seen_translations = set()
 
@@ -850,7 +850,7 @@ class SimpleExecutor(Base):
                 "selected_index": 0
             })
 
-        self.info(f"{Base.tra('术语多翻译任务完成')}! {Base.tra('共处理')} {len(multi_results)} {Base.tra('个术语')}。")
+        self.info(f"{Base.tra('msg_batch_translate_complete')}! {Base.tra('msg_found_terms')}: {len(multi_results)}")
         self.emit(Base.EVENT.TERM_MULTI_TRANSLATE_DONE, {
             "status": "success",
             "results": multi_results
@@ -922,6 +922,6 @@ Strict rules:
                 return {"dst": dst, "info": info}
 
         except Exception as e:
-            self.error(f"{Base.tra('术语翻译请求失败')}: {e}")
+            self.error(f"{Base.tra('msg_translation_error')}: {e}")
 
         return None

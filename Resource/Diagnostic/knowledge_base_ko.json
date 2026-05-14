@@ -1,0 +1,162 @@
+{
+  "version": "1.0",
+  "items": [
+    {
+      "id": "kb_001",
+      "question": "API Key 설정 문제",
+      "keywords": [
+        "api_key",
+        "api key",
+        "401",
+        "인증",
+        "authentication",
+        "invalid key",
+        "unauthorized"
+      ],
+      "answer": "API Key 문제는 보통 다음 원인으로 발생합니다.\n1. Key가 올바르게 복사되지 않았습니다. 특히 앞뒤 공백을 확인하세요.\n2. Key가 만료되었거나 비활성화되었습니다.\n3. 선택한 모델에 대한 권한이 Key에 없습니다.\n\n해결 방법:\n1. API Key를 다시 복사합니다\n2. API 제공업체 콘솔에서 Key 상태를 확인합니다\n3. 계정 잔액이나 할당량이 충분한지 확인합니다",
+      "category": "설정 문제",
+      "hit_count": 0
+    },
+    {
+      "id": "kb_002",
+      "question": "네트워크 연결 문제",
+      "keywords": [
+        "connection",
+        "timeout",
+        "네트워크",
+        "프록시",
+        "proxy",
+        "ssl",
+        "refused"
+      ],
+      "answer": "네트워크 문제 확인 절차:\n1. 네트워크 연결이 정상인지 확인합니다\n2. 프록시를 사용하는 경우 프록시 설정이 올바른지 확인합니다\n3. 일부 지역에서는 특정 API 접속에 프록시가 필요할 수 있습니다\n4. SSL 오류는 보통 프록시, 인증서 또는 로컬 네트워크 환경과 관련이 있습니다",
+      "category": "네트워크 문제",
+      "hit_count": 0
+    },
+    {
+      "id": "kb_003",
+      "question": "모델 선택 문제",
+      "keywords": [
+        "model",
+        "모델",
+        "KeyError",
+        "not found",
+        "없음",
+        "unknown model"
+      ],
+      "answer": "모델 관련 확인 사항:\n1. 인터페이스에서 모델을 선택하고 설정을 저장했는지 확인합니다\n2. 모델 이름이 정확한지 확인합니다\n3. 일부 모델은 별도 권한이 필요합니다\n4. 사용자 지정 플랫폼에서는 제공업체가 요구하는 정확한 모델명을 입력해야 합니다",
+      "category": "설정 문제",
+      "hit_count": 0
+    },
+    {
+      "id": "kb_004",
+      "question": "파일 읽기 문제",
+      "keywords": [
+        "file",
+        "파일",
+        "경로",
+        "path",
+        "FileNotFoundError",
+        "permission"
+      ],
+      "answer": "파일 문제 확인 절차:\n1. 파일 경로가 올바른지 확인합니다\n2. 파일이 다른 프로그램에서 사용 중인지 확인합니다\n3. 읽기 및 쓰기 권한이 있는지 확인합니다\n4. 가능하면 경로에 특수 문자를 사용하지 마세요",
+      "category": "파일 문제",
+      "hit_count": 0
+    },
+    {
+      "id": "kb_005",
+      "question": "설정 파일 손상",
+      "keywords": [
+        "config",
+        "설정",
+        "json",
+        "JSONDecodeError",
+        "형식",
+        "parse"
+      ],
+      "answer": "설정 파일 문제 해결:\n1. 꼭 필요한 경우가 아니면 설정 파일을 직접 수정하지 마세요\n2. 파일이 손상된 경우 Resource/config.json을 삭제하고 프로그램이 다시 생성하도록 합니다\n3. 삭제하기 전에 중요한 설정을 백업하세요",
+      "category": "설정 문제",
+      "hit_count": 0
+    },
+    {
+      "id": "kb_006",
+      "question": "의존성 패키지 문제",
+      "keywords": [
+        "import",
+        "module",
+        "의존성",
+        "패키지",
+        "pip",
+        "install",
+        "ModuleNotFoundError",
+        "uv"
+      ],
+      "answer": "의존성 문제 해결:\n1. 실행: uv sync\n2. 개별 패키지 설치: uv add <패키지명>\n3. uv를 통해 pip를 사용하는 경우: uv pip install -r requirements.txt\n4. 올바른 Python 버전을 사용하는지 확인합니다",
+      "category": "환경 문제",
+      "hit_count": 0
+    },
+    {
+      "id": "kb_007",
+      "question": "요청 속도 제한 문제",
+      "keywords": [
+        "429",
+        "rate limit",
+        "속도 제한",
+        "too many",
+        "quota",
+        "할당량"
+      ],
+      "answer": "속도 제한 처리 방법:\n1. 동시 요청 수 설정을 낮춥니다\n2. 요청 간격을 늘립니다\n3. 계정에 할당량 제한이 있는지 확인합니다\n4. 사용량이 많다면 API 플랜 업그레이드를 검토합니다",
+      "category": "API 문제",
+      "hit_count": 0
+    },
+    {
+      "id": "kb_008",
+      "question": "컨텍스트 길이 초과",
+      "keywords": [
+        "context",
+        "token",
+        "length",
+        "too long",
+        "초과",
+        "max",
+        "컨텍스트"
+      ],
+      "answer": "컨텍스트 길이 초과 해결 방법:\n1. 한 번의 번역 요청에 보내는 텍스트 양을 줄입니다\n2. 분할 설정을 조정합니다\n3. 더 긴 컨텍스트를 지원하는 모델을 사용합니다\n4. 프롬프트 내용을 줄입니다",
+      "category": "API 문제",
+      "hit_count": 0
+    },
+    {
+      "id": "kb_009",
+      "question": "서버 오류 (500/502/503)",
+      "keywords": [
+        "500",
+        "502",
+        "503",
+        "server error",
+        "bad gateway",
+        "service unavailable",
+        "서버",
+        "게이트웨이"
+      ],
+      "answer": "서버 오류는 보통 API 제공업체 측 문제입니다.\n\n500 Internal Server Error:\n- API 서버 내부 오류입니다. 잠시 후 다시 시도하세요.\n\n502 Bad Gateway:\n- 게이트웨이 오류이며 서버 과부하가 원인일 수 있습니다.\n- 몇 분 기다린 뒤 다시 시도하세요.\n\n503 Service Unavailable:\n- 서비스가 일시적으로 사용할 수 없거나 점검 중일 수 있습니다.\n- API 제공업체 상태 페이지를 확인하세요.\n\n해결 방법:\n1. 몇 분 후 다시 시도합니다\n2. 동시 요청 수를 낮춥니다\n3. API 제공업체의 서비스 상태를 확인합니다",
+      "category": "API 문제",
+      "hit_count": 0
+    },
+    {
+      "id": "kb_010",
+      "question": "권한 오류 (403)",
+      "keywords": [
+        "403",
+        "forbidden",
+        "permission",
+        "권한",
+        "접근 거부",
+        "authorization"
+      ],
+      "answer": "403 권한 오류의 일반적인 원인:\n1. API Key에 선택한 모델 접근 권한이 없습니다\n2. 계정이 제한되었거나 정지되었습니다\n3. 요청한 리소스에 접근할 수 없습니다\n\n해결 방법:\n1. API Key 권한 설정을 확인합니다\n2. 계정 상태가 정상인지 확인합니다\n3. API 제공업체에 접근 권한을 문의합니다",
+      "category": "API 문제",
+      "hit_count": 0
+    }
+  ]
+}

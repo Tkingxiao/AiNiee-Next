@@ -1,0 +1,162 @@
+{
+  "version": "1.0",
+  "items": [
+    {
+      "id": "kb_001",
+      "question": "APIキー設定の問題",
+      "keywords": [
+        "api_key",
+        "api key",
+        "401",
+        "認証",
+        "authentication",
+        "invalid key",
+        "unauthorized"
+      ],
+      "answer": "APIキーの問題は、主に次の原因で発生します。\n1. キーを正しくコピーできていない。特に前後の空白に注意してください。\n2. キーが期限切れ、または無効化されています。\n3. 選択したモデルを利用する権限がキーにありません。\n\n対処方法:\n1. APIキーをもう一度コピーする\n2. APIプロバイダーの管理画面でキーの状態を確認する\n3. アカウントの残高や利用枠が十分か確認する",
+      "category": "設定の問題",
+      "hit_count": 0
+    },
+    {
+      "id": "kb_002",
+      "question": "ネットワーク接続の問題",
+      "keywords": [
+        "connection",
+        "timeout",
+        "ネットワーク",
+        "プロキシ",
+        "proxy",
+        "ssl",
+        "refused"
+      ],
+      "answer": "ネットワーク問題の確認手順:\n1. ネットワーク接続が正常か確認する\n2. プロキシを使用している場合は、設定が正しいか確認する\n3. 一部のAPIは地域によってプロキシが必要になる場合があります\n4. SSLエラーは、プロキシ、証明書、またはローカルネットワーク環境が原因で起きることがよくあります",
+      "category": "ネットワーク",
+      "hit_count": 0
+    },
+    {
+      "id": "kb_003",
+      "question": "モデル選択の問題",
+      "keywords": [
+        "model",
+        "モデル",
+        "KeyError",
+        "not found",
+        "存在しない",
+        "unknown model"
+      ],
+      "answer": "モデル関連の確認項目:\n1. 画面でモデルを選択し、設定を保存しているか確認する\n2. モデル名が正しいか確認する\n3. 一部のモデルは追加の利用権限が必要です\n4. カスタムプラットフォームでは、プロバイダーが要求する正確なモデル名を入力してください",
+      "category": "設定の問題",
+      "hit_count": 0
+    },
+    {
+      "id": "kb_004",
+      "question": "ファイル読み込みの問題",
+      "keywords": [
+        "file",
+        "ファイル",
+        "パス",
+        "path",
+        "FileNotFoundError",
+        "permission"
+      ],
+      "answer": "ファイル問題の確認手順:\n1. ファイルパスが正しいか確認する\n2. ファイルが別のプログラムに使用されていないか確認する\n3. 読み書き権限があるか確認する\n4. パスには、できるだけ特殊な文字を使わないようにしてください",
+      "category": "ファイル",
+      "hit_count": 0
+    },
+    {
+      "id": "kb_005",
+      "question": "設定ファイルの破損",
+      "keywords": [
+        "config",
+        "設定",
+        "json",
+        "JSONDecodeError",
+        "形式",
+        "parse"
+      ],
+      "answer": "設定ファイルの問題への対処:\n1. 必要がない限り、設定ファイルを手動で編集しないでください\n2. 破損している場合は Resource/config.json を削除し、プログラムに再生成させてください\n3. 削除する前に重要な設定をバックアップしてください",
+      "category": "設定の問題",
+      "hit_count": 0
+    },
+    {
+      "id": "kb_006",
+      "question": "依存パッケージの問題",
+      "keywords": [
+        "import",
+        "module",
+        "依存",
+        "パッケージ",
+        "pip",
+        "install",
+        "ModuleNotFoundError",
+        "uv"
+      ],
+      "answer": "依存関係の問題への対処:\n1. 実行: uv sync\n2. 個別にインストールする場合: uv add <パッケージ名>\n3. pipをuv経由で使う場合: uv pip install -r requirements.txt\n4. 正しいPythonバージョンを使用しているか確認してください",
+      "category": "環境",
+      "hit_count": 0
+    },
+    {
+      "id": "kb_007",
+      "question": "リクエストのレート制限",
+      "keywords": [
+        "429",
+        "rate limit",
+        "レート制限",
+        "too many",
+        "quota",
+        "制限"
+      ],
+      "answer": "レート制限への対処:\n1. 並行数の設定を下げる\n2. リクエスト間隔を長くする\n3. アカウントに利用枠の制限がないか確認する\n4. 必要であればAPIプランのアップグレードを検討する",
+      "category": "API",
+      "hit_count": 0
+    },
+    {
+      "id": "kb_008",
+      "question": "コンテキスト長の上限超過",
+      "keywords": [
+        "context",
+        "token",
+        "length",
+        "too long",
+        "長すぎ",
+        "max",
+        "コンテキスト"
+      ],
+      "answer": "コンテキスト長超過への対処:\n1. 1回の翻訳リクエストで送るテキスト量を減らす\n2. 分割設定を調整する\n3. より長いコンテキストに対応したモデルを使う\n4. プロンプトを短くする",
+      "category": "API",
+      "hit_count": 0
+    },
+    {
+      "id": "kb_009",
+      "question": "サーバーエラー (500/502/503)",
+      "keywords": [
+        "500",
+        "502",
+        "503",
+        "server error",
+        "bad gateway",
+        "service unavailable",
+        "サーバー",
+        "ゲートウェイ"
+      ],
+      "answer": "サーバーエラーは、多くの場合APIプロバイダー側の問題です。\n\n500 Internal Server Error:\n- APIサーバー内部のエラーです。時間を置いて再試行してください。\n\n502 Bad Gateway:\n- ゲートウェイエラーです。サーバー過負荷が原因の場合があります。\n- 数分待ってから再試行してください。\n\n503 Service Unavailable:\n- サービスが一時的に利用できない、またはメンテナンス中の可能性があります。\n- APIプロバイダーのステータスページを確認してください。\n\n対処方法:\n1. 数分待ってから再試行する\n2. 並行数を下げる\n3. APIプロバイダーの稼働状況を確認する",
+      "category": "API",
+      "hit_count": 0
+    },
+    {
+      "id": "kb_010",
+      "question": "権限エラー (403)",
+      "keywords": [
+        "403",
+        "forbidden",
+        "permission",
+        "権限",
+        "アクセス拒否",
+        "authorization"
+      ],
+      "answer": "403権限エラーの主な原因:\n1. APIキーに選択したモデルへのアクセス権限がない\n2. アカウントが制限または停止されている\n3. リクエストしたリソースへのアクセスが許可されていない\n\n対処方法:\n1. APIキーの権限設定を確認する\n2. アカウント状態が正常か確認する\n3. APIプロバイダーに利用権限を確認する",
+      "category": "API",
+      "hit_count": 0
+    }
+  ]
+}

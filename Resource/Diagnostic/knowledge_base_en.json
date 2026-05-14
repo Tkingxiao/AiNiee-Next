@@ -1,0 +1,162 @@
+{
+  "version": "1.0",
+  "items": [
+    {
+      "id": "kb_001",
+      "question": "API key configuration issue",
+      "keywords": [
+        "api_key",
+        "api key",
+        "401",
+        "auth",
+        "authentication",
+        "invalid key",
+        "unauthorized"
+      ],
+      "answer": "API key problems are usually caused by:\n1. The key was not copied correctly, especially leading or trailing spaces\n2. The key has expired or was disabled\n3. The key does not have permission for the selected model\n\nHow to fix:\n1. Copy the API key again\n2. Check the key status in the API provider console\n3. Confirm that the account has enough balance or quota",
+      "category": "Configuration",
+      "hit_count": 0
+    },
+    {
+      "id": "kb_002",
+      "question": "Network connection issue",
+      "keywords": [
+        "connection",
+        "timeout",
+        "network",
+        "proxy",
+        "ssl",
+        "refused",
+        "dns"
+      ],
+      "answer": "Network troubleshooting steps:\n1. Check whether the network connection is working\n2. If you use a proxy, confirm that the proxy settings are correct\n3. Some API providers may require a proxy in certain regions\n4. SSL errors are often related to proxy settings, certificates, or the local network environment",
+      "category": "Network",
+      "hit_count": 0
+    },
+    {
+      "id": "kb_003",
+      "question": "Model selection issue",
+      "keywords": [
+        "model",
+        "KeyError",
+        "not found",
+        "not exist",
+        "unavailable",
+        "unknown model"
+      ],
+      "answer": "Model-related checks:\n1. Make sure a model is selected in the interface and the settings are saved\n2. Check whether the model name is correct\n3. Some models require extra access permission\n4. For custom providers, enter the exact model name required by the provider",
+      "category": "Configuration",
+      "hit_count": 0
+    },
+    {
+      "id": "kb_004",
+      "question": "File reading issue",
+      "keywords": [
+        "file",
+        "path",
+        "FileNotFoundError",
+        "permission",
+        "read",
+        "write",
+        "access denied"
+      ],
+      "answer": "File troubleshooting steps:\n1. Confirm that the file path is correct\n2. Check whether the file is being used by another program\n3. Confirm that the current user has read and write permission\n4. Avoid unusual special characters in file paths when possible",
+      "category": "File",
+      "hit_count": 0
+    },
+    {
+      "id": "kb_005",
+      "question": "Broken configuration file",
+      "keywords": [
+        "config",
+        "configuration",
+        "json",
+        "JSONDecodeError",
+        "format",
+        "parse"
+      ],
+      "answer": "Configuration file troubleshooting:\n1. Do not edit configuration files manually unless necessary\n2. If the file is broken, delete Resource/config.json and let the program recreate it\n3. Back up important settings before deleting the file",
+      "category": "Configuration",
+      "hit_count": 0
+    },
+    {
+      "id": "kb_006",
+      "question": "Dependency package issue",
+      "keywords": [
+        "import",
+        "module",
+        "dependency",
+        "pip",
+        "install",
+        "ModuleNotFoundError",
+        "uv"
+      ],
+      "answer": "Dependency troubleshooting:\n1. Run: uv sync\n2. Or install an individual package: uv add <package>\n3. If you use pip through uv: uv pip install -r requirements.txt\n4. Make sure the correct Python version is being used",
+      "category": "Environment",
+      "hit_count": 0
+    },
+    {
+      "id": "kb_007",
+      "question": "Rate limit issue",
+      "keywords": [
+        "429",
+        "rate limit",
+        "too many",
+        "quota",
+        "throttle",
+        "requests per minute"
+      ],
+      "answer": "How to handle rate limits:\n1. Lower the concurrency setting\n2. Increase the interval between requests\n3. Check whether the account has a quota limit\n4. Consider upgrading the API plan if the limit is too low",
+      "category": "API",
+      "hit_count": 0
+    },
+    {
+      "id": "kb_008",
+      "question": "Context length exceeded",
+      "keywords": [
+        "context",
+        "token",
+        "length",
+        "too long",
+        "max",
+        "maximum context",
+        "context_length_exceeded"
+      ],
+      "answer": "How to fix context length errors:\n1. Reduce the amount of text sent in a single translation request\n2. Adjust text splitting settings\n3. Use a model with a longer context window\n4. Shorten the prompt if it is too large",
+      "category": "API",
+      "hit_count": 0
+    },
+    {
+      "id": "kb_009",
+      "question": "Server error (500/502/503)",
+      "keywords": [
+        "500",
+        "502",
+        "503",
+        "server error",
+        "bad gateway",
+        "service unavailable",
+        "gateway",
+        "overload"
+      ],
+      "answer": "Server errors are usually on the API provider side:\n\n500 Internal Server Error:\n- Internal API server error. Retry later.\n\n502 Bad Gateway:\n- Gateway error, often caused by server overload.\n- Wait a few minutes and retry.\n\n503 Service Unavailable:\n- The service is temporarily unavailable or under maintenance.\n- Check the API provider status page.\n\nHow to fix:\n1. Wait a few minutes and retry\n2. Lower concurrency\n3. Check the API provider status",
+      "category": "API",
+      "hit_count": 0
+    },
+    {
+      "id": "kb_010",
+      "question": "Permission error (403)",
+      "keywords": [
+        "403",
+        "forbidden",
+        "permission",
+        "access denied",
+        "not allowed",
+        "authorization"
+      ],
+      "answer": "Common causes of 403 permission errors:\n1. The API key does not have access to the selected model\n2. The account is restricted or suspended\n3. The requested resource is not allowed\n\nHow to fix:\n1. Check the API key permission settings\n2. Confirm that the account status is normal\n3. Contact the API provider to confirm access permission",
+      "category": "API",
+      "hit_count": 0
+    }
+  ]
+}

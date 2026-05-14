@@ -1,0 +1,162 @@
+{
+  "version": "1.0",
+  "items": [
+    {
+      "id": "kb_001",
+      "question": "API Key 設定問題",
+      "keywords": [
+        "api_key",
+        "api key",
+        "401",
+        "認證",
+        "authentication",
+        "invalid key",
+        "金鑰"
+      ],
+      "answer": "API Key 問題通常有幾種情況：\n1. Key 沒有完整複製，特別是前後多了空白\n2. Key 已過期，或已在服務商後台被停用\n3. Key 沒有目前所選模型的使用權限\n\n處理方式：\n1. 重新複製 API Key\n2. 到 API 服務商後台確認 Key 狀態\n3. 確認帳戶餘額或額度仍然足夠",
+      "category": "設定問題",
+      "hit_count": 0
+    },
+    {
+      "id": "kb_002",
+      "question": "網路連線問題",
+      "keywords": [
+        "connection",
+        "timeout",
+        "網路",
+        "代理",
+        "proxy",
+        "ssl",
+        "refused"
+      ],
+      "answer": "網路問題可以依序檢查：\n1. 確認目前網路連線是否正常\n2. 如果有使用代理，確認代理位址與連接埠設定正確\n3. 部分 API 服務在某些地區可能需要透過代理存取\n4. SSL 錯誤多半與代理、憑證或本機網路環境有關",
+      "category": "網路問題",
+      "hit_count": 0
+    },
+    {
+      "id": "kb_003",
+      "question": "模型選擇問題",
+      "keywords": [
+        "model",
+        "模型",
+        "KeyError",
+        "not found",
+        "不存在",
+        "無法使用"
+      ],
+      "answer": "模型相關問題可先確認：\n1. 已在介面中選擇模型，並且已儲存設定\n2. 模型名稱與服務商要求的名稱完全一致\n3. 部分模型需要另外申請使用權限\n4. 自訂平台必須填入服務商實際接受的模型名稱",
+      "category": "設定問題",
+      "hit_count": 0
+    },
+    {
+      "id": "kb_004",
+      "question": "檔案讀取問題",
+      "keywords": [
+        "file",
+        "檔案",
+        "路徑",
+        "path",
+        "FileNotFoundError",
+        "permission"
+      ],
+      "answer": "檔案問題可依序排查：\n1. 確認檔案路徑正確\n2. 檢查檔案是否正被其他程式佔用\n3. 確認目前使用者有讀寫權限\n4. 路徑中盡量避免不常見的特殊字元",
+      "category": "檔案問題",
+      "hit_count": 0
+    },
+    {
+      "id": "kb_005",
+      "question": "設定檔損壞",
+      "keywords": [
+        "config",
+        "設定",
+        "json",
+        "JSONDecodeError",
+        "格式",
+        "解析"
+      ],
+      "answer": "設定檔問題可這樣處理：\n1. 除非必要，請不要手動編輯設定檔\n2. 如果設定檔已損壞，可刪除 Resource/config.json，讓程式重新產生\n3. 刪除前請先備份重要設定",
+      "category": "設定問題",
+      "hit_count": 0
+    },
+    {
+      "id": "kb_006",
+      "question": "依賴套件問題",
+      "keywords": [
+        "import",
+        "module",
+        "依賴",
+        "套件",
+        "pip",
+        "install",
+        "ModuleNotFoundError",
+        "uv"
+      ],
+      "answer": "依賴問題可嘗試：\n1. 執行：uv sync\n2. 或單獨安裝缺少的套件：uv add <套件名稱>\n3. 如果使用 pip，可透過：uv pip install -r requirements.txt\n4. 確認正在使用正確的 Python 版本",
+      "category": "環境問題",
+      "hit_count": 0
+    },
+    {
+      "id": "kb_007",
+      "question": "請求限流問題",
+      "keywords": [
+        "429",
+        "rate limit",
+        "限流",
+        "too many",
+        "quota",
+        "額度"
+      ],
+      "answer": "遇到限流可這樣處理：\n1. 降低並行數設定\n2. 增加請求間隔\n3. 檢查帳戶是否有額度限制\n4. 如果使用量較大，可以考慮升級 API 方案",
+      "category": "API 問題",
+      "hit_count": 0
+    },
+    {
+      "id": "kb_008",
+      "question": "上下文長度超限",
+      "keywords": [
+        "context",
+        "token",
+        "length",
+        "too long",
+        "超長",
+        "max",
+        "上下文"
+      ],
+      "answer": "上下文超限可這樣解決：\n1. 減少單次翻譯送出的文字量\n2. 調整分段設定\n3. 改用支援更長上下文的模型\n4. 精簡提示詞內容",
+      "category": "API 問題",
+      "hit_count": 0
+    },
+    {
+      "id": "kb_009",
+      "question": "伺服器錯誤 (500/502/503)",
+      "keywords": [
+        "500",
+        "502",
+        "503",
+        "server error",
+        "bad gateway",
+        "service unavailable",
+        "伺服器",
+        "閘道"
+      ],
+      "answer": "伺服器錯誤通常發生在 API 服務商端：\n\n500 Internal Server Error：\n- API 伺服器內部錯誤，稍後再試。\n\n502 Bad Gateway：\n- 閘道錯誤，常見原因是伺服器過載。\n- 等幾分鐘後再重試。\n\n503 Service Unavailable：\n- 服務暫時不可用，可能正在維護。\n- 可查看 API 服務商狀態頁。\n\n處理方式：\n1. 等待幾分鐘後重試\n2. 降低並行數\n3. 確認 API 服務商狀態",
+      "category": "API 問題",
+      "hit_count": 0
+    },
+    {
+      "id": "kb_010",
+      "question": "權限錯誤 (403)",
+      "keywords": [
+        "403",
+        "forbidden",
+        "permission",
+        "權限",
+        "禁止存取",
+        "授權"
+      ],
+      "answer": "403 權限錯誤常見原因：\n1. API Key 沒有存取該模型的權限\n2. 帳戶受到限制或被停用\n3. 目前請求的資源不允許存取\n\n處理方式：\n1. 檢查 API Key 權限設定\n2. 確認帳戶狀態正常\n3. 聯絡 API 服務商確認使用權限",
+      "category": "API 問題",
+      "hit_count": 0
+    }
+  ]
+}

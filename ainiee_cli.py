@@ -34,7 +34,6 @@ from ModuleFolders.Infrastructure.TaskConfig.TaskType import TaskType
 from ModuleFolders.CLI.OperationLogger import OperationLogger, log_operation
 from ModuleFolders.UserInterface.AppI18N import (
     detect_system_language,
-    get_base_interface_language_name,
     initialize_i18n,
     switch_runtime_language,
 )
@@ -122,12 +121,7 @@ class CLIMenu:
         return i18n
 
     def _sync_base_interface_language(self):
-        Base.current_interface_language = get_base_interface_language_name(current_lang)
-        if not Base.multilingual_interface_dict:
-            Base.multilingual_interface_dict = Base.load_translations(
-                Base,
-                os.path.join(PROJECT_ROOT, "Resource", "Localization"),
-            )
+        Base.i18n = i18n
 
     def apply_interface_language(self, lang):
         global current_lang, i18n
