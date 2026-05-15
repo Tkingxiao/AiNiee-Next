@@ -12,6 +12,13 @@ from rich.panel import Panel
 from rich.prompt import Prompt, IntPrompt, Confirm
 from rich.table import Table
 
+from ModuleFolders.Infrastructure.TaskConfig.ConfigProfileService import (
+    atomic_write_json,
+    default_rules_payload,
+    list_profile_names,
+    resolve_profile_path,
+)
+
 console = Console()
 
 # 特性数据的必需键
@@ -304,7 +311,8 @@ class GlossaryMenu:
                 save_result['filtered_terms'],
                 save_result['glossary_data'],
                 save_result.get('glossary_path'),
-                temp_platform_config
+                temp_platform_config,
+                save_result.get('structured_rules'),
             )
 
         except Exception as e:
@@ -601,34 +609,53 @@ class GlossaryMenu:
 
         console.print(table)
 
-    def _show_glossary_action_menu(self, filtered_terms, glossary_data, glossary_path=None, temp_config=None):
+    def _show_glossary_action_menu(self, filtered_terms, glossary_data, glossary_path=None, temp_config=None, structured_rules=None):
         """显示术语表操作菜单"""
         while True:
             console.print(f"\n[cyan]{self.i18n.get('prompt_select_action') or '请选择操作:'}[/cyan]")
             table = Table(show_header=False, box=None)
-            table.add_row("[cyan]1.[/]", self.i18n.get('option_save_without_translation') or "直接加入当前术语表（无翻译）")
-            table.add_row("[cyan]2.[/]", self.i18n.get('option_save_standalone_without_translation') or "仅另存为独立术语表（无翻译）")
-            table.add_row("[cyan]3.[/]", (self.i18n.get('option_multi_translate') or "多翻译选择") + " " + (self.i18n.get('label_current_config') or "(当前配置)"))
-            table.add_row("[cyan]4.[/]", (self.i18n.get('option_multi_translate') or "多翻译选择") + " " + (self.i18n.get('label_temp_api') or "(临时API)"))
-            table.add_row("[cyan]5.[/]", (self.i18n.get('option_set_rounds') or "设置轮询次数") + " " + (self.i18n.get('label_current_config') or "(当前配置)"))
-            table.add_row("[cyan]6.[/]", (self.i18n.get('option_set_rounds') or "设置轮询次数") + " " + (self.i18n.get('label_temp_api') or "(临时API)"))
+            table.add_row("[cyan]1.[/]", self.i18n.get('option_import_structured_rules') or "导入全部分类规则到当前配置（术语表/禁翻表/角色/世界观/文风）")
+            table.add_row("[cyan]2.[/]", self.i18n.get('option_create_rules_profile_from_analysis') or "新建规则配置文件并选定（不污染当前配置）")
+            table.add_row("[cyan]3.[/]", self.i18n.get('option_save_glossary_only_without_translation') or "仅直接加入当前术语表（无翻译）")
+            table.add_row("[cyan]4.[/]", self.i18n.get('option_save_standalone_without_translation') or "仅另存为独立术语表（无翻译）")
+            table.add_row("[cyan]5.[/]", self.i18n.get('option_save_structured_rules_standalone') or "仅另存为分类规则配置 JSON")
+            table.add_row("[cyan]6.[/]", (self.i18n.get('option_multi_translate') or "多翻译选择") + " " + (self.i18n.get('label_current_config') or "(当前配置)"))
+            table.add_row("[cyan]7.[/]", (self.i18n.get('option_multi_translate') or "多翻译选择") + " " + (self.i18n.get('label_temp_api') or "(临时API)"))
+            table.add_row("[cyan]8.[/]", (self.i18n.get('option_set_rounds') or "设置轮询次数") + " " + (self.i18n.get('label_current_config') or "(当前配置)"))
+            table.add_row("[cyan]9.[/]", (self.i18n.get('option_set_rounds') or "设置轮询次数") + " " + (self.i18n.get('label_temp_api') or "(临时API)"))
             console.print(table)
             console.print(f"\n[dim]0. {self.i18n.get('menu_back')}[/dim]")
 
             choice = IntPrompt.ask(
                 self.i18n.get('prompt_select'),
-                choices=["0", "1", "2", "3", "4", "5", "6"],
+                choices=[str(i) for i in range(10)],
                 show_choices=False,
-                default=3
+                default=2
             )
 
             if choice == 0:
                 return
             elif choice == 1:
-                self.analyzer.save_glossary_directly(glossary_data, save_mode="import", base_glossary_path=glossary_path)
+                if structured_rules:
+                    self.analyzer.save_structured_rules_directly(structured_rules, save_mode="import", base_glossary_path=glossary_path)
+                else:
+                    self.analyzer.save_glossary_directly(glossary_data, save_mode="import", base_glossary_path=glossary_path)
             elif choice == 2:
-                self.analyzer.save_glossary_directly(glossary_data, save_mode="standalone", base_glossary_path=glossary_path)
+                if not structured_rules:
+                    console.print(f"[yellow]{self.i18n.get('msg_no_structured_rules_for_profile') or '没有可写入规则配置的分类结果。'}[/yellow]")
+                    continue
+                self._create_rules_profile_from_analysis(structured_rules)
+                return
             elif choice == 3:
+                self.analyzer.save_glossary_directly(glossary_data, save_mode="import", base_glossary_path=glossary_path)
+            elif choice == 4:
+                self.analyzer.save_glossary_directly(glossary_data, save_mode="standalone", base_glossary_path=glossary_path)
+            elif choice == 5:
+                if structured_rules:
+                    self.analyzer.save_structured_rules_directly(structured_rules, save_mode="standalone", base_glossary_path=glossary_path)
+                else:
+                    console.print(f"[yellow]{self.i18n.get('msg_structured_rules_empty') or '没有可保存的分类规则。'}[/yellow]")
+            elif choice == 6:
                 # 多翻译选择（当前配置）
                 # 先保存原文术语表
                 self.analyzer.save_glossary_directly(glossary_data, save_mode="standalone", base_glossary_path=glossary_path)
@@ -640,7 +667,7 @@ class GlossaryMenu:
                     base_glossary_path=glossary_path
                 )
                 return
-            elif choice == 4:
+            elif choice == 7:
                 # 多翻译选择（临时API）
                 translate_config = self.api_manager.configure_temp_api_for_analysis()
                 if translate_config:
@@ -654,7 +681,7 @@ class GlossaryMenu:
                         base_glossary_path=glossary_path
                     )
                     return
-            elif choice == 5:
+            elif choice == 8:
                 # 设置轮询次数（当前配置）
                 rounds = IntPrompt.ask(
                     self.i18n.get('prompt_translation_rounds') or "翻译轮询次数",
@@ -667,7 +694,7 @@ class GlossaryMenu:
                 self.analyzer.save_glossary_directly(glossary_data, save_mode="standalone", base_glossary_path=glossary_path)
                 self._ask_translate_mode_and_run(filtered_terms, None, rounds, glossary_path)
                 return
-            elif choice == 6:
+            elif choice == 9:
                 # 设置轮询次数（临时API）
                 translate_config = self.api_manager.configure_temp_api_for_analysis()
                 if translate_config:
@@ -682,6 +709,26 @@ class GlossaryMenu:
                     self.analyzer.save_glossary_directly(glossary_data, save_mode="standalone", base_glossary_path=glossary_path)
                     self._ask_translate_mode_and_run(filtered_terms, translate_config, rounds, glossary_path)
                     return
+
+    def _create_rules_profile_from_analysis(self, structured_rules):
+        """提示用户输入 rules_profile 名称，并创建后切换。"""
+        while True:
+            profile_name = Prompt.ask(self.i18n.get('prompt_new_rules_profile_name') or "请输入新规则配置名").strip()
+            if not profile_name:
+                console.print(f"[yellow]{self.i18n.get('msg_rules_profile_name_required') or '规则配置名不能为空。'}[/yellow]")
+                continue
+            try:
+                self.analyzer.create_rules_profile_from_analysis(profile_name, structured_rules)
+                return
+            except FileExistsError as e:
+                console.print(f"[red]{e}[/red]")
+                if not Confirm.ask(self.i18n.get('confirm_reenter_rules_profile_name') or "是否重新输入其他名称?", default=True):
+                    return
+            except ValueError as e:
+                console.print(f"[red]{e}[/red]")
+            except Exception as e:
+                console.print(f"[red]{(self.i18n.get('msg_create_rules_profile_failed') or '创建规则配置失败: {}').format(e)}[/red]")
+                return
 
     def _ask_translate_mode_and_run(self, filtered_terms, temp_config, rounds, glossary_path=None):
         """询问翻译模式并执行"""
@@ -731,11 +778,7 @@ class GlossaryMenu:
             self.display_banner()
             console.print(Panel(f"[bold]{self.i18n.get('menu_switch_profile_short')}[/bold]"))
 
-            profiles = [f.replace(".json", "") for f in os.listdir(self.cli.rules_profiles_dir) if f.endswith(".json")]
-            if not profiles: profiles = ["default"]
-
-            # 始终包含 "None" 选项
-            all_options = ["None"] + profiles
+            all_options = list_profile_names(self.cli.rules_profiles_dir, include_none=True)
 
             p_table = Table(show_header=False, box=None)
             for i, p in enumerate(all_options):
@@ -757,9 +800,17 @@ class GlossaryMenu:
                         console.print("[red]Reserved name 'None' cannot be used.[/red]")
                         time.sleep(1)
                         continue
-                    path = os.path.join(self.cli.rules_profiles_dir, f"{new_name}.json")
-                    with open(path, 'w', encoding='utf-8') as f:
-                        json.dump({}, f)
+                    try:
+                        path, new_name = resolve_profile_path(self.cli.rules_profiles_dir, new_name)
+                    except ValueError as exc:
+                        console.print(f"[red]{exc}[/red]")
+                        time.sleep(1)
+                        continue
+                    if os.path.exists(path):
+                        console.print(f"[red]{self.i18n.get('msg_profile_invalid')}[/red]")
+                        time.sleep(1)
+                        continue
+                    atomic_write_json(path, default_rules_payload())
                     console.print(f"[green]Rules Profile '{new_name}' created.[/green]")
                     time.sleep(1)
             elif choice_str.isdigit():

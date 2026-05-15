@@ -1356,7 +1356,14 @@ export const DataService = {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ min_frequency: minFrequency, filename })
         });
-        if (!res.ok) throw new Error('Failed to save analysis');
+        if (!res.ok) {
+            let message = 'Failed to save analysis';
+            try {
+                const error = await res.json();
+                message = error?.detail || error?.message || message;
+            } catch {}
+            throw new Error(message);
+        }
         return await res.json();
     }
 };

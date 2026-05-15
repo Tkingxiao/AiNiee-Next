@@ -1,6 +1,7 @@
 import threading
 import time
 import os
+import copy
 import rapidjson as json
 from datetime import datetime, timedelta
 from ModuleFolders.Base.Base import Base
@@ -660,16 +661,13 @@ class QueueManager(Base):
             # 标记任务为执行中
             self.mark_task_executing(index)
 
-            try:
-                self._run_single_step(cli_menu, task, TaskType.TRANSLATION)
-
+            if self._run_single_step(cli_menu, task, TaskType.TRANSLATION):
                 # 完成后标记状态
                 if task.task_type == TaskType.TRANSLATE_AND_POLISH:
                     self.mark_task_completed(index, "translated")
                 else:
                     self.mark_task_completed(index, "completed")
-            except Exception as e:
-                self.error(f"Task {index+1} failed: {e}")
+            else:
                 self.mark_task_completed(index, "error")
 
         # Phase 2: Polishing
@@ -693,11 +691,9 @@ class QueueManager(Base):
                         found_task = True
                         self.mark_task_executing(i)
 
-                        try:
-                            self._run_single_step(cli_menu, task, TaskType.POLISH, resume=True)
+                        if self._run_single_step(cli_menu, task, TaskType.POLISH, resume=True):
                             self.mark_task_completed(i, "completed")
-                        except Exception as e:
-                            self.error(f"Polish task {i+1} failed: {e}")
+                        else:
                             self.mark_task_completed(i, "error")
                         break
 
@@ -710,12 +706,17 @@ class QueueManager(Base):
     def _run_single_step(self, cli_menu, task, step_type, resume=False):
         original_active_profile = cli_menu.active_profile_name
         original_rules_profile = cli_menu.active_rules_profile_name
+        original_root_config = copy.deepcopy(getattr(cli_menu, "root_config", {}))
+        original_config = copy.deepcopy(getattr(cli_menu, "config", {}))
         
         try:
             # 1. Apply Profile Base
-            if task.profile: cli_menu.active_profile_name = task.profile
-            if task.rules_profile: cli_menu.active_rules_profile_name = task.rules_profile
-            cli_menu.load_config()
+            target_profile = task.profile or original_active_profile
+            target_rules_profile = task.rules_profile or original_rules_profile
+            cli_menu.load_config(
+                active_profile_name=target_profile,
+                active_rules_profile_name=target_rules_profile,
+            )
 
             # 2. Apply Fine-grained Overrides
             cfg = cli_menu.config
@@ -784,6 +785,7 @@ class QueueManager(Base):
                 non_interactive=True,
                 from_queue=True,
                 skip_prompt_validation=skip_prompt_validation,
+                save_runtime_config=False,
             )
             if not task_ok:
                 raise RuntimeError("Task blocked before start.")
@@ -793,11 +795,14 @@ class QueueManager(Base):
                     task.status = "translated"
                 else:
                     task.status = "completed"
+            return True
         except Exception as e:
             self.error(f"Task Error: {e}")
             task.status = "error"
+            return False
         finally:
             self.save_tasks()
             cli_menu.active_profile_name = original_active_profile
             cli_menu.active_rules_profile_name = original_rules_profile
-            cli_menu.load_config()
+            cli_menu.root_config = original_root_config
+            cli_menu.config = original_config

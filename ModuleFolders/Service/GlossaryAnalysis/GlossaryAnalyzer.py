@@ -10,7 +10,25 @@ import rapidjson as json
 
 from rich.console import Console
 
+from ModuleFolders.Infrastructure.TaskConfig.ConfigProfileService import (
+    atomic_write_json,
+    normalize_rules_payload,
+    resolve_profile_path,
+    sanitize_profile_name,
+    save_root_config,
+)
+
 console = Console()
+
+
+STRUCTURED_RULE_KEYS = (
+    "prompt_dictionary_data",
+    "exclusion_list_data",
+    "characterization_data",
+    "world_building_content",
+    "writing_style_content",
+    "translation_example_data",
+)
 
 
 class GlossaryAnalyzer:
@@ -157,6 +175,7 @@ class GlossaryAnalyzer:
             console.print(f"[cyan]{self.i18n.get('msg_using_current_config') or '使用当前配置'}: {platform_config.get('target_platform')}[/cyan]")
 
         all_terms = []
+        structured_analysis = self._empty_analysis_payload()
         completed_count = 0
         error_count = 0
 
@@ -168,8 +187,10 @@ class GlossaryAnalyzer:
                     messages, system_prompt, platform_config
                 )
                 if not skip and response:
-                    terms = self._parse_glossary_response(response)
+                    parsed = self._parse_glossary_response(response)
+                    terms = parsed.get("terms", [])
                     all_terms.extend(terms)
+                    self._merge_analysis_payload(structured_analysis, parsed)
                     completed_count = 1
                     console.print(
                         f"[green]√ {self._tr('msg_analysis_complete', '分析完成!')} "
@@ -214,9 +235,11 @@ class GlossaryAnalyzer:
                     )
 
                     if not skip and response:
-                        terms = self._parse_glossary_response(response)
+                        parsed = self._parse_glossary_response(response)
+                        terms = parsed.get("terms", [])
                         with terms_lock:
                             all_terms.extend(terms)
+                            self._merge_analysis_payload(structured_analysis, parsed)
                             completed_counter[0] += 1
                         console.print(
                             f"[green]√ [{batch_idx+1:03d}] "
@@ -265,12 +288,17 @@ class GlossaryAnalyzer:
                 f"\n[cyan]{self._tr('glossary_log_batch_summary', '完成: {}/{}, 失败: {}', completed_count, len(batches), error_count)}[/cyan]"
             )
 
+        structured_analysis = self._finalize_analysis_payload(structured_analysis, all_terms)
+
         # 统计词频
         term_freq = self._calculate_term_frequency(all_terms, selected_text)
 
         if not term_freq:
+            if not self._has_non_glossary_analysis(structured_analysis):
+                console.print(f"[yellow]{self.i18n.get('msg_no_terms_found') or '未找到专有名词'}[/yellow]")
+                return None
             console.print(f"[yellow]{self.i18n.get('msg_no_terms_found') or '未找到专有名词'}[/yellow]")
-            return None
+            console.print(f"[cyan]{self._tr('msg_structured_analysis_found', '已提取到角色/世界观/禁翻表等分类设定，将继续保存分类结果。')}[/cyan]")
 
         # 返回结果供菜单层处理
         return {
@@ -281,6 +309,7 @@ class GlossaryAnalyzer:
             'analysis_mode': normalized_mode,
             'estimated_tokens': estimated_tokens,
             'prompt_file': prompt_path,
+            'structured_analysis': structured_analysis,
         }
 
     def filter_and_save(self, analysis_result, min_freq):
@@ -301,6 +330,7 @@ class GlossaryAnalyzer:
         analysis_mode = analysis_result.get('analysis_mode', 'full')
         estimated_tokens = analysis_result.get('estimated_tokens', 0)
         prompt_file = analysis_result.get('prompt_file', '')
+        structured_analysis = analysis_result.get('structured_analysis') or self._empty_analysis_payload()
 
         # 过滤低频词
         filtered_terms = {k: v for k, v in term_freq.items() if v['count'] >= min_freq}
@@ -308,7 +338,7 @@ class GlossaryAnalyzer:
         console.print(f"[green]{self.i18n.get('msg_before_filter') or '过滤前'}: {len(term_freq)}[/green]")
         console.print(f"[green]{self.i18n.get('msg_after_filter') or '过滤后'}: {len(filtered_terms)}[/green]")
 
-        if not filtered_terms:
+        if not filtered_terms and not self._has_non_glossary_analysis(structured_analysis):
             console.print(f"[yellow]{self.i18n.get('msg_no_terms_after_filter') or '过滤后无剩余词条'}[/yellow]")
             return None
 
@@ -317,14 +347,22 @@ class GlossaryAnalyzer:
         input_dir = os.path.dirname(input_path) or "."
 
         glossary_path = os.path.join(input_dir, f"{input_basename}_自动术语.json")
+        structured_path = os.path.join(input_dir, f"{input_basename}_分类规则配置.json")
         log_path = os.path.join(input_dir, f"{input_basename}_分析日志.txt")
 
         # 保存术语表
         glossary_data = self._generate_glossary_json(filtered_terms)
-        with open(glossary_path, 'w', encoding='utf-8') as f:
-            json.dump(glossary_data, f, indent=2, ensure_ascii=False)
+        if glossary_data:
+            with open(glossary_path, 'w', encoding='utf-8') as f:
+                json.dump(glossary_data, f, indent=2, ensure_ascii=False)
 
-        console.print(f"[bold green]{self.i18n.get('msg_glossary_saved') or '术语表已保存'}: {glossary_path}[/bold green]")
+            console.print(f"[bold green]{self.i18n.get('msg_glossary_saved') or '术语表已保存'}: {glossary_path}[/bold green]")
+
+        structured_rules = self._build_structured_rules_config(filtered_terms, structured_analysis)
+        if self._has_structured_rules(structured_rules):
+            with open(structured_path, 'w', encoding='utf-8') as f:
+                json.dump(structured_rules, f, indent=2, ensure_ascii=False)
+            console.print(f"[bold green]{self._tr('msg_structured_rules_saved', '分类规则配置已保存: {}', structured_path)}[/bold green]")
 
         # 保存分析日志
         self._save_glossary_analysis_log(
@@ -333,6 +371,7 @@ class GlossaryAnalyzer:
             analysis_mode=analysis_mode,
             estimated_tokens=estimated_tokens,
             prompt_file=prompt_file,
+            structured_rules=structured_rules,
         )
 
         console.print(f"[green]{self.i18n.get('msg_log_saved') or '分析日志已保存'}: {log_path}[/green]")
@@ -340,7 +379,9 @@ class GlossaryAnalyzer:
         return {
             'filtered_terms': filtered_terms,
             'glossary_data': glossary_data,
-            'glossary_path': glossary_path
+            'glossary_path': glossary_path,
+            'structured_rules': structured_rules,
+            'structured_path': structured_path,
         }
 
     def save_glossary_directly(self, glossary_data, save_mode="import", base_glossary_path=None):
@@ -357,6 +398,242 @@ class GlossaryAnalyzer:
             save_path = self._build_output_glossary_path(base_glossary_path, "_独立术语表")
             self._save_glossary_json_to_path(glossary_data, save_path)
             console.print(f"[bold green]{self.i18n.get('msg_glossary_saved') or '术语表已保存'}: {save_path}[/bold green]")
+
+    def save_structured_rules_directly(self, structured_rules, save_mode="import", base_glossary_path=None):
+        """保存分类规则配置：术语表、禁翻表、角色设定、世界观、文风和翻译示例。"""
+        if not structured_rules:
+            console.print(f"[yellow]{self._tr('msg_structured_rules_empty', '没有可保存的分类规则。')}[/yellow]")
+            return None
+
+        summary = {}
+
+        if save_mode in ("import", "both"):
+            summary = self._merge_structured_rules_into_config(structured_rules)
+            self.save_config()
+            world_status = self._tr("label_updated", "已更新") if summary.get('world_building_content', 0) else self._tr("label_none", "无")
+            style_status = self._tr("label_updated", "已更新") if summary.get('writing_style_content', 0) else self._tr("label_none", "无")
+            console.print(
+                "[bold green]"
+                + self._tr(
+                    "msg_structured_rules_imported",
+                    "分类规则已导入当前配置: 术语 {}，禁翻 {}，角色 {}，世界观 {}，文风 {}",
+                    summary.get('prompt_dictionary_data', 0),
+                    summary.get('exclusion_list_data', 0),
+                    summary.get('characterization_data', 0),
+                    world_status,
+                    style_status,
+                )
+                + "[/bold green]"
+            )
+
+        save_path = None
+        if save_mode in ("standalone", "both"):
+            save_path = self._build_output_glossary_path(base_glossary_path, "_分类规则配置")
+            self._save_glossary_json_to_path(structured_rules, save_path)
+            console.print(f"[bold green]{self._tr('msg_structured_rules_saved', '分类规则配置已保存: {}', save_path)}[/bold green]")
+
+        return {"summary": summary, "path": save_path}
+
+    def create_rules_profile_from_analysis(self, profile_name, structured_rules):
+        """把本次分析结果保存为新的 rules profile，并切换到该 profile。"""
+        profile_name = self._sanitize_rules_profile_name(profile_name)
+        if not profile_name:
+            raise ValueError(self._tr("msg_rules_profile_name_required", "规则配置名不能为空"))
+
+        if profile_name == "None":
+            raise ValueError(self._tr("msg_rules_profile_reserved", "规则配置名不能使用保留名称 None"))
+
+        os.makedirs(self.cli.rules_profiles_dir, exist_ok=True)
+        profile_path, profile_name = resolve_profile_path(self.cli.rules_profiles_dir, profile_name)
+        if os.path.exists(profile_path):
+            raise FileExistsError(self._tr("msg_rules_profile_exists", "规则配置已存在: {}", profile_name))
+
+        rules_payload = {key: structured_rules.get(key, [] if key.endswith("_data") else "") for key in STRUCTURED_RULE_KEYS}
+        rules_payload = normalize_rules_payload(rules_payload)
+        atomic_write_json(profile_path, rules_payload)
+
+        self.cli.active_rules_profile_name = profile_name
+        self.cli.root_config["active_rules_profile"] = profile_name
+        save_root_config(self.cli.root_config)
+        self.cli.load_config()
+
+        console.print(f"[bold green]{self._tr('msg_rules_profile_created_selected', '已新建并切换到规则配置: {}', profile_name)}[/bold green]")
+        console.print(f"[green]{self._tr('msg_rules_profile_file', '配置文件: {}', profile_path)}[/green]")
+        return {"profile": profile_name, "path": profile_path}
+
+    def _sanitize_rules_profile_name(self, profile_name):
+        try:
+            return sanitize_profile_name(profile_name, allow_none=True)
+        except ValueError:
+            return ""
+
+    def _empty_analysis_payload(self):
+        return {
+            "terms": [],
+            "exclusion_list_data": [],
+            "characterization_data": [],
+            "world_building_content": "",
+            "writing_style_content": "",
+            "translation_example_data": [],
+        }
+
+    def _merge_analysis_payload(self, target, source):
+        if not source:
+            return target
+
+        target.setdefault("terms", []).extend(source.get("terms", []))
+        self._extend_unique_dicts(
+            target.setdefault("exclusion_list_data", []),
+            source.get("exclusion_list_data", []),
+            ("markers", "regex"),
+        )
+        self._merge_character_lists(
+            target.setdefault("characterization_data", []),
+            source.get("characterization_data", []),
+        )
+        self._extend_unique_dicts(
+            target.setdefault("translation_example_data", []),
+            source.get("translation_example_data", []),
+            ("src", "dst"),
+        )
+        target["world_building_content"] = self._append_text_block(
+            target.get("world_building_content", ""),
+            source.get("world_building_content", ""),
+        )
+        target["writing_style_content"] = self._append_text_block(
+            target.get("writing_style_content", ""),
+            source.get("writing_style_content", ""),
+        )
+        return target
+
+    def _finalize_analysis_payload(self, payload, terms):
+        self._merge_character_lists(
+            payload.setdefault("characterization_data", []),
+            self._derive_characters_from_terms(terms),
+        )
+        if not self._normalize_glossary_text(payload.get("world_building_content")):
+            payload["world_building_content"] = self._derive_world_building_from_terms(terms)
+        return payload
+
+    def _has_non_glossary_analysis(self, payload):
+        if not payload:
+            return False
+        return any([
+            bool(payload.get("exclusion_list_data")),
+            bool(payload.get("characterization_data")),
+            bool(self._normalize_glossary_text(payload.get("world_building_content"))),
+            bool(self._normalize_glossary_text(payload.get("writing_style_content"))),
+            bool(payload.get("translation_example_data")),
+        ])
+
+    def _has_structured_rules(self, structured_rules):
+        if not structured_rules:
+            return False
+        return any([
+            bool(structured_rules.get("prompt_dictionary_data")),
+            bool(structured_rules.get("exclusion_list_data")),
+            bool(structured_rules.get("characterization_data")),
+            bool(self._normalize_glossary_text(structured_rules.get("world_building_content"))),
+            bool(self._normalize_glossary_text(structured_rules.get("writing_style_content"))),
+            bool(structured_rules.get("translation_example_data")),
+        ])
+
+    def _build_structured_rules_config(self, filtered_terms, structured_analysis):
+        return {
+            "prompt_dictionary_data": self._generate_glossary_json(filtered_terms),
+            "exclusion_list_data": structured_analysis.get("exclusion_list_data", []),
+            "characterization_data": structured_analysis.get("characterization_data", []),
+            "world_building_content": self._normalize_glossary_text(structured_analysis.get("world_building_content")),
+            "writing_style_content": self._normalize_glossary_text(structured_analysis.get("writing_style_content")),
+            "translation_example_data": structured_analysis.get("translation_example_data", []),
+        }
+
+    def _merge_structured_rules_into_config(self, structured_rules):
+        summary = {key: 0 for key in STRUCTURED_RULE_KEYS}
+
+        glossary_items = structured_rules.get("prompt_dictionary_data") or []
+        existing_glossary = self.config.get("prompt_dictionary_data", [])
+        existing_srcs = {item.get("src") for item in existing_glossary if isinstance(item, dict)}
+        for item in glossary_items:
+            if not isinstance(item, dict) or not item.get("src"):
+                continue
+            if item.get("src") in existing_srcs:
+                continue
+            existing_glossary.append(item)
+            existing_srcs.add(item.get("src"))
+            summary["prompt_dictionary_data"] += 1
+        if glossary_items:
+            self.config["prompt_dictionary_data"] = existing_glossary
+            self.config["prompt_dictionary_switch"] = True
+
+        exclusion_items = structured_rules.get("exclusion_list_data") or []
+        existing_exclusion = self.config.get("exclusion_list_data", [])
+        existing_keys = {
+            (item.get("markers", ""), item.get("regex", ""))
+            for item in existing_exclusion
+            if isinstance(item, dict)
+        }
+        for item in exclusion_items:
+            if not isinstance(item, dict):
+                continue
+            key = (item.get("markers", ""), item.get("regex", ""))
+            if not any(key) or key in existing_keys:
+                continue
+            existing_exclusion.append(item)
+            existing_keys.add(key)
+            summary["exclusion_list_data"] += 1
+        if exclusion_items:
+            self.config["exclusion_list_data"] = existing_exclusion
+            self.config["exclusion_list_switch"] = True
+
+        character_items = structured_rules.get("characterization_data") or []
+        existing_characters = self.config.get("characterization_data", [])
+        before = len(existing_characters)
+        self._merge_character_lists(existing_characters, character_items, fill_existing=True)
+        summary["characterization_data"] = max(0, len(existing_characters) - before)
+        if character_items:
+            self.config["characterization_data"] = existing_characters
+            self.config["characterization_switch"] = True
+
+        world_building = self._normalize_glossary_text(structured_rules.get("world_building_content"))
+        if world_building:
+            self.config["world_building_content"] = self._append_text_block(
+                self.config.get("world_building_content", ""),
+                world_building,
+            )
+            self.config["world_building_switch"] = True
+            summary["world_building_content"] = 1
+
+        writing_style = self._normalize_glossary_text(structured_rules.get("writing_style_content"))
+        if writing_style:
+            self.config["writing_style_content"] = self._append_text_block(
+                self.config.get("writing_style_content", ""),
+                writing_style,
+            )
+            self.config["writing_style_switch"] = True
+            summary["writing_style_content"] = 1
+
+        example_items = structured_rules.get("translation_example_data") or []
+        existing_examples = self.config.get("translation_example_data", [])
+        example_keys = {
+            (item.get("src", ""), item.get("dst", ""))
+            for item in existing_examples
+            if isinstance(item, dict)
+        }
+        for item in example_items:
+            if not isinstance(item, dict) or not item.get("src") or not item.get("dst"):
+                continue
+            key = (item.get("src", ""), item.get("dst", ""))
+            if key in example_keys:
+                continue
+            existing_examples.append(item)
+            example_keys.add(key)
+            summary["translation_example_data"] += 1
+        if example_items:
+            self.config["translation_example_data"] = existing_examples
+            self.config["translation_example_switch"] = True
+
+        return summary
 
     def multi_translate_and_select(self, filtered_terms, temp_config=None, rounds=3, save_mode="import", base_glossary_path=None):
         """
@@ -677,30 +954,336 @@ Translation|Note"""
         return None
 
     def _parse_glossary_response(self, response):
-        """解析LLM返回的术语表JSON"""
+        """解析LLM返回的分类规则 JSON，兼容旧版术语数组。"""
         import re
+        payload = self._empty_analysis_payload()
+        parsed = self._load_json_from_response(response, re)
+
+        if isinstance(parsed, list):
+            payload["terms"] = self._normalize_term_items(parsed)
+            return payload
+
+        if not isinstance(parsed, dict):
+            return payload
+
+        term_items = self._first_present(
+            parsed,
+            ("glossary", "terms", "terminology", "term_list", "prompt_dictionary_data"),
+            [],
+        )
+        payload["terms"] = self._normalize_term_items(term_items)
+
+        exclusion_items = self._first_present(
+            parsed,
+            ("exclusion_list", "non_translation_list", "no_translate", "ntl", "exclusion_list_data"),
+            [],
+        )
+        payload["exclusion_list_data"] = self._normalize_exclusion_items(exclusion_items)
+
+        character_items = self._first_present(
+            parsed,
+            ("characterization", "characters", "character_profiles", "characterization_data"),
+            [],
+        )
+        payload["characterization_data"] = self._normalize_character_items(character_items)
+
+        world_building = self._first_present(
+            parsed,
+            ("world_building", "worldview", "world_settings", "setting", "world_building_content"),
+            "",
+        )
+        payload["world_building_content"] = self._format_analysis_sections(world_building)
+
+        writing_style = self._first_present(
+            parsed,
+            ("writing_style", "style", "translation_style", "writing_style_content"),
+            "",
+        )
+        payload["writing_style_content"] = self._format_analysis_sections(writing_style)
+
+        examples = self._first_present(
+            parsed,
+            ("translation_examples", "translation_example", "translation_example_data"),
+            [],
+        )
+        payload["translation_example_data"] = self._normalize_translation_examples(examples)
+
+        return payload
+
+    def _load_json_from_response(self, response, re_module):
+        if not response:
+            return None
+
+        text = response.strip()
+        candidates = []
+        fence_match = re_module.search(r"```(?:json)?\s*([\s\S]*?)```", text, re_module.IGNORECASE)
+        if fence_match:
+            candidates.append(fence_match.group(1).strip())
+        candidates.append(text)
+
+        object_match = re_module.search(r"\{[\s\S]*\}", text)
+        if object_match:
+            candidates.append(object_match.group())
+        array_match = re_module.search(r"\[[\s\S]*\]", text)
+        if array_match:
+            candidates.append(array_match.group())
+
+        for candidate in candidates:
+            try:
+                return json.loads(candidate)
+            except Exception:
+                continue
+        return None
+
+    def _first_present(self, data, keys, default):
+        for key in keys:
+            if key in data:
+                value = data.get(key)
+                return default if value is None else value
+        return default
+
+    def _normalize_term_items(self, items):
+        if isinstance(items, dict):
+            items = items.get("items") or items.get("data") or []
+        if not isinstance(items, list):
+            return []
+
         terms = []
-
-        try:
-            # 尝试提取JSON数组
-            json_match = re.search(r'\[[\s\S]*\]', response)
-            if json_match:
-                json_str = json_match.group()
-                parsed = json.loads(json_str)
-                if isinstance(parsed, list):
-                    for item in parsed:
-                        if isinstance(item, dict) and 'src' in item:
-                            terms.append({
-                                'src': item.get('src', ''),
-                                'type': self._normalize_glossary_text(item.get('type'), '专有名词'),
-                                'info': self._normalize_glossary_info(item)
-                            })
-        except json.JSONDecodeError:
-            pass
-        except Exception:
-            pass
-
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            src = self._normalize_glossary_text(
+                item.get("src") or item.get("term") or item.get("name") or item.get("original")
+            )
+            if not src:
+                continue
+            category = self._normalize_glossary_text(item.get("category"))
+            term_type = self._normalize_glossary_text(item.get("type") or category, "专有名词")
+            terms.append({
+                "src": src,
+                "type": term_type,
+                "category": category,
+                "info": self._normalize_glossary_info(item),
+            })
         return terms
+
+    def _normalize_exclusion_items(self, items):
+        if isinstance(items, dict):
+            items = items.get("items") or items.get("data") or []
+        if isinstance(items, str):
+            items = [{"markers": line.strip()} for line in items.splitlines() if line.strip()]
+        if not isinstance(items, list):
+            return []
+
+        result = []
+        seen = set()
+        for item in items:
+            if isinstance(item, str):
+                item = {"markers": item}
+            if not isinstance(item, dict):
+                continue
+            markers = self._normalize_glossary_text(
+                item.get("markers") or item.get("marker") or item.get("src") or item.get("text")
+            )
+            regex = self._normalize_glossary_text(item.get("regex"))
+            info = self._normalize_glossary_text(
+                item.get("info") or item.get("description") or item.get("desc")
+            )
+            if not markers and not regex:
+                continue
+            key = (markers, regex)
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append({"markers": markers, "info": info, "regex": regex})
+        return result
+
+    def _normalize_character_items(self, items):
+        if isinstance(items, dict):
+            items = items.get("items") or items.get("data") or []
+        if not isinstance(items, list):
+            return []
+
+        result = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            original_name = self._normalize_glossary_text(
+                item.get("original_name") or item.get("src") or item.get("name") or item.get("original")
+            )
+            if not original_name:
+                continue
+            additional_parts = []
+            for key in ("identity", "role", "relationship", "relationships", "info", "description", "desc"):
+                value = self._normalize_glossary_text(item.get(key))
+                if value:
+                    additional_parts.append(value)
+            additional_info = self._normalize_glossary_text(
+                item.get("additional_info"),
+                "；".join(dict.fromkeys(additional_parts)),
+            )
+            result.append({
+                "original_name": original_name,
+                "translated_name": self._normalize_glossary_text(
+                    item.get("translated_name") or item.get("dst") or item.get("translation")
+                ),
+                "gender": self._normalize_glossary_text(item.get("gender")),
+                "age": self._normalize_glossary_text(item.get("age")),
+                "personality": self._normalize_glossary_text(item.get("personality")),
+                "speech_style": self._normalize_glossary_text(
+                    item.get("speech_style") or item.get("speaking_style") or item.get("tone")
+                ),
+                "additional_info": additional_info,
+            })
+        return result
+
+    def _normalize_translation_examples(self, items):
+        if isinstance(items, dict):
+            items = items.get("items") or items.get("data") or []
+        if not isinstance(items, list):
+            return []
+
+        result = []
+        seen = set()
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            src = self._normalize_glossary_text(item.get("src") or item.get("source") or item.get("original"))
+            dst = self._normalize_glossary_text(item.get("dst") or item.get("target") or item.get("translation"))
+            if not src:
+                continue
+            key = (src, dst)
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append({"src": src, "dst": dst})
+        return result
+
+    def _format_analysis_sections(self, value):
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, list):
+            return "\n\n".join(
+                block for block in (self._format_analysis_sections(item) for item in value) if block
+            )
+        if isinstance(value, dict):
+            title = self._normalize_glossary_text(value.get("title") or value.get("name") or value.get("category"))
+            content = value.get("content")
+            if content is None:
+                content = value.get("description") or value.get("info") or value.get("summary")
+            content_text = self._format_analysis_sections(content) if isinstance(content, (list, dict)) else self._normalize_glossary_text(content)
+            if not content_text:
+                parts = []
+                for key, item_value in value.items():
+                    if key in ("title", "name", "category"):
+                        continue
+                    item_text = self._format_analysis_sections(item_value)
+                    if item_text:
+                        parts.append(f"{key}: {item_text}")
+                content_text = "\n".join(parts)
+            if title and content_text:
+                return f"## {title}\n{content_text}"
+            return content_text
+        return str(value).strip()
+
+    def _append_text_block(self, existing, addition):
+        existing = self._normalize_glossary_text(existing)
+        addition = self._normalize_glossary_text(addition)
+        if not addition:
+            return existing
+        if addition in existing:
+            return existing
+        return f"{existing.rstrip()}\n\n{addition}" if existing else addition
+
+    def _extend_unique_dicts(self, target, incoming, key_fields):
+        seen = {
+            tuple(self._normalize_glossary_text(item.get(field)) for field in key_fields)
+            for item in target
+            if isinstance(item, dict)
+        }
+        for item in incoming or []:
+            if not isinstance(item, dict):
+                continue
+            key = tuple(self._normalize_glossary_text(item.get(field)) for field in key_fields)
+            if not any(key) or key in seen:
+                continue
+            target.append(item)
+            seen.add(key)
+        return target
+
+    def _merge_character_lists(self, target, incoming, fill_existing=False):
+        by_name = {
+            self._normalize_glossary_text(item.get("original_name")): item
+            for item in target
+            if isinstance(item, dict) and self._normalize_glossary_text(item.get("original_name"))
+        }
+        for item in incoming or []:
+            if not isinstance(item, dict):
+                continue
+            name = self._normalize_glossary_text(item.get("original_name"))
+            if not name:
+                continue
+            existing = by_name.get(name)
+            if existing:
+                if fill_existing:
+                    for key, value in item.items():
+                        value_text = self._normalize_glossary_text(value)
+                        if value_text and not self._normalize_glossary_text(existing.get(key)):
+                            existing[key] = value
+                continue
+            target.append(item)
+            by_name[name] = item
+        return target
+
+    def _derive_characters_from_terms(self, terms):
+        result = []
+        for term in terms:
+            term_type = self._normalize_glossary_text(term.get("type")).lower()
+            category = self._normalize_glossary_text(term.get("category")).lower()
+            if not any(key in term_type or key in category for key in ("人名", "人物", "角色", "character", "person")):
+                continue
+            src = self._normalize_glossary_text(term.get("src"))
+            if not src:
+                continue
+            info = self._normalize_glossary_text(term.get("info"))
+            result.append({
+                "original_name": src,
+                "translated_name": "",
+                "gender": "",
+                "age": "",
+                "personality": "",
+                "speech_style": "",
+                "additional_info": "" if info.lower() in ("null", "none") else info,
+            })
+        return result
+
+    def _derive_world_building_from_terms(self, terms):
+        lines = []
+        for term in terms:
+            term_type = self._normalize_glossary_text(term.get("type"))
+            category = self._normalize_glossary_text(term.get("category"))
+            type_text = f"{category}/{term_type}" if category and category != term_type else term_type
+            type_lower = type_text.lower()
+            if any(key in type_lower for key in ("人名", "人物", "角色", "character", "person")):
+                continue
+            if not any(key in type_lower for key in (
+                "世界", "设定", "地名", "地点", "组织", "势力", "技能", "能力", "系统",
+                "术语", "place", "location", "organization", "faction", "skill", "ability",
+                "system", "world", "setting", "term",
+            )):
+                continue
+            src = self._normalize_glossary_text(term.get("src"))
+            if not src:
+                continue
+            info = self._normalize_glossary_text(term.get("info"))
+            suffix = "" if info.lower() in ("", "null", "none") else f"：{info}"
+            lines.append(f"- {src}（{type_text or '设定'}）{suffix}")
+        if not lines:
+            return ""
+        title = self._tr("glossary_world_building_clues_title", "世界观与设定线索")
+        return f"## {title}\n" + "\n".join(dict.fromkeys(lines))
 
     def _normalize_glossary_text(self, value, default=""):
         if value is None:
@@ -820,6 +1403,7 @@ Translation|Note"""
         analysis_mode="full",
         estimated_tokens=0,
         prompt_file="",
+        structured_rules=None,
     ):
         """保存分析日志文件"""
         range_str = (
@@ -862,6 +1446,18 @@ Translation|Note"""
             self._tr("glossary_log_total_before_filter", "过滤前总数: {}", len(all_terms)),
             self._tr("glossary_log_total_after_filter", "过滤后总数: {}", len(filtered)),
         ])
+
+        if structured_rules:
+            log_lines.extend([
+                "",
+                f"=== {self._tr('glossary_log_structured_rules_title', '分类规则统计')} ===",
+                self._tr("glossary_log_structured_glossary_count", "术语表: {}", len(structured_rules.get('prompt_dictionary_data', []))),
+                self._tr("glossary_log_structured_exclusion_count", "禁翻表: {}", len(structured_rules.get('exclusion_list_data', []))),
+                self._tr("glossary_log_structured_character_count", "角色设定: {}", len(structured_rules.get('characterization_data', []))),
+                self._tr("glossary_log_structured_world_chars", "世界观设定: {} 字符", len(structured_rules.get('world_building_content', ''))),
+                self._tr("glossary_log_structured_style_chars", "文风要求: {} 字符", len(structured_rules.get('writing_style_content', ''))),
+                self._tr("glossary_log_structured_example_count", "翻译示例: {}", len(structured_rules.get('translation_example_data', []))),
+            ])
 
         with open(log_path, 'w', encoding='utf-8') as f:
             f.write("\n".join(log_lines) + "\n")

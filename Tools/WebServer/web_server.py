@@ -44,6 +44,24 @@ from Tools.MCPServer.security import (
     sanitize_json_text_for_mcp,
     strip_mcp_security_metadata,
 )
+from ModuleFolders.Infrastructure.TaskConfig.ConfigProfileService import (
+    RULE_PROFILE_KEYS,
+    atomic_write_json,
+    deep_merge,
+    list_profile_names,
+    load_effective_config,
+    load_json_file,
+    load_master_preset,
+    load_root_config,
+    normalize_rules_payload,
+    resolve_profile_path,
+    save_effective_config,
+    save_root_config,
+    save_rule_value,
+    save_setting_value,
+    sanitize_profile_name,
+    split_effective_config,
+)
 
 _MANGA_OPTIONAL_HINT = "主程序其它功能不受影响；只有在使用漫画翻译时才需要补齐漫画模块。"
 
@@ -651,26 +669,14 @@ async def web_session_middleware(request: Request, call_next):
 
 def get_config_mode():
     """Checks if the config is in 'profile' mode or 'legacy' single-file mode."""
-    if not os.path.exists(ROOT_CONFIG_FILE):
-        return "legacy", {}
-    try:
-        with open(ROOT_CONFIG_FILE, 'r', encoding='utf-8-sig') as f:
-            config = json.load(f)
-        if "active_profile" in config:
-            return "profile", config
-        else:
-            return "legacy", config
-    except (IOError, json.JSONDecodeError):
-        return "legacy", {}
+    return "profile", load_root_config()
 
 def get_active_profile_path() -> str:
     """Gets the full path to the active profile JSON file."""
-    mode, config = get_config_mode()
-    if mode == "legacy":
-        return ROOT_CONFIG_FILE
-    
+    _, config = get_config_mode()
     profile_name = config.get("active_profile", "default")
-    return os.path.join(PROFILES_PATH, f"{profile_name}.json")
+    profile_path, _ = resolve_profile_path(PROFILES_PATH, profile_name)
+    return profile_path
 
 def _load_web_i18n_data(lang: str) -> Dict[str, str]:
     normalized = lang or "zh_CN"
@@ -730,10 +736,11 @@ def _web_tr(key: str, default: Optional[str] = None, *args, lang: Optional[str] 
 
 def get_active_rules_profile_path() -> str:
     """Gets the full path to the active rules profile JSON file."""
-    mode, root_config = get_config_mode()
+    _, root_config = get_config_mode()
     rules_profile = root_config.get("active_rules_profile", "default")
     os.makedirs(RULES_PROFILES_PATH, exist_ok=True)
-    return os.path.join(RULES_PROFILES_PATH, f"{rules_profile}.json")
+    rules_path, _ = resolve_profile_path(RULES_PROFILES_PATH, rules_profile, allow_none=True)
+    return rules_path
 
 
 def _ensure_no_mcp_secret_placeholder(data: Any, context: str):
@@ -750,18 +757,10 @@ def _ensure_no_mcp_secret_placeholder(data: Any, context: str):
 def save_rule_generic(key: str, value: Any):
     """Helper to save a specific rule key to the active RULES profile."""
     global _config_cache
-    target_path = get_active_rules_profile_path()
     try:
-        current_rules = {}
-        if os.path.exists(target_path):
-            try:
-                with open(target_path, 'r', encoding='utf-8-sig') as f:
-                    current_rules = json.load(f)
-            except: pass
-        current_rules[key] = value
-        os.makedirs(os.path.dirname(target_path), exist_ok=True)
-        with open(target_path, 'w', encoding='utf-8') as f:
-            json.dump(current_rules, f, indent=4, ensure_ascii=False)
+        if key not in RULE_PROFILE_KEYS:
+            raise ValueError(f"{key} is not a rules profile key")
+        save_rule_value(key, value)
         _config_cache.clear()
         return True
     except Exception as e:
@@ -770,18 +769,11 @@ def save_rule_generic(key: str, value: Any):
 def save_config_generic(key: str, value: Any):
     """Helper to save a specific key to the active SETTINGS profile."""
     global _config_cache
-    target_path = get_active_profile_path()
     try:
-        current_config = {}
-        if os.path.exists(target_path):
-            try:
-                with open(target_path, 'r', encoding='utf-8-sig') as f:
-                    current_config = json.load(f)
-            except: pass
-        current_config[key] = value
-        os.makedirs(os.path.dirname(target_path), exist_ok=True)
-        with open(target_path, 'w', encoding='utf-8') as f:
-            json.dump(current_config, f, indent=4, ensure_ascii=False)
+        if key in RULE_PROFILE_KEYS:
+            save_rule_value(key, value)
+        else:
+            save_setting_value(key, value)
         _config_cache.clear()
         return True
     except Exception as e:
@@ -814,47 +806,24 @@ async def get_version():
 @app.post("/api/config")
 async def save_config(config: AppConfig, request: Request):
     """
-    Saves the provided JSON to the active configuration file (settings only).
+    Saves the provided JSON to the active settings profile, rules profile, and root config.
     """
     global _config_cache
-    target_path = get_active_profile_path()
-
-    # Identify keys that belong to rules (to exclude them from settings save)
-    rule_keys = [
-        "prompt_dictionary_data", "exclusion_list_data", "characterization_data",
-        "world_building_content", "writing_style_content", "translation_example_data"
-    ]
 
     try:
         config_dict = config.model_dump(exclude_unset=True) if hasattr(config, 'model_dump') else config.dict(exclude_unset=True)
         config_dict = strip_mcp_security_metadata(config_dict)
-
-        # Filter out rule data to prevent corruption/desync
-        settings_only = {k: v for k, v in config_dict.items() if k not in rule_keys}
-
-        # Read existing config first to preserve fields not sent by frontend
-        current_config = {}
-        if os.path.exists(target_path):
-            try:
-                with open(target_path, 'r', encoding='utf-8-sig') as f:
-                    current_config = json.load(f)
-            except:
-                pass
+        current_config = dict(_load_active_config_payload())
 
         # MCP 读取配置时会看到脱敏后的占位符，这里写回前要恢复当前已保存的真实密钥。
         if is_mcp_request(request):
-            settings_only = restore_redacted_secrets(settings_only, current_config)
-            _ensure_no_mcp_secret_placeholder(settings_only, "Config payload")
+            config_dict = restore_redacted_secrets(config_dict, current_config)
+            _ensure_no_mcp_secret_placeholder(config_dict, "Config payload")
 
-        # Merge new settings into existing config
-        current_config.update(settings_only)
-
-        os.makedirs(os.path.dirname(target_path), exist_ok=True)
-        with open(target_path, 'w', encoding='utf-8') as f:
-            json.dump(current_config, f, indent=4, ensure_ascii=False)
-
+        current_config.update(config_dict)
+        save_effective_config(current_config)
         _config_cache.clear()
-        return {"message": "Settings saved successfully."}
+        return {"message": "Config saved successfully."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to write to config file: {e}")
 
@@ -867,46 +836,14 @@ def _load_active_config_payload() -> Dict[str, Any]:
     """
     global _config_cache
 
-    mode, root_config = get_config_mode()
+    _, root_config = get_config_mode()
     current_profile_name = root_config.get("active_profile", "default")
     current_rules_name = root_config.get("active_rules_profile", "default")
 
     cache_key = f"{current_profile_name}_{current_rules_name}"
     if cache_key in _config_cache:
         return _config_cache[cache_key]
-
-    # 1. Load Base Config
-    profile_path = get_active_profile_path()
-    loaded_config = {}
-    if os.path.exists(profile_path):
-        try:
-            with open(profile_path, 'r', encoding='utf-8-sig') as f:
-                loaded_config = json.load(f)
-        except: pass
-
-    # 2. Load Rules Config
-    rules_config = {}
-    if current_rules_name and current_rules_name != "None":
-        rules_path = get_active_rules_profile_path()
-        if os.path.exists(rules_path):
-            try:
-                with open(rules_path, 'r', encoding='utf-8-sig') as f:
-                    rules_config = json.load(f)
-            except: pass
-
-    # 3. Merge (Rules override Profile if keys overlap)
-    rule_keys = [
-        "prompt_dictionary_data", "exclusion_list_data", "characterization_data",
-        "world_building_content", "writing_style_content", "translation_example_data"
-    ]
-    
-    for k in rule_keys:
-        if k in rules_config:
-            loaded_config[k] = rules_config[k]
-
-    # Meta
-    loaded_config["active_profile"] = current_profile_name
-    loaded_config["active_rules_profile"] = current_rules_name
+    loaded_config = load_effective_config(root_config=root_config, create_missing=False)
 
     # 防护：确保 response_check_switch 是正确的 dict 类型
     default_check_switch = {
@@ -931,32 +868,6 @@ async def get_config(request: Request):
         return sanitize_data_for_mcp(loaded_config, path="/api/config")
 
     return loaded_config
-
-def save_config_generic(key: str, value: Any):
-    """Helper to save a specific key to the active profile."""
-    global _config_cache
-    target_path = get_active_profile_path()
-    try:
-        # Load existing config to preserve other fields
-        current_config = {}
-        if os.path.exists(target_path):
-            try:
-                with open(target_path, 'r', encoding='utf-8-sig') as f:
-                    current_config = json.load(f)
-            except:
-                pass # If file is corrupt, we might overwrite, or maybe backup first? For now, we proceed.
-        
-        current_config[key] = value
-        
-        os.makedirs(os.path.dirname(target_path), exist_ok=True)
-        with open(target_path, 'w', encoding='utf-8') as f:
-            json.dump(current_config, f, indent=4, ensure_ascii=False)
-            
-        _config_cache.clear()
-        return True
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to save {key}: {e}")
-
 @app.get("/api/glossary", response_model=List[GlossaryItem])
 async def get_glossary():
     config = _load_active_config_payload()
@@ -1181,6 +1092,7 @@ _analysis_state = {
     "logs": [],
     "estimated_tokens": 0,
     "analysis_mode": "full",
+    "structured_analysis": {},
 }
 
 @app.get("/api/glossary/analysis/status")
@@ -1206,6 +1118,7 @@ async def start_glossary_analysis(request: GlossaryAnalysisRequest):
         "logs": [f"[{datetime.now().strftime('%H:%M:%S')}] {_web_tr('glossary_log_start_analysis', '开始分析', lang=lang)}: {request.input_path}"],
         "estimated_tokens": 0,
         "analysis_mode": request.analysis_mode,
+        "structured_analysis": {},
         "lang": lang,
     }
 
@@ -1278,12 +1191,8 @@ def _run_glossary_analysis(input_path: str, analysis_percent: int, analysis_line
 
         lang = _analysis_state.get("lang") or _get_web_i18n_lang()
 
-        # Load config
-        config = {}
-        config_file = get_active_profile_path()
-        if os.path.exists(config_file):
-            with open(config_file, 'r', encoding='utf-8') as f:
-                config = json.load(f)
+        # Load merged config, including active rules profile.
+        config = _load_active_config_payload()
         if config.get("interface_language"):
             lang = config.get("interface_language")
             _analysis_state["lang"] = lang
@@ -1359,6 +1268,7 @@ def _run_glossary_analysis(input_path: str, analysis_percent: int, analysis_line
             _add_analysis_log_i18n("glossary_log_using_current_config", "使用当前配置: {}", platform_config.get('target_platform', 'unknown'))
 
         all_terms = []
+        structured_analysis = _empty_glossary_analysis_payload()
 
         if normalized_mode == "full":
             _analysis_state["total"] = 1
@@ -1370,8 +1280,10 @@ def _run_glossary_analysis(input_path: str, analysis_percent: int, analysis_line
                 skip, _, response, prompt_tokens, completion_tokens = requester.sent_request(messages, system_prompt, platform_config)
 
                 if not skip and response:
-                    terms = _parse_glossary_response(response)
+                    parsed = _parse_glossary_response(response)
+                    terms = parsed.get("terms", [])
                     all_terms.extend(terms)
+                    _merge_glossary_analysis_payload(structured_analysis, parsed)
                     _analysis_state["progress"] = 1
                     _analysis_state["message"] = _web_tr("glossary_log_analysis_done_tokens", "分析完成，Token: {}", f"{prompt_tokens}+{completion_tokens}", lang=lang)
                     _add_analysis_log_i18n(
@@ -1413,9 +1325,11 @@ def _run_glossary_analysis(input_path: str, analysis_percent: int, analysis_line
                     skip, _, response, _, _ = requester.sent_request(messages, system_prompt, platform_config)
 
                     if not skip and response:
-                        terms = _parse_glossary_response(response)
+                        parsed = _parse_glossary_response(response)
+                        terms = parsed.get("terms", [])
                         with terms_lock:
                             all_terms.extend(terms)
+                            _merge_glossary_analysis_payload(structured_analysis, parsed)
                             _analysis_state["progress"] += 1
                             _analysis_state["message"] = _web_tr(
                                 "glossary_log_batch_progress",
@@ -1438,6 +1352,8 @@ def _run_glossary_analysis(input_path: str, analysis_percent: int, analysis_line
                 batch_infos = list(enumerate(batches))
                 list(executor.map(analyze_batch, batch_infos))
 
+        structured_analysis = _finalize_glossary_analysis_payload(structured_analysis, all_terms)
+
         # Calculate frequency
         term_freq = _calculate_term_frequency(all_terms, selected_text)
 
@@ -1454,6 +1370,7 @@ def _run_glossary_analysis(input_path: str, analysis_percent: int, analysis_line
         _analysis_state["status"] = "completed"
         _analysis_state["message"] = _web_tr("glossary_log_analysis_completed_terms", "分析完成，发现 {} 个专有名词", len(results), lang=lang)
         _analysis_state["results"] = results
+        _analysis_state["structured_analysis"] = structured_analysis
         _add_analysis_log_i18n("glossary_log_analysis_completed_terms", "分析完成，发现 {} 个专有名词", len(results))
 
     except Exception as e:
@@ -1461,25 +1378,285 @@ def _run_glossary_analysis(input_path: str, analysis_percent: int, analysis_line
         _analysis_state["message"] = _web_tr("glossary_log_analysis_error_detail", "分析出错: {}", str(e))
         _add_analysis_log_i18n("glossary_log_error_message", "错误: {}", str(e))
 
-def _parse_glossary_response(response: str) -> list:
+def _empty_glossary_analysis_payload() -> dict:
+    return {
+        "terms": [],
+        "exclusion_list_data": [],
+        "characterization_data": [],
+        "world_building_content": "",
+        "writing_style_content": "",
+        "translation_example_data": [],
+    }
+
+def _merge_glossary_analysis_payload(target: dict, source: dict) -> dict:
+    if not source:
+        return target
+    target.setdefault("terms", []).extend(source.get("terms", []))
+    _extend_unique_dicts(target.setdefault("exclusion_list_data", []), source.get("exclusion_list_data", []), ("markers", "regex"))
+    _merge_character_lists(target.setdefault("characterization_data", []), source.get("characterization_data", []))
+    _extend_unique_dicts(target.setdefault("translation_example_data", []), source.get("translation_example_data", []), ("src", "dst"))
+    target["world_building_content"] = _append_text_block(target.get("world_building_content", ""), source.get("world_building_content", ""))
+    target["writing_style_content"] = _append_text_block(target.get("writing_style_content", ""), source.get("writing_style_content", ""))
+    return target
+
+def _finalize_glossary_analysis_payload(payload: dict, terms: list) -> dict:
+    _merge_character_lists(payload.setdefault("characterization_data", []), _derive_characters_from_terms(terms))
+    if not _normalize_glossary_text(payload.get("world_building_content")):
+        payload["world_building_content"] = _derive_world_building_from_terms(terms)
+    return payload
+
+def _parse_glossary_response(response: str) -> dict:
     import re
+    payload = _empty_glossary_analysis_payload()
+    parsed = _load_json_from_glossary_response(response, re)
+
+    if isinstance(parsed, list):
+        payload["terms"] = _normalize_term_items(parsed)
+        return payload
+
+    if not isinstance(parsed, dict):
+        return payload
+
+    payload["terms"] = _normalize_term_items(_first_present(parsed, ("glossary", "terms", "terminology", "term_list", "prompt_dictionary_data"), []))
+    payload["exclusion_list_data"] = _normalize_exclusion_items(_first_present(parsed, ("exclusion_list", "non_translation_list", "no_translate", "ntl", "exclusion_list_data"), []))
+    payload["characterization_data"] = _normalize_character_items(_first_present(parsed, ("characterization", "characters", "character_profiles", "characterization_data"), []))
+    payload["world_building_content"] = _format_analysis_sections(_first_present(parsed, ("world_building", "worldview", "world_settings", "setting", "world_building_content"), ""))
+    payload["writing_style_content"] = _format_analysis_sections(_first_present(parsed, ("writing_style", "style", "translation_style", "writing_style_content"), ""))
+    payload["translation_example_data"] = _normalize_translation_examples(_first_present(parsed, ("translation_examples", "translation_example", "translation_example_data"), []))
+    return payload
+
+def _load_json_from_glossary_response(response: str, re_module):
+    if not response:
+        return None
+    text = response.strip()
+    candidates = []
+    fence_match = re_module.search(r"```(?:json)?\s*([\s\S]*?)```", text, re_module.IGNORECASE)
+    if fence_match:
+        candidates.append(fence_match.group(1).strip())
+    candidates.append(text)
+    object_match = re_module.search(r"\{[\s\S]*\}", text)
+    if object_match:
+        candidates.append(object_match.group())
+    array_match = re_module.search(r"\[[\s\S]*\]", text)
+    if array_match:
+        candidates.append(array_match.group())
+    for candidate in candidates:
+        try:
+            return json.loads(candidate)
+        except Exception:
+            continue
+    return None
+
+def _first_present(data: dict, keys: tuple, default):
+    for key in keys:
+        if key in data:
+            value = data.get(key)
+            return default if value is None else value
+    return default
+
+def _normalize_term_items(items) -> list:
+    if isinstance(items, dict):
+        items = items.get("items") or items.get("data") or []
+    if not isinstance(items, list):
+        return []
     terms = []
-    try:
-        json_match = re.search(r'\[[\s\S]*\]', response)
-        if json_match:
-            json_str = json_match.group()
-            parsed = json.loads(json_str)
-            if isinstance(parsed, list):
-                for item in parsed:
-                    if isinstance(item, dict) and 'src' in item:
-                        terms.append({
-                            'src': item.get('src', ''),
-                            'type': _normalize_glossary_text(item.get('type'), '专有名词'),
-                            'info': _normalize_glossary_info(item)
-                        })
-    except:
-        pass
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        src = _normalize_glossary_text(item.get("src") or item.get("term") or item.get("name") or item.get("original"))
+        if not src:
+            continue
+        category = _normalize_glossary_text(item.get("category"))
+        terms.append({
+            "src": src,
+            "type": _normalize_glossary_text(item.get("type") or category, "专有名词"),
+            "category": category,
+            "info": _normalize_glossary_info(item),
+        })
     return terms
+
+def _normalize_exclusion_items(items) -> list:
+    if isinstance(items, dict):
+        items = items.get("items") or items.get("data") or []
+    if isinstance(items, str):
+        items = [{"markers": line.strip()} for line in items.splitlines() if line.strip()]
+    if not isinstance(items, list):
+        return []
+    result = []
+    seen = set()
+    for item in items:
+        if isinstance(item, str):
+            item = {"markers": item}
+        if not isinstance(item, dict):
+            continue
+        markers = _normalize_glossary_text(item.get("markers") or item.get("marker") or item.get("src") or item.get("text"))
+        regex = _normalize_glossary_text(item.get("regex"))
+        info = _normalize_glossary_text(item.get("info") or item.get("description") or item.get("desc"))
+        key = (markers, regex)
+        if (not markers and not regex) or key in seen:
+            continue
+        seen.add(key)
+        result.append({"markers": markers, "info": info, "regex": regex})
+    return result
+
+def _normalize_character_items(items) -> list:
+    if isinstance(items, dict):
+        items = items.get("items") or items.get("data") or []
+    if not isinstance(items, list):
+        return []
+    result = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        original_name = _normalize_glossary_text(item.get("original_name") or item.get("src") or item.get("name") or item.get("original"))
+        if not original_name:
+            continue
+        additional_parts = []
+        for key in ("identity", "role", "relationship", "relationships", "info", "description", "desc"):
+            value = _normalize_glossary_text(item.get(key))
+            if value:
+                additional_parts.append(value)
+        result.append({
+            "original_name": original_name,
+            "translated_name": _normalize_glossary_text(item.get("translated_name") or item.get("dst") or item.get("translation")),
+            "gender": _normalize_glossary_text(item.get("gender")),
+            "age": _normalize_glossary_text(item.get("age")),
+            "personality": _normalize_glossary_text(item.get("personality")),
+            "speech_style": _normalize_glossary_text(item.get("speech_style") or item.get("speaking_style") or item.get("tone")),
+            "additional_info": _normalize_glossary_text(item.get("additional_info"), "；".join(dict.fromkeys(additional_parts))),
+        })
+    return result
+
+def _normalize_translation_examples(items) -> list:
+    if isinstance(items, dict):
+        items = items.get("items") or items.get("data") or []
+    if not isinstance(items, list):
+        return []
+    result = []
+    seen = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        src = _normalize_glossary_text(item.get("src") or item.get("source") or item.get("original"))
+        dst = _normalize_glossary_text(item.get("dst") or item.get("target") or item.get("translation"))
+        key = (src, dst)
+        if not src or key in seen:
+            continue
+        seen.add(key)
+        result.append({"src": src, "dst": dst})
+    return result
+
+def _format_analysis_sections(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        return "\n\n".join(block for block in (_format_analysis_sections(item) for item in value) if block)
+    if isinstance(value, dict):
+        title = _normalize_glossary_text(value.get("title") or value.get("name") or value.get("category"))
+        content = value.get("content")
+        if content is None:
+            content = value.get("description") or value.get("info") or value.get("summary")
+        content_text = _format_analysis_sections(content) if isinstance(content, (list, dict)) else _normalize_glossary_text(content)
+        if not content_text:
+            parts = []
+            for key, item_value in value.items():
+                if key in ("title", "name", "category"):
+                    continue
+                item_text = _format_analysis_sections(item_value)
+                if item_text:
+                    parts.append(f"{key}: {item_text}")
+            content_text = "\n".join(parts)
+        return f"## {title}\n{content_text}" if title and content_text else content_text
+    return str(value).strip()
+
+def _append_text_block(existing: str, addition: str) -> str:
+    existing = _normalize_glossary_text(existing)
+    addition = _normalize_glossary_text(addition)
+    if not addition:
+        return existing
+    if addition in existing:
+        return existing
+    return f"{existing.rstrip()}\n\n{addition}" if existing else addition
+
+def _extend_unique_dicts(target: list, incoming: list, key_fields: tuple) -> list:
+    seen = {
+        tuple(_normalize_glossary_text(item.get(field)) for field in key_fields)
+        for item in target
+        if isinstance(item, dict)
+    }
+    for item in incoming or []:
+        if not isinstance(item, dict):
+            continue
+        key = tuple(_normalize_glossary_text(item.get(field)) for field in key_fields)
+        if not any(key) or key in seen:
+            continue
+        target.append(item)
+        seen.add(key)
+    return target
+
+def _merge_character_lists(target: list, incoming: list) -> list:
+    seen = {
+        _normalize_glossary_text(item.get("original_name"))
+        for item in target
+        if isinstance(item, dict)
+    }
+    for item in incoming or []:
+        if not isinstance(item, dict):
+            continue
+        name = _normalize_glossary_text(item.get("original_name"))
+        if not name or name in seen:
+            continue
+        target.append(item)
+        seen.add(name)
+    return target
+
+def _derive_characters_from_terms(terms: list) -> list:
+    result = []
+    for term in terms:
+        term_type = _normalize_glossary_text(term.get("type")).lower()
+        category = _normalize_glossary_text(term.get("category")).lower()
+        if not any(key in term_type or key in category for key in ("人名", "人物", "角色", "character", "person")):
+            continue
+        src = _normalize_glossary_text(term.get("src"))
+        if not src:
+            continue
+        info = _normalize_glossary_text(term.get("info"))
+        result.append({
+            "original_name": src,
+            "translated_name": "",
+            "gender": "",
+            "age": "",
+            "personality": "",
+            "speech_style": "",
+            "additional_info": "" if info.lower() in ("null", "none") else info,
+        })
+    return result
+
+def _derive_world_building_from_terms(terms: list) -> str:
+    lines = []
+    for term in terms:
+        term_type = _normalize_glossary_text(term.get("type"))
+        category = _normalize_glossary_text(term.get("category"))
+        type_text = f"{category}/{term_type}" if category and category != term_type else term_type
+        type_lower = type_text.lower()
+        if any(key in type_lower for key in ("人名", "人物", "角色", "character", "person")):
+            continue
+        if not any(key in type_lower for key in (
+            "世界", "设定", "地名", "地点", "组织", "势力", "技能", "能力", "系统",
+            "术语", "place", "location", "organization", "faction", "skill", "ability",
+            "system", "world", "setting", "term",
+        )):
+            continue
+        src = _normalize_glossary_text(term.get("src"))
+        if not src:
+            continue
+        info = _normalize_glossary_text(term.get("info"))
+        suffix = "" if info.lower() in ("", "null", "none") else f"：{info}"
+        lines.append(f"- {src}（{type_text or '设定'}）{suffix}")
+    title = _web_tr("glossary_world_building_clues_title", "世界观与设定线索")
+    return f"## {title}\n" + "\n".join(dict.fromkeys(lines)) if lines else ""
 
 def _normalize_glossary_text(value, default: str = "") -> str:
     if value is None:
@@ -1519,6 +1696,33 @@ def _calculate_term_frequency(terms: list, source_text: str = "") -> dict:
             freq[src] = {'count': count, 'type': term.get('type', '专有名词'), 'info': term.get('info', 'null')}
     return dict(sorted(freq.items(), key=lambda x: x[1]['count'], reverse=True))
 
+def _has_non_glossary_analysis(payload: dict) -> bool:
+    if not payload:
+        return False
+    return any([
+        bool(payload.get("exclusion_list_data")),
+        bool(payload.get("characterization_data")),
+        bool(_normalize_glossary_text(payload.get("world_building_content"))),
+        bool(_normalize_glossary_text(payload.get("writing_style_content"))),
+        bool(payload.get("translation_example_data")),
+    ])
+
+def _build_analysis_rules_config(glossary_data: list, structured_analysis: dict) -> dict:
+    return normalize_rules_payload({
+        "prompt_dictionary_data": glossary_data,
+        "exclusion_list_data": structured_analysis.get("exclusion_list_data", []),
+        "characterization_data": structured_analysis.get("characterization_data", []),
+        "world_building_content": _normalize_glossary_text(structured_analysis.get("world_building_content")),
+        "writing_style_content": _normalize_glossary_text(structured_analysis.get("writing_style_content")),
+        "translation_example_data": structured_analysis.get("translation_example_data", []),
+    })
+
+def _sanitize_rules_profile_name(profile_name: str) -> str:
+    try:
+        return sanitize_profile_name(profile_name, allow_none=True)
+    except ValueError:
+        return ""
+
 @app.post("/api/glossary/analysis/stop")
 async def stop_glossary_analysis():
     global _analysis_state
@@ -1539,49 +1743,62 @@ async def save_analysis_results(request: SaveAnalysisRequest):
 
     if _analysis_state["status"] != "completed":
         raise HTTPException(status_code=400, detail="No completed analysis to save")
+    lang = _analysis_state.get("lang") or _get_web_i18n_lang()
 
     # Filter by frequency
     filtered = [r for r in _analysis_state["results"] if r["count"] >= request.min_frequency]
+    structured_analysis = _analysis_state.get("structured_analysis") or _empty_glossary_analysis_payload()
 
-    if not filtered:
-        raise HTTPException(status_code=400, detail="No terms after filtering")
+    if not filtered and not _has_non_glossary_analysis(structured_analysis):
+        raise HTTPException(status_code=400, detail="No terms or structured rules after filtering")
 
     # Convert to glossary format
     glossary_data = [{"src": r["src"], "dst": "", "info": _format_glossary_info(r.get("type"), r.get("info"))} for r in filtered]
 
     # 新建一个 rules profile 文件
-    new_profile_name = request.filename
-    new_profile_path = os.path.join(RULES_PROFILES_PATH, f"{new_profile_name}.json")
+    new_profile_name = _sanitize_rules_profile_name(request.filename)
+    if not new_profile_name:
+        raise HTTPException(status_code=400, detail=_web_tr("msg_rules_profile_name_required", "规则配置名不能为空", lang=lang))
+    if new_profile_name == "None":
+        raise HTTPException(status_code=400, detail=_web_tr("msg_rules_profile_reserved", "规则配置名不能使用保留名称 None", lang=lang))
+    new_profile_path, new_profile_name = resolve_profile_path(
+        RULES_PROFILES_PATH,
+        new_profile_name,
+        allow_none=True,
+    )
 
     # 确保目录存在
     os.makedirs(RULES_PROFILES_PATH, exist_ok=True)
+    if os.path.exists(new_profile_path):
+        raise HTTPException(status_code=400, detail=_web_tr("msg_rules_profile_exists", "规则配置已存在: {}", new_profile_name, lang=lang))
 
-    # 创建新的 rules profile，只包含术语表数据
-    new_rules_config = {
-        "prompt_dictionary_data": glossary_data
-    }
+    # 创建新的 rules profile，包含本次分析出的全部分类内容
+    new_rules_config = _build_analysis_rules_config(glossary_data, structured_analysis)
 
-    with open(new_profile_path, 'w', encoding='utf-8') as f:
-        json.dump(new_rules_config, f, indent=4, ensure_ascii=False)
+    atomic_write_json(new_profile_path, new_rules_config)
 
     # 自动切换到新创建的 rules profile
-    root_config = {}
-    if os.path.exists(ROOT_CONFIG_FILE):
-        with open(ROOT_CONFIG_FILE, 'r', encoding='utf-8') as f:
-            root_config = json.load(f)
-
+    root_config = load_root_config()
     root_config["active_rules_profile"] = new_profile_name
-    with open(ROOT_CONFIG_FILE, 'w', encoding='utf-8') as f:
-        json.dump(root_config, f, indent=4, ensure_ascii=False)
+    save_root_config(root_config)
 
     # 清除缓存以便前端获取最新数据
     _config_cache.clear()
 
     return {
-        "message": f"已保存 {len(glossary_data)} 条术语到新配置 '{new_profile_name}'，并已自动切换",
+        "message": _web_tr(
+            "msg_analysis_saved_to_new_rules_profile",
+            "已保存到新规则配置 '{}' 并自动切换：术语 {}，禁翻 {}，角色 {}",
+            new_profile_name,
+            len(glossary_data),
+            len(new_rules_config.get('exclusion_list_data', [])),
+            len(new_rules_config.get('characterization_data', [])),
+            lang=lang,
+        ),
         "file": new_profile_path,
         "profile": new_profile_name,
-        "count": len(glossary_data)
+        "count": len(glossary_data),
+        "rules": new_rules_config
     }
 
 # --- Plugin Management Endpoints ---
@@ -1600,11 +1817,7 @@ async def get_plugins():
         plugins = pm.get_plugins()
         
         # Load enable status from root config
-        root_config = {}
-        if os.path.exists(ROOT_CONFIG_FILE):
-            with open(ROOT_CONFIG_FILE, 'r', encoding='utf-8') as f:
-                root_config = json.load(f)
-        
+        root_config = load_root_config()
         plugin_enables = root_config.get("plugin_enables", {})
         
         result = []
@@ -1626,17 +1839,11 @@ async def toggle_plugin(request: PluginEnableRequest):
     Toggles a plugin's enable status and saves it to root config.
     """
     try:
-        root_config = {}
-        if os.path.exists(ROOT_CONFIG_FILE):
-            with open(ROOT_CONFIG_FILE, 'r', encoding='utf-8') as f:
-                root_config = json.load(f)
-        
+        root_config = load_root_config()
         plugin_enables = root_config.get("plugin_enables", {})
         plugin_enables[request.name] = request.enabled
         root_config["plugin_enables"] = plugin_enables
-        
-        with open(ROOT_CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump(root_config, f, indent=4, ensure_ascii=False)
+        save_root_config(root_config)
             
         return {"message": f"Plugin '{request.name}' {'enabled' if request.enabled else 'disabled'}"}
     except Exception as e:
@@ -1652,21 +1859,12 @@ async def get_profiles():
     if _profiles_cache is not None:
         return _profiles_cache
 
-    if not os.path.isdir(PROFILES_PATH):
-        _profiles_cache = ["default"]
-        return _profiles_cache
-    
-    profiles = [f.replace(".json", "") for f in os.listdir(PROFILES_PATH) if f.endswith(".json")]
-    _profiles_cache = profiles
-    return profiles
+    _profiles_cache = list_profile_names(PROFILES_PATH)
+    return _profiles_cache
 
 @app.get("/api/rules_profiles", response_model=List[str])
 async def get_rules_profiles():
-    if not os.path.isdir(RULES_PROFILES_PATH):
-        os.makedirs(RULES_PROFILES_PATH, exist_ok=True)
-        return ["None", "default"]
-    profiles = [f.replace(".json", "") for f in os.listdir(RULES_PROFILES_PATH) if f.endswith(".json")]
-    return ["None"] + (profiles or ["default"])
+    return list_profile_names(RULES_PROFILES_PATH, include_none=True)
 
 # --- Prompt Management Endpoints ---
 
@@ -1721,21 +1919,21 @@ async def save_prompt_content(category: str, filename: str, data: Dict[str, str]
 @app.post("/api/rules_profiles/switch")
 async def switch_rules_profile(request: RulesProfileSwitchRequest, http_request: Request):
     global _config_cache
-    profile_name = request.profile
-    
+    try:
+        profile_name = sanitize_profile_name(request.profile, allow_none=True)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
     if profile_name != "None":
-        profile_path = os.path.join(RULES_PROFILES_PATH, f"{profile_name}.json")
+        profile_path, profile_name = resolve_profile_path(RULES_PROFILES_PATH, profile_name, allow_none=True)
         if not os.path.exists(profile_path):
             raise HTTPException(status_code=404, detail="Rules profile not found")
-    
+
     try:
-        root_config = {}
-        if os.path.exists(ROOT_CONFIG_FILE):
-            with open(ROOT_CONFIG_FILE, 'r', encoding='utf-8') as f: root_config = json.load(f)
+        root_config = load_root_config()
         root_config["active_rules_profile"] = profile_name
-        with open(ROOT_CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump(root_config, f, indent=4, ensure_ascii=False)
-        
+        save_root_config(root_config)
+
         _config_cache.clear()
         return await get_config(http_request)
     except Exception as e:
@@ -1747,103 +1945,67 @@ async def switch_profile(request: ProfileSwitchRequest, http_request: Request):
     Switches the active profile, returns the new active config, and invalidates caches.
     """
     global _config_cache, _profiles_cache # Need to clear these caches
-    
-    profile_name = request.profile
-    profile_path = os.path.join(PROFILES_PATH, f"{profile_name}.json")
-    
+
+    try:
+        profile_path, profile_name = resolve_profile_path(PROFILES_PATH, request.profile)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
     if not os.path.exists(profile_path):
         raise HTTPException(status_code=404, detail=f"Profile '{profile_name}' not found.")
-    
+
     try:
         # Update the root config to point to the new profile
-        root_config = {}
-        if os.path.exists(ROOT_CONFIG_FILE):
-            with open(ROOT_CONFIG_FILE, 'r', encoding='utf-8') as f:
-                root_config = json.load(f)
+        root_config = load_root_config()
         root_config["active_profile"] = profile_name
-        with open(ROOT_CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump(root_config, f, indent=4, ensure_ascii=False)
-        
+        save_root_config(root_config)
+
         # Invalidate all config caches and profiles cache
         _config_cache.clear()
         _profiles_cache = None
 
-        # Return the content of the new active profile (will be cached by get_config on next call)
-        with open(profile_path, 'r', encoding='utf-8-sig') as f:
-            new_active_config = json.load(f)
-            new_active_config["active_profile"] = profile_name
+        return await get_config(http_request)
 
-            # 防护：确保 response_check_switch 是正确的 dict 类型
-            default_check_switch = {
-                "newline_character_count_check": False,
-                "return_to_original_text_check": False,
-                "residual_original_text_check": False,
-                "reply_format_check": False
-            }
-            if "response_check_switch" not in new_active_config or not isinstance(new_active_config.get("response_check_switch"), dict):
-                new_active_config["response_check_switch"] = default_check_switch
-            if is_mcp_request(http_request):
-                return sanitize_data_for_mcp(new_active_config, path="/api/config")
-
-            return new_active_config
-            
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to switch profile: {e}")
 
 @app.post("/api/profiles/create")
 async def create_profile(request: ProfileCreateRequest):
     global _profiles_cache
-    
-    new_name = request.name
-    if not new_name or not new_name.strip():
-        raise HTTPException(status_code=400, detail="Profile name cannot be empty")
+
+    try:
+        new_path, new_name = resolve_profile_path(PROFILES_PATH, request.name)
+        base_name = sanitize_profile_name(request.base) if request.base else None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
     # Use injected handler if available
     if profile_handlers["create"]:
         try:
-            profile_handlers["create"](new_name, request.base)
+            profile_handlers["create"](new_name, base_name)
             _profiles_cache = None
             return {"message": f"Profile '{new_name}' created successfully (via host)"}
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
-    new_path = os.path.join(PROFILES_PATH, f"{new_name}.json")
     if os.path.exists(new_path):
         raise HTTPException(status_code=409, detail="Profile already exists")
 
     # Determine base profile to copy from
-    base_name = request.base
     if not base_name:
         # Use active profile as base
-        mode, config = get_config_mode()
+        _, config = get_config_mode()
         base_name = config.get("active_profile", "default")
-    
-    base_path = os.path.join(PROFILES_PATH, f"{base_name}.json")
-    preset_path = os.path.join(RESOURCE_PATH, "platforms", "preset.json")
+
+    base_path, _ = resolve_profile_path(PROFILES_PATH, base_name)
 
     try:
         # Robust Creation Logic: Preset + Base -> New
-        final_config = {}
-        
-        # 1. Load Preset
-        if os.path.exists(preset_path):
-            with open(preset_path, 'r', encoding='utf-8') as f:
-                final_config = json.load(f)
-        
-        # 2. Load Base (Overlay)
+        final_config = load_master_preset()
         if os.path.exists(base_path):
-            with open(base_path, 'r', encoding='utf-8') as f:
-                base_config = json.load(f)
-                # Deep merge could be complex, for now simple update is usually enough for flat configs
-                # For nested configs like 'platforms', we might want deep merge, but standard dict update is standard fallback
-                final_config.update(base_config)
-        elif not final_config:
-             # No preset and no base? Empty.
-             final_config = {}
-
-        # 3. Save
-        with open(new_path, 'w', encoding='utf-8') as f:
-            json.dump(final_config, f, indent=4, ensure_ascii=False)
+            final_config = deep_merge(final_config, load_json_file(base_path, {}))
+        settings_only, _, _ = split_effective_config(final_config)
+        atomic_write_json(new_path, settings_only)
 
         _profiles_cache = None # Invalidate cache
         return {"message": f"Profile '{new_name}' created successfully"}
@@ -1853,20 +2015,22 @@ async def create_profile(request: ProfileCreateRequest):
 @app.post("/api/profiles/rename")
 async def rename_profile(request: ProfileRenameRequest):
     global _profiles_cache, _config_cache
-    
+    try:
+        old_path, old_name = resolve_profile_path(PROFILES_PATH, request.old_name)
+        new_path, new_name = resolve_profile_path(PROFILES_PATH, request.new_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
     # Use injected handler
     if profile_handlers["rename"]:
         try:
-            profile_handlers["rename"](request.old_name, request.new_name)
+            profile_handlers["rename"](old_name, new_name)
             _profiles_cache = None
             _config_cache.clear()
-            return {"message": f"Renamed '{request.old_name}' to '{request.new_name}' (via host)"}
+            return {"message": f"Renamed '{old_name}' to '{new_name}' (via host)"}
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
-    old_path = os.path.join(PROFILES_PATH, f"{request.old_name}.json")
-    new_path = os.path.join(PROFILES_PATH, f"{request.new_name}.json")
-    
     if not os.path.exists(old_path):
         raise HTTPException(status_code=404, detail="Source profile not found")
     if os.path.exists(new_path):
@@ -1876,43 +2040,45 @@ async def rename_profile(request: ProfileRenameRequest):
         os.rename(old_path, new_path)
         
         # Check if we renamed the active profile
-        mode, config = get_config_mode()
+        _, config = get_config_mode()
         current_active = config.get("active_profile")
-        
-        if current_active == request.old_name:
+
+        if current_active == old_name:
             # Update root config to point to new name
-            config["active_profile"] = request.new_name
-            with open(ROOT_CONFIG_FILE, 'w', encoding='utf-8') as f:
-                json.dump(config, f, indent=4, ensure_ascii=False)
-            
+            config["active_profile"] = new_name
+            save_root_config(config)
+
             # Clear config cache as the key changed
             _config_cache.clear()
-            
+
         _profiles_cache = None
-        return {"message": f"Renamed '{request.old_name}' to '{request.new_name}'"}
+        return {"message": f"Renamed '{old_name}' to '{new_name}'"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to rename profile: {e}")
 
 @app.post("/api/profiles/delete")
 async def delete_profile(request: ProfileDeleteRequest):
     global _profiles_cache
-    
+    try:
+        target_path, profile_name = resolve_profile_path(PROFILES_PATH, request.profile)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
     # Use injected handler
     if profile_handlers["delete"]:
         try:
-            profile_handlers["delete"](request.profile)
+            profile_handlers["delete"](profile_name)
             _profiles_cache = None
-            return {"message": f"Profile '{request.profile}' deleted (via host)"}
+            return {"message": f"Profile '{profile_name}' deleted (via host)"}
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
-    
-    target_path = os.path.join(PROFILES_PATH, f"{request.profile}.json")
+
     if not os.path.exists(target_path):
         raise HTTPException(status_code=404, detail="Profile not found")
 
     # Check if active
-    mode, config = get_config_mode()
-    if config.get("active_profile") == request.profile:
+    _, config = get_config_mode()
+    if config.get("active_profile") == profile_name:
         raise HTTPException(status_code=400, detail="Cannot delete the currently active profile. Please switch to another profile first.")
 
     # Check if it's the last one (optional safety, though frontend should handle)
@@ -1923,7 +2089,7 @@ async def delete_profile(request: ProfileDeleteRequest):
     try:
         os.remove(target_path)
         _profiles_cache = None
-        return {"message": f"Profile '{request.profile}' deleted"}
+        return {"message": f"Profile '{profile_name}' deleted"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to delete profile: {e}")
 
@@ -1939,13 +2105,10 @@ async def create_platform(request: PlatformCreateRequest):
     new_name = request.name.strip()
     if not new_name:
         raise HTTPException(status_code=400, detail="Platform name cannot be empty")
-    
-    # Load current platforms from active profile
-    profile_path = get_active_profile_path()
+
     try:
-        with open(profile_path, 'r', encoding='utf-8-sig') as f:
-            config = json.load(f)
-        
+        config = dict(_load_active_config_payload())
+
         if "platforms" not in config: config["platforms"] = {}
         if new_name in config["platforms"]:
             raise HTTPException(status_code=409, detail="Platform already exists")
@@ -1962,12 +2125,10 @@ async def create_platform(request: PlatformCreateRequest):
         
         if request.base_config:
             template.update(request.base_config)
-            
+
         config["platforms"][new_name] = template
-        
-        with open(profile_path, 'w', encoding='utf-8') as f:
-            json.dump(config, f, indent=4, ensure_ascii=False)
-            
+        save_effective_config(config)
+
         _config_cache.clear()
         return {"message": f"Platform '{new_name}' created", "config": template}
     except Exception as e:
@@ -2514,6 +2675,7 @@ async def update_cache_item(item_id: int, request: CacheUpdateRequestWithPath):
         if not item_found:
             raise HTTPException(status_code=404, detail="Cache item not found")
 
+        cache_manager.flush_pending_save()
         return {"success": True, "message": "Cache item updated successfully"}
 
     except HTTPException:
@@ -2568,7 +2730,8 @@ _proofread_state = {
     "issues": [],
     "tokens_used": 0,
     "error": None,
-    "completed": False
+    "completed": False,
+    "output_path": None,
 }
 
 @app.get("/api/proofread/status")
@@ -2626,7 +2789,8 @@ async def start_proofread(request: ProofreadStartRequest, background_tasks: Back
         "issues": [],
         "tokens_used": 0,
         "error": None,
-        "completed": False
+        "completed": False,
+        "output_path": output_path,
     }
 
     # Start background task
@@ -2678,6 +2842,10 @@ async def accept_proofread_issue(issue_id: int):
 
                 # Mark issue as accepted
                 issue["accepted"] = True
+                output_path = _proofread_state.get("output_path")
+                if output_path:
+                    cache_manager.require_save_to_file(output_path)
+                    cache_manager.flush_pending_save()
 
                 return {"status": "accepted", "text_index": text_index}
 
@@ -2809,39 +2977,7 @@ async def clear_proofread_issues():
 
 def load_config_sync() -> Dict[str, Any]:
     """Synchronously load the merged configuration."""
-    mode, root_config = get_config_mode()
-    current_profile_name = root_config.get("active_profile", "default")
-    current_rules_name = root_config.get("active_rules_profile", "default")
-
-    # Load Base Config
-    profile_path = os.path.join(PROFILES_PATH, f"{current_profile_name}.json")
-    loaded_config = {}
-    if os.path.exists(profile_path):
-        try:
-            with open(profile_path, 'r', encoding='utf-8-sig') as f:
-                loaded_config = json.load(f)
-        except: pass
-
-    # Load Rules Config
-    rules_config = {}
-    if current_rules_name and current_rules_name != "None":
-        rules_path = os.path.join(RULES_PROFILES_PATH, f"{current_rules_name}.json")
-        if os.path.exists(rules_path):
-            try:
-                with open(rules_path, 'r', encoding='utf-8-sig') as f:
-                    rules_config = json.load(f)
-            except: pass
-
-    # Merge
-    rule_keys = [
-        "prompt_dictionary_data", "exclusion_list_data", "characterization_data",
-        "world_building_content", "writing_style_content", "translation_example_data"
-    ]
-    for k in rule_keys:
-        if k in rules_config:
-            loaded_config[k] = rules_config[k]
-
-    return loaded_config
+    return _load_active_config_payload()
 
 def run_proofread_task():
     """Background task to run AI proofread"""

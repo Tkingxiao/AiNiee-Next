@@ -78,11 +78,35 @@ class RequestLimiter:
             return True
 
     def check_limiter(self, tokens: int) -> bool:
-        # 如果能够发送请求，则扣除令牌桶里的令牌数
+        # 只有 RPM 和 TPM 同时满足时才扣除，避免请求还没发出去就消耗 RPM 槽位。
         with self.lock:
-            if self.rpm_limiter() and self.tpm_limiter(tokens):
-                self.remaining_tokens = self.remaining_tokens - tokens
-                return True
-            else:
+            now = time.time()
+
+            rpm_delta = now - self.last_rpm_time
+            self.rpm_remaining_tokens = min(
+                self.rpm_max_tokens,
+                self.rpm_remaining_tokens + rpm_delta * self.rpm_fill_rate,
+            )
+            self.last_rpm_time = now
+
+            tpm_delta = now - self.last_time
+            self.remaining_tokens = min(
+                self.max_tokens,
+                self.remaining_tokens + tpm_delta * self.tokens_rate,
+            )
+            self.last_time = now
+
+            if tokens >= self.max_tokens:
+                print("[Warning INFO] 该次任务的文本总tokens量已经超过最大输入限制(3w tokens)，请检查原文文件是否有问题或者文本切分量设置过大！！！")
+                print("[Warning INFO] 该次任务将进行拆分处理，并进入下一轮任务中....")
                 return False
 
+            if self.rpm_remaining_tokens < 1.0:
+                return False
+
+            if tokens >= self.remaining_tokens:
+                return False
+
+            self.rpm_remaining_tokens -= 1.0
+            self.remaining_tokens -= tokens
+            return True

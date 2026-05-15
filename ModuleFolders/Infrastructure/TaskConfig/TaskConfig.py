@@ -336,13 +336,6 @@ class TaskConfig(Base):
             output_folder_name = f"{base_name}_Polishing_Output"
             self.polishing_output_path = os.path.join(parent_dir, output_folder_name)
 
-        # 保存新配置
-        config = self.load_config()
-        config["label_output_path"] = self.label_output_path
-        config["polishing_output_path"] = self.polishing_output_path
-        self.save_config(config)
-
-
         # 计算实际线程数
         self.actual_thread_counts = self.thread_counts_setting(self.user_thread_counts,self.target_platform,self.rpm_limit)
 

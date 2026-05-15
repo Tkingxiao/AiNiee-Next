@@ -15,6 +15,15 @@ from rich.prompt import IntPrompt, Confirm
 from rich.table import Table
 
 from ModuleFolders.Base.Base import Base
+from ModuleFolders.Infrastructure.TaskConfig.ConfigProfileService import (
+    atomic_write_json,
+    deep_merge,
+    load_json_file,
+    load_master_preset,
+    resolve_profile_path,
+    sanitize_profile_name,
+    split_effective_config,
+)
 
 
 console = Console()
@@ -294,34 +303,24 @@ class WebRuntimeBridge:
                 self.host.ui.log(f"[red]Queue editor error: {exc}[/red]")
 
     def host_create_profile(self, new_name, base_name=None):
-        if not new_name:
-            raise Exception("Name empty")
-
-        new_path = os.path.join(self.host.profiles_dir, f"{new_name}.json")
+        new_path, new_name = resolve_profile_path(self.host.profiles_dir, new_name)
         if os.path.exists(new_path):
             raise Exception("Exists")
 
-        preset = {}
-        preset_path = os.path.join(self.project_root, "Resource", "platforms", "preset.json")
-        if os.path.exists(preset_path):
-            with open(preset_path, "r", encoding="utf-8") as file:
-                preset = json.load(file)
-
-        base_config = {}
         if not base_name:
             base_name = self.host.active_profile_name
-        base_path = os.path.join(self.host.profiles_dir, f"{base_name}.json")
+        base_name = sanitize_profile_name(base_name)
+        base_path, _ = resolve_profile_path(self.host.profiles_dir, base_name)
+        preset = load_master_preset()
         if os.path.exists(base_path):
-            with open(base_path, "r", encoding="utf-8") as file:
-                base_config = json.load(file)
+            preset = deep_merge(preset, load_json_file(base_path, {}))
+        preset, _, _ = split_effective_config(preset)
 
-        preset.update(base_config)
-        with open(new_path, "w", encoding="utf-8") as file:
-            json.dump(preset, file, indent=4, ensure_ascii=False)
+        atomic_write_json(new_path, preset)
 
     def host_rename_profile(self, old_name, new_name):
-        old_path = os.path.join(self.host.profiles_dir, f"{old_name}.json")
-        new_path = os.path.join(self.host.profiles_dir, f"{new_name}.json")
+        old_path, old_name = resolve_profile_path(self.host.profiles_dir, old_name)
+        new_path, new_name = resolve_profile_path(self.host.profiles_dir, new_name)
         if not os.path.exists(old_path):
             raise Exception("Not found")
         if os.path.exists(new_path):
@@ -334,7 +333,7 @@ class WebRuntimeBridge:
             self.host.save_config(save_root=True)
 
     def host_delete_profile(self, name):
-        target = os.path.join(self.host.profiles_dir, f"{name}.json")
+        target, name = resolve_profile_path(self.host.profiles_dir, name)
         if not os.path.exists(target):
             raise Exception("Not found")
         if name == self.host.active_profile_name:

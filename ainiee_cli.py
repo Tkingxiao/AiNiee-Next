@@ -45,6 +45,13 @@ from ModuleFolders.UserInterface.UIHelpers import (
 from ModuleFolders.UserInterface.WebLogger import WebLogger
 from ModuleFolders.UserInterface.RuntimeBootstrap import ensure_runtime_bootstrap
 from ModuleFolders.UserInterface.ConsoleInputGuard import suppress_console_mouse_input
+from ModuleFolders.Infrastructure.TaskConfig.ConfigProfileService import (
+    list_profile_names,
+    load_effective_config,
+    load_root_config,
+    save_effective_config,
+    save_root_config,
+)
 
 
 
@@ -466,114 +473,27 @@ class CLIMenu:
 
 
     def _migrate_and_load_profiles(self):
-        os.makedirs(self.profiles_dir, exist_ok=True)
-        active_profile_path = os.path.join(self.profiles_dir, f"{self.active_profile_name}.json")
+        requested_profile = self.active_profile_name
+        self.config = load_effective_config(
+            root_config=self.root_config,
+            active_profile_name=self.active_profile_name,
+            active_rules_profile_name=self.active_rules_profile_name,
+            create_missing=False,
+            interface_language=current_lang,
+        )
+        self.active_profile_name = self.config.get("active_profile", "default")
+        self.active_rules_profile_name = self.config.get("active_rules_profile", "default")
+        self.root_config["active_profile"] = self.active_profile_name
+        self.root_config["active_rules_profile"] = self.active_rules_profile_name
 
-        # --- SAFETY CHECK: If custom profile is missing, revert to default ---
-        if self.active_profile_name != "default" and not os.path.exists(active_profile_path):
-            console.print(f"[bold red]Warning: Active profile '{self.active_profile_name}' not found![/bold red]")
-            console.print(f"[yellow]Reverting to 'default' profile to avoid misleading default behavior.[/yellow]")
-            
-            self.active_profile_name = "default"
-            active_profile_path = os.path.join(self.profiles_dir, "default.json") # CRITICAL FIX: Update the path variable!
-            
-            # Update root config to persist this change
-            self.root_config["active_profile"] = "default"
-            try:
-                with open(self.root_config_path, 'w', encoding='utf-8') as f:
-                    json.dump(self.root_config, f, indent=4, ensure_ascii=False)
-            except Exception: pass
+        if requested_profile and requested_profile != self.active_profile_name:
+            console.print(f"[bold yellow]Warning: Active profile '{requested_profile}' not found or invalid; using '{self.active_profile_name}'.[/bold yellow]")
 
-        # Path to the new master preset file
-        master_preset_path = os.path.join(PROJECT_ROOT, "Resource", "platforms", "preset.json")
-        
-        # Load master preset content once
-        master_config_content = {}
-        try:
-            with open(master_preset_path, 'r', encoding='utf-8') as f:
-                master_config_content = json.load(f)
-        except Exception as e:
-            console.print(f"[red]Error loading master preset from {master_preset_path}: {e}[/red]")
-            # Fallback to an empty dict if master preset is unreadable
-            master_config_content = {}
+    def load_config(self, active_profile_name=None, active_rules_profile_name=None):
+        self.root_config = load_root_config()
+        self.active_profile_name = active_profile_name or self.root_config.get("active_profile", "default")
+        self.active_rules_profile_name = active_rules_profile_name or self.root_config.get("active_rules_profile", "default")
 
-        # 2. Load user profile if it exists
-        user_config = {}
-        profile_exists = os.path.exists(active_profile_path)
-        if profile_exists:
-            try:
-                with open(active_profile_path, 'r', encoding='utf-8') as f:
-                    user_config = json.load(f)
-            except Exception:
-                user_config = {}
-
-        # 3. Merge Settings: Start with base, then overlay user settings
-        self.config = master_config_content.copy()
-        if isinstance(user_config, dict):
-            for k, v in user_config.items():
-                if isinstance(v, dict) and k in self.config and isinstance(self.config[k], dict):
-                    self.config[k].update(v)
-                else:
-                    self.config[k] = v
-
-        if not self.config.get("interface_language"):
-            self.config["interface_language"] = current_lang
-
-        # 4. Load independent Rules Profile
-        rule_keys = [
-            "prompt_dictionary_data", "exclusion_list_data", "characterization_data",
-            "world_building_content", "writing_style_content", "translation_example_data"
-        ]
-        
-        if self.active_rules_profile_name and self.active_rules_profile_name != "None":
-            rules_path = os.path.join(self.rules_profiles_dir, f"{self.active_rules_profile_name}.json")
-            if not os.path.exists(rules_path):
-                # Create default rules profile if missing
-                default_rules = {
-                    "prompt_dictionary_data": [], "exclusion_list_data": [], "characterization_data": [],
-                    "world_building_content": "", "writing_style_content": "", "translation_example_data": []
-                }
-                try:
-                    with open(rules_path, 'w', encoding='utf-8') as f:
-                        json.dump(default_rules, f, indent=4, ensure_ascii=False)
-                except: pass
-            else:
-                try:
-                    with open(rules_path, 'r', encoding='utf-8-sig') as f:
-                        rules_data = json.load(f)
-                    # Apply rules to current config
-                    for rk in rule_keys:
-                        if rk in rules_data:
-                            self.config[rk] = rules_data[rk]
-                except: pass
-
-        # 5. If profile was missing or merged, ensure it's saved to disk
-        if not profile_exists or not user_config:
-            self.save_config()
-            if not profile_exists:
-                console.print(f"[green]Initialized new profile '{self.active_profile_name}.json' from preset.[/green]")
-        
-        # Ensure we also save the latest config state to memory for use
-        self.save_config()
-
-    def load_config(self):
-        # Load root config
-        if os.path.exists(self.root_config_path) and os.path.getsize(self.root_config_path) > 0:
-            try:
-                with open(self.root_config_path, 'r', encoding='utf-8') as f:
-                    self.root_config = json.load(f)
-                self.active_profile_name = self.root_config.get("active_profile", "default")
-                self.active_rules_profile_name = self.root_config.get("active_rules_profile", "default")
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                 # This can happen if the root config is the old, large settings file. Trigger migration path.
-                 self.active_profile_name = "default"
-                 self.active_rules_profile_name = "default"
-                 self._migrate_and_load_profiles()
-                 return
-        else:
-            self.active_profile_name = "default"
-            self.active_rules_profile_name = "default"
-        
         self._migrate_and_load_profiles()
         if self.config.get("interface_language") and self.config.get("interface_language") != current_lang:
             self.apply_interface_language(self.config.get("interface_language"))
@@ -581,30 +501,15 @@ class CLIMenu:
             self._plugin_manager.update_plugins_enable(self.root_config["plugin_enables"])
 
     def save_config(self, save_root=False):
-        # 1. Save Settings (Exclude rules)
-        active_profile_path = os.path.join(self.profiles_dir, f"{self.active_profile_name}.json")
-        os.makedirs(os.path.dirname(active_profile_path), exist_ok=True)
-        
-        rule_keys = [
-            "prompt_dictionary_data", "exclusion_list_data", "characterization_data",
-            "world_building_content", "writing_style_content", "translation_example_data"
-        ]
-        
-        settings_to_save = {k: v for k, v in self.config.items() if k not in rule_keys}
-        with open(active_profile_path, 'w', encoding='utf-8') as f:
-            json.dump(settings_to_save, f, indent=4, ensure_ascii=False)
-
-        # 2. Save Rules
-        if self.active_rules_profile_name != "None":
-            active_rules_path = os.path.join(self.rules_profiles_dir, f"{self.active_rules_profile_name}.json")
-            rules_to_save = {k: v for k, v in self.config.items() if k in rule_keys}
-            with open(active_rules_path, 'w', encoding='utf-8') as f:
-                json.dump(rules_to_save, f, indent=4, ensure_ascii=False)
-
-        # Optionally save the root config (active profile pointers)
-        if save_root:
-            with open(self.root_config_path, 'w', encoding='utf-8') as f:
-                json.dump(self.root_config, f, indent=4, ensure_ascii=False)
+        self.root_config = save_effective_config(
+            self.config,
+            root_config=self.root_config,
+            active_profile_name=self.active_profile_name,
+            active_rules_profile_name=self.active_rules_profile_name,
+            write_root=save_root,
+        )
+        self.active_profile_name = self.root_config.get("active_profile", self.active_profile_name)
+        self.active_rules_profile_name = self.root_config.get("active_rules_profile", self.active_rules_profile_name)
 
     def _update_recent_projects(self, project_path):
         recent = self.root_config.get("recent_projects", [])
@@ -629,7 +534,7 @@ class CLIMenu:
         })
         
         self.root_config["recent_projects"] = new_recent[:5]
-        self.save_config(save_root=True)
+        save_root_config(self.root_config)
 
     def _auto_merge_batch_ebooks(self, merge_input_dir, merge_output_dir, merge_name, allow_non_series_prompt=True):
         """批量目录任务完成后，自动调用批量电子书整合脚本进行合并。"""
@@ -996,7 +901,7 @@ class CLIMenu:
     def plugin_settings_menu(self):
         self.plugin_settings_menu_handler.show()
 
-    def run_task(self, task_mode, target_path=None, continue_status=False, non_interactive=False, web_mode=False, from_queue=False, skip_prompt_validation=False):
+    def run_task(self, task_mode, target_path=None, continue_status=False, non_interactive=False, web_mode=False, from_queue=False, skip_prompt_validation=False, save_runtime_config=True):
         # 如果是非交互模式，直接跳过菜单
         if target_path is None:
             last_path = self.config.get("label_input_path")
@@ -1115,7 +1020,8 @@ class CLIMenu:
             ):
                 return False
 
-        self._update_recent_projects(target_path)
+        if save_runtime_config:
+            self._update_recent_projects(target_path)
         self.config["label_input_path"] = target_path
         
         # 自动设置输出路径 (如果开启了自动跟随，或者用户未设置输出路径)
@@ -1130,7 +1036,8 @@ class CLIMenu:
         else:
             opath = self.config.get("label_output_path")
 
-        self.save_config()
+        if save_runtime_config:
+            self.save_config()
         
         # --- NEW: Enhanced Output Directory Handling ---
         if not continue_status and os.path.exists(opath) and not non_interactive:
@@ -2114,8 +2021,7 @@ class CLIMenu:
         self.mcp_runtime_bridge.start_mcp_server()
 
     def _get_profiles_list(self, profiles_dir):
-        if not os.path.exists(profiles_dir): return []
-        return [f.replace(".json", "") for f in os.listdir(profiles_dir) if f.endswith(".json")]
+        return list_profile_names(profiles_dir)
 
     def task_queue_menu(self):
         self.task_queue_menu_handler.show()

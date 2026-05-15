@@ -35,6 +35,12 @@ class SimpleExecutor(Base):
         # 订阅术语多翻译事件
         self.subscribe(Base.EVENT.TERM_MULTI_TRANSLATE_START, self.handle_term_multi_translate_start)
 
+    def _build_task_config(self, task_type):
+        config = TaskConfig()
+        config.initialize(self.load_config())
+        config.prepare_for_translation(task_type)
+        return config
+
     # 响应接口测试开始事件
     def api_test_start(self, event: int, data: dict):
         thread = threading.Thread(target = self.api_test, args = (event, data))
@@ -184,9 +190,7 @@ class SimpleExecutor(Base):
             return
 
         # 准备翻译配置
-        config = TaskConfig()
-        config.initialize()
-        config.prepare_for_translation(TaskType.TRANSLATION)
+        config = self._build_task_config(TaskType.TRANSLATION)
         platform_config = config.get_platform_configuration("translationReq")
         target_language = config.target_language
 
@@ -342,9 +346,7 @@ class SimpleExecutor(Base):
         language_stats = data.get("language_stats")
 
         # 准备翻译配置
-        config = TaskConfig()
-        config.initialize()
-        config.prepare_for_translation(TaskType.TRANSLATION)
+        config = self._build_task_config(TaskType.TRANSLATION)
         max_threads = config.actual_thread_counts # 获取并发线程数
         
         # 预计算源语言
@@ -469,9 +471,7 @@ class SimpleExecutor(Base):
         items_to_polish = data.get("items_to_polish")
 
         # 准备配置
-        config = TaskConfig()
-        config.initialize()
-        config.prepare_for_translation(TaskType.POLISH)
+        config = self._build_task_config(TaskType.POLISH)
         polishing_mode_selection = config.polishing_mode_selection
         max_threads = config.actual_thread_counts
 
@@ -637,9 +637,7 @@ class SimpleExecutor(Base):
             return
 
         # 准备翻译配置
-        config = TaskConfig()
-        config.initialize()
-        config.prepare_for_translation(TaskType.TRANSLATION)
+        config = self._build_task_config(TaskType.TRANSLATION)
         target_language = config.target_language
         # 从配置中获取实际线程数
         max_threads = config.actual_thread_counts
@@ -787,6 +785,8 @@ class SimpleExecutor(Base):
         
         # 更新保存术语表配置
         app_config["prompt_dictionary_data"] = prompt_dictionary_data
+        if added_count > 0:
+            app_config["prompt_dictionary_switch"] = True
         self.save_config(app_config)
         
         # 日志输出
@@ -821,9 +821,7 @@ class SimpleExecutor(Base):
 
         # 准备翻译配置
         if not platform_config:
-            config = TaskConfig()
-            config.initialize()
-            config.prepare_for_translation(TaskType.TRANSLATION)
+            config = self._build_task_config(TaskType.TRANSLATION)
             platform_config = config.get_platform_configuration("translationReq")
             target_language = config.target_language
 

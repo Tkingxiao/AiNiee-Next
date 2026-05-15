@@ -3,13 +3,19 @@
 从 ainiee_cli.py 分离
 """
 import os
-import shutil
 import time
 
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt, IntPrompt, Confirm
 from rich.table import Table
+
+from ModuleFolders.Infrastructure.TaskConfig.ConfigProfileService import (
+    atomic_write_json,
+    load_json_file,
+    resolve_profile_path,
+    split_effective_config,
+)
 
 
 console = Console()
@@ -86,11 +92,21 @@ class ProfileMenu:
 
     def _create_profile(self):
         new_name = Prompt.ask(self.i18n.get("prompt_profile_name")).strip()
-        if new_name and not os.path.exists(os.path.join(self.host.profiles_dir, f"{new_name}.json")):
-            shutil.copyfile(
-                os.path.join(self.host.profiles_dir, f"{self.host.active_profile_name}.json"),
-                os.path.join(self.host.profiles_dir, f"{new_name}.json"),
-            )
+        try:
+            new_path, new_name = resolve_profile_path(self.host.profiles_dir, new_name)
+            active_path, _ = resolve_profile_path(self.host.profiles_dir, self.host.active_profile_name)
+        except ValueError:
+            console.print(f"[red]{self.i18n.get('msg_profile_invalid')}[/red]")
+            time.sleep(1)
+            return
+
+        if new_name and not os.path.exists(new_path):
+            if os.path.exists(active_path):
+                base_config = load_json_file(active_path, {})
+            else:
+                base_config = self.host.config
+            settings_only, _, _ = split_effective_config(base_config)
+            atomic_write_json(new_path, settings_only)
             console.print(f"[green]{self.i18n.get('msg_profile_created').format(new_name)}[/green]")
         else:
             console.print(f"[red]{self.i18n.get('msg_profile_invalid')}[/red]")
@@ -98,11 +114,16 @@ class ProfileMenu:
 
     def _rename_profile(self):
         new_name = Prompt.ask(self.i18n.get("prompt_profile_rename")).strip()
-        if new_name and not os.path.exists(os.path.join(self.host.profiles_dir, f"{new_name}.json")):
-            os.rename(
-                os.path.join(self.host.profiles_dir, f"{self.host.active_profile_name}.json"),
-                os.path.join(self.host.profiles_dir, f"{new_name}.json"),
-            )
+        try:
+            active_path, _ = resolve_profile_path(self.host.profiles_dir, self.host.active_profile_name)
+            new_path, new_name = resolve_profile_path(self.host.profiles_dir, new_name)
+        except ValueError:
+            console.print(f"[red]{self.i18n.get('msg_profile_invalid')}[/red]")
+            time.sleep(1)
+            return
+
+        if new_name and not os.path.exists(new_path):
+            os.rename(active_path, new_path)
             self.host.active_profile_name = new_name
             self.host.root_config["active_profile"] = new_name
             self.host.save_config(save_root=True)
@@ -135,7 +156,8 @@ class ProfileMenu:
 
         selected_profile = delete_candidates[selected_index - 1]
         if Confirm.ask(f"[bold red]{self.i18n.get('msg_profile_delete_confirm').format(selected_profile)}[/bold red]"):
-            os.remove(os.path.join(self.host.profiles_dir, f"{selected_profile}.json"))
+            target_path, _ = resolve_profile_path(self.host.profiles_dir, selected_profile)
+            os.remove(target_path)
             console.print(f"[green]{self.i18n.get('msg_profile_deleted').format(selected_profile)}[/green]")
         else:
             console.print(f"[yellow]{self.i18n.get('msg_delete_cancel')}[/yellow]")

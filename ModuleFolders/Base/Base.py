@@ -8,6 +8,10 @@ import rapidjson as json
 from rich import print as rich_print
 from rich.console import RenderableType
 from ModuleFolders.Base.EventManager import EventManager
+from ModuleFolders.Infrastructure.TaskConfig.ConfigProfileService import (
+    load_effective_config,
+    save_effective_config,
+)
 
 
 class TUIHandler(logging.Handler):
@@ -260,46 +264,22 @@ class Base():
 
     # 载入配置文件
     def load_config(self) -> dict:
-        config = {}
-
         with Base.CONFIG_FILE_LOCK:
-            if os.path.exists(Base.CONFIG_PATH):
-                with open(Base.CONFIG_PATH, "r", encoding="utf-8") as reader:
-                    config = json.load(reader)
-            else:
-                # Silently ignore if config doesn't exist, or warn lightly
-                # self.warning("配置文件不存在 ...")
-                pass
-
-        return config
+            return load_effective_config(create_missing=False)
 
     # 保存配置文件
     def save_config(self, new: dict) -> None:
-        old = {}
-
-        # 读取配置文件
         with Base.CONFIG_FILE_LOCK:
-            if os.path.exists(Base.CONFIG_PATH):
-                with open(Base.CONFIG_PATH, "r", encoding="utf-8") as reader:
-                    old = json.load(reader)
+            old = load_effective_config(create_missing=False)
 
-        # 对比新旧数据是否一致
-        if old == new:
-            return old
+            # 对比新旧数据是否一致
+            if old == new:
+                return old
 
-        # 更新配置数据
-        for k, v in new.items():
-            if k not in old.keys():
+            # 更新配置数据
+            for k, v in new.items():
                 old[k] = v
-            else:
-                old[k] = new[k]
-
-        # 写入配置文件
-        with Base.CONFIG_FILE_LOCK:
-            # Ensure directory exists
-            os.makedirs(os.path.dirname(Base.CONFIG_PATH), exist_ok=True)
-            with open(Base.CONFIG_PATH, "w", encoding="utf-8") as writer:
-                writer.write(json.dumps(old, indent=4, ensure_ascii=False))
+            save_effective_config(old)
 
         return old
 
