@@ -45,6 +45,7 @@ from ModuleFolders.UserInterface.UIHelpers import (
 from ModuleFolders.UserInterface.WebLogger import WebLogger
 from ModuleFolders.UserInterface.RuntimeBootstrap import ensure_runtime_bootstrap
 from ModuleFolders.UserInterface.ConsoleInputGuard import suppress_console_mouse_input
+from ModuleFolders.UserInterface.ConfigExperience import calculate_output_path
 from ModuleFolders.Infrastructure.TaskConfig.ConfigProfileService import (
     list_profile_names,
     load_effective_config,
@@ -92,6 +93,9 @@ class CLIMenu:
         self._manga_runtime_menu_handler = None
         self._prompt_selection_guard = None
         self._terminal_compatibility = None
+        self._config_experience = None
+        self._recent_projects_menu = None
+        self._rule_preview_menu = None
         
         self.config = {}
         self.root_config = {}
@@ -377,6 +381,30 @@ class CLIMenu:
             self._terminal_compatibility = TerminalCompatibilityHelper(self)
         return self._terminal_compatibility
 
+    @property
+    def config_experience(self):
+        if self._config_experience is None:
+            from ModuleFolders.UserInterface.ConfigExperience import ConfigExperience
+
+            self._config_experience = ConfigExperience(self)
+        return self._config_experience
+
+    @property
+    def recent_projects_menu(self):
+        if self._recent_projects_menu is None:
+            from ModuleFolders.UserInterface.RecentProjectsMenu import RecentProjectsMenu
+
+            self._recent_projects_menu = RecentProjectsMenu(self)
+        return self._recent_projects_menu
+
+    @property
+    def rule_preview_menu(self):
+        if self._rule_preview_menu is None:
+            from ModuleFolders.UserInterface.RulePreview import RulePreviewMenu
+
+            self._rule_preview_menu = RulePreviewMenu(self)
+        return self._rule_preview_menu
+
     def _is_task_ui_instance(self):
         ui = getattr(self, "ui", None)
         if ui is None:
@@ -513,27 +541,36 @@ class CLIMenu:
 
     def _update_recent_projects(self, project_path):
         recent = self.root_config.get("recent_projects", [])
-        
+
         # --- Migration & Cleanup ---
         # Convert any old string-only entries to new object format
         new_recent = []
+        current_pinned = False
         for item in recent:
             if isinstance(item, str):
                 new_recent.append({"path": item, "profile": "default", "rules_profile": "default"})
             elif isinstance(item, dict) and "path" in item:
                 new_recent.append(item)
-        
+
         # Remove current project if it exists in list (compare by path)
-        new_recent = [i for i in new_recent if i["path"] != project_path]
-        
+        kept_recent = []
+        for item in new_recent:
+            if item["path"] == project_path:
+                current_pinned = bool(item.get("pinned", False))
+            else:
+                kept_recent.append(item)
+
         # Add current project at start
-        new_recent.insert(0, {
+        kept_recent.insert(0, {
             "path": project_path,
             "profile": self.active_profile_name,
-            "rules_profile": self.active_rules_profile_name
+            "rules_profile": self.active_rules_profile_name,
+            "pinned": current_pinned,
         })
-        
-        self.root_config["recent_projects"] = new_recent[:5]
+
+        pinned = [item for item in kept_recent if item.get("pinned")]
+        normal = [item for item in kept_recent if not item.get("pinned")]
+        self.root_config["recent_projects"] = pinned + normal[: max(0, 10 - len(pinned))]
         save_root_config(self.root_config)
 
     def _auto_merge_batch_ebooks(self, merge_input_dir, merge_output_dir, merge_name, allow_non_series_prompt=True):
@@ -737,8 +774,8 @@ class CLIMenu:
         while True:
             self.display_banner()
             table = Table(show_header=False, box=None)
-            menus = ["start_translation", "start_manga_translation", "start_polishing", "start_all_in_one", "export_only", "editor", "settings", "api_settings", "glossary", "plugin_settings", "task_queue", "profiles", "qa", "update", "update_web", "start_web_server", "start_mcp_server", "manga_runtime_manager"]
-            colors = ["green", "cyan", "green", "bold green", "magenta", "bold cyan", "blue", "blue", "yellow", "cyan", "bold blue", "cyan", "yellow", "dim", "bold magenta", "magenta", "bold magenta", "cyan"]
+            menus = ["start_translation", "start_manga_translation", "start_polishing", "start_all_in_one", "export_only", "editor", "settings", "api_settings", "glossary", "effective_config_preview", "recent_project_manager", "plugin_settings", "task_queue", "profiles", "qa", "update", "update_web", "start_web_server", "start_mcp_server", "manga_runtime_manager"]
+            colors = ["green", "cyan", "green", "bold green", "magenta", "bold cyan", "blue", "blue", "yellow", "bright_blue", "bright_cyan", "cyan", "bold blue", "cyan", "yellow", "dim", "bold magenta", "magenta", "bold magenta", "cyan"]
             
             for i, (m, c) in enumerate(zip(menus, colors)): 
                 label = i18n.get(f"menu_{m}")
@@ -754,6 +791,10 @@ class CLIMenu:
                     label = "漫画翻译 (MangaCore)"
                 if m == "manga_runtime_manager" and label == f"menu_{m}":
                     label = "MangaCore Runtime 管理"
+                if m == "effective_config_preview" and label == f"menu_{m}":
+                    label = "有效配置预览"
+                if m == "recent_project_manager" and label == f"menu_{m}":
+                    label = i18n.get("menu_recent_projects")
                 table.add_row(f"[{c}]{i+1}.[/]", label)
                 
             table.add_row("[red]0.[/]", i18n.get("menu_exit")); console.print(table)
@@ -761,7 +802,7 @@ class CLIMenu:
             console.print("\n")
 
             # 记录用户操作
-            menu_names = ["退出", "开始翻译", "漫画翻译", "开始润色", "翻译&润色", "仅导出", "编辑器", "项目设置", "API设置", "提示词", "插件设置", "任务队列", "配置管理", "帮助QA", "更新", "更新Web", "Web服务器", "MCP服务器", "漫画Runtime管理"]
+            menu_names = ["退出", "开始翻译", "漫画翻译", "开始润色", "翻译&润色", "仅导出", "编辑器", "项目设置", "API设置", "提示词", "有效配置预览", "最近项目管理", "插件设置", "任务队列", "配置管理", "帮助QA", "更新", "更新Web", "Web服务器", "MCP服务器", "漫画Runtime管理"]
             if choice < len(menu_names):
                 self.operation_logger.log(f"主菜单 -> {menu_names[choice]}", "MENU")
 
@@ -776,6 +817,8 @@ class CLIMenu:
                 self.settings_menu,
                 self.api_manager.api_settings_menu,
                 self.glossary_menu.prompt_menu,
+                self.config_experience.show_effective_config,
+                self.recent_projects_menu.show,
                 self.plugin_settings_menu,
                 self.task_queue_menu,
                 self.profiles_menu,
@@ -901,7 +944,7 @@ class CLIMenu:
     def plugin_settings_menu(self):
         self.plugin_settings_menu_handler.show()
 
-    def run_task(self, task_mode, target_path=None, continue_status=False, non_interactive=False, web_mode=False, from_queue=False, skip_prompt_validation=False, save_runtime_config=True):
+    def run_task(self, task_mode, target_path=None, continue_status=False, non_interactive=False, web_mode=False, from_queue=False, skip_prompt_validation=False, save_runtime_config=True, skip_preflight=False):
         # 如果是非交互模式，直接跳过菜单
         if target_path is None:
             last_path = self.config.get("label_input_path")
@@ -921,7 +964,8 @@ class CLIMenu:
             console.clear()
             
             menu_text = f"1. {i18n.get('mode_single_file')}\n2. {i18n.get('mode_batch_folder')}"
-            choices = ["0", "1", "2"]
+            menu_text += f"\nM. {i18n.get('menu_recent_project_manager') if i18n.get('menu_recent_project_manager') != 'menu_recent_project_manager' else i18n.get('menu_recent_projects')}"
+            choices = ["0", "1", "2", "M", "m"]
             next_option_idx = 3
             
             if can_resume:
@@ -950,8 +994,12 @@ class CLIMenu:
             console.print(Panel(menu_text, title=f"[bold]{i18n.get('menu_input_mode')}[/bold]", expand=False))
             
             prompt_text = i18n.get('prompt_select').strip().rstrip(':').rstrip('：')
-            choice = IntPrompt.ask(f"\n{prompt_text}", choices=choices, show_choices=False)
+            choice_raw = Prompt.ask(f"\n{prompt_text}", choices=choices, show_choices=False)
             console.print("\n")
+            if str(choice_raw).upper() == "M":
+                self.recent_projects_menu.show()
+                return False
+            choice = int(choice_raw)
             if choice == 0:
                 return False
             
@@ -976,9 +1024,9 @@ class CLIMenu:
                             self.active_rules_profile_name = r_p_name
                             self.root_config["active_rules_profile"] = r_p_name
                             console.print(f"[dim]Auto-switched Rules Profile to: {r_p_name}[/dim]")
-                        
+
                         if p_name or r_p_name:
-                            self.save_config(save_root=True)
+                            save_root_config(self.root_config)
                             self.load_config() # Reload to apply merge
                     else:
                         target_path = item
@@ -1020,21 +1068,16 @@ class CLIMenu:
             ):
                 return False
 
+        opath = calculate_output_path(self.config, target_path)
+
+        if not skip_preflight and not non_interactive and not web_mode and not from_queue:
+            if not self.config_experience.confirm_before_task(task_mode, target_path, opath, continue_status):
+                return False
+
         if save_runtime_config:
             self._update_recent_projects(target_path)
         self.config["label_input_path"] = target_path
-        
-        # 自动设置输出路径 (如果开启了自动跟随，或者用户未设置输出路径)
-        is_auto_output = self.config.get("auto_set_output_path", False)
-        if is_auto_output or self.config.get("label_output_path") is None or self.config.get("label_output_path") == "":
-            abs_input = os.path.abspath(target_path)
-            parent_dir = os.path.dirname(abs_input)
-            base_name = os.path.basename(abs_input)
-            if os.path.isfile(target_path): base_name = os.path.splitext(base_name)[0]
-            opath = os.path.join(parent_dir, f"{base_name}_AiNiee_Output")
-            self.config["label_output_path"] = opath
-        else:
-            opath = self.config.get("label_output_path")
+        self.config["label_output_path"] = opath
 
         if save_runtime_config:
             self.save_config()
@@ -1826,6 +1869,15 @@ class CLIMenu:
         ):
             return
 
+        opath = calculate_output_path(self.config, target_path)
+        if not self.config_experience.confirm_before_task(
+            TaskType.TRANSLATE_AND_POLISH,
+            target_path,
+            opath,
+            continue_status=False,
+        ):
+            return
+
         # 1. Run Translation
         if not self.run_task(
             TaskType.TRANSLATION,
@@ -1833,6 +1885,7 @@ class CLIMenu:
             continue_status=False,
             from_queue=True, # Suppress "Press Enter"
             skip_prompt_validation=True,
+            skip_preflight=True,
         ):
             return
         
@@ -1847,6 +1900,7 @@ class CLIMenu:
             continue_status=True, # Resume based on translation output
             from_queue=False, # Allow "Press Enter" on final completion
             skip_prompt_validation=True,
+            skip_preflight=True,
         )
 
     def run_export_only(self, target_path=None, non_interactive=False):

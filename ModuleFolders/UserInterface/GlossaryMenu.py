@@ -207,16 +207,17 @@ class GlossaryMenu:
 
             table.add_section()
             table.add_row("[cyan]9.[/]", f"{self.i18n.get('menu_switch_profile_short')} ([yellow]{self.active_rules_profile_name}[/yellow])")
-            table.add_row("[cyan]10.[/]", f"{self.i18n.get('menu_system_prompts') or 'System Prompts'} ([dim]{self.i18n.get('label_readonly') or 'Read Only'}[/dim])")
-            table.add_row("[cyan]11.[/]", f"{self.i18n.get('menu_ai_glossary_analysis') or 'AI自动分析术语表'}")
-            table.add_row("[cyan]12.[/]", f"{self.i18n.get('menu_prompt_test') or '提示词测试'}")
+            table.add_row("[cyan]10.[/]", f"{self.i18n.get('menu_rule_effective_preview') or '规则生效预览'}")
+            table.add_row("[cyan]11.[/]", f"{self.i18n.get('menu_system_prompts') or 'System Prompts'} ([dim]{self.i18n.get('label_readonly') or 'Read Only'}[/dim])")
+            table.add_row("[cyan]12.[/]", f"{self.i18n.get('menu_ai_glossary_analysis') or 'AI自动分析术语表'}")
+            table.add_row("[cyan]13.[/]", f"{self.i18n.get('menu_prompt_test') or '提示词测试'}")
 
             console.print(table)
             console.print(f"\n[dim]0. {self.i18n.get('menu_exit')}[/dim]")
 
             choice = Prompt.ask(
                 self.i18n.get('prompt_select'),
-                choices=[str(i) for i in range(13)] + ["G", "g"],
+                choices=[str(i) for i in range(14)] + ["G", "g"],
                 show_choices=False,
             ).upper()
             console.print("\n")
@@ -247,10 +248,12 @@ class GlossaryMenu:
             elif choice == "9":
                 self.rules_profiles_menu()
             elif choice == "10":
-                self.select_prompt_template("System", None)
+                self.cli.rule_preview_menu.show()
             elif choice == "11":
-                self.run_glossary_analysis_task()
+                self.select_prompt_template("System", None)
             elif choice == "12":
+                self.run_glossary_analysis_task()
+            elif choice == "13":
                 self.run_prompt_test()
 
     def run_glossary_analysis_task(self):
