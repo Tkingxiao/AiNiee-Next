@@ -4,6 +4,7 @@ import re
 import time
 import requests
 import itertools
+import os
 
 from rich import box
 from rich.table import Table
@@ -53,6 +54,9 @@ class TranslatorTask(Base):
         self.affix_whitespace_storage = {}
         # 原文上下文数据（用于上下文增强）
         self.source_context_items = []
+        # 角色召回上下文仅用于本地判断，不会直接进入 LLM 提示词。
+        self.character_recall_previous_items = []
+        self.character_recall_lookahead_items = []
         self._prepared = False
         self.consistency_context_provider = None
         self.consistency_state_updater = None
@@ -72,6 +76,10 @@ class TranslatorTask(Base):
     def set_source_context_items(self, source_context_items: list[CacheItem]) -> None:
         self.source_context_items = source_context_items
 
+    def set_character_recall_items(self, previous_items: list[CacheItem], lookahead_items: list[CacheItem]) -> None:
+        self.character_recall_previous_items = previous_items or []
+        self.character_recall_lookahead_items = lookahead_items or []
+
     def set_consistency_context_provider(self, provider) -> None:
         self.consistency_context_provider = provider
 
@@ -86,6 +94,9 @@ class TranslatorTask(Base):
 
         # 生成原文上下文文本列表（用于上下文增强）
         self.source_context_text_list = [v.source_text for v in self.source_context_items]
+
+        self.character_recall_previous_text_list = [v.source_text for v in self.character_recall_previous_items]
+        self.character_recall_lookahead_text_list = [v.source_text for v in self.character_recall_lookahead_items]
 
         if callable(self.consistency_context_provider):
             try:
@@ -121,10 +132,12 @@ class TranslatorTask(Base):
                 self.source_text_dict
             )
         
+        prompt_config = self._config_for_prompt()
+
         # 生成请求指令
         if target_platform == "sakura":
             self.messages, self.system_prompt, self.extra_log = PromptBuilderSakura.generate_prompt_sakura(
-                self.config,
+                prompt_config,
                 self.source_text_dict,
                 self.previous_text_list, 
                 self.source_lang, 
@@ -132,7 +145,7 @@ class TranslatorTask(Base):
             )
         elif target_platform == "LocalLLM":
             self.messages, self.system_prompt, self.extra_log = PromptBuilderLocal.generate_prompt_LocalLLM(
-                self.config,
+                prompt_config,
                 self.source_text_dict,
                 self.previous_text_list,
                 self.source_lang,
@@ -140,18 +153,47 @@ class TranslatorTask(Base):
             )
         else:
             self.messages, self.system_prompt, self.extra_log = PromptBuilder.generate_prompt(
-                self.config,
+                prompt_config,
                 self.source_text_dict,
                 self.previous_text_list,
                 self.source_lang,
                 self.rag_context,
                 self.source_context_text_list,
                 self.consistency_context,
+                self.character_recall_previous_text_list,
+                self.character_recall_lookahead_text_list,
             )
 
         # 预估 Token 消费
         self.request_tokens_consume = Tokener.calculate_tokens(self,self.messages,self.system_prompt,)
         self._prepared = True
+
+    def _config_for_prompt(self):
+        dynamic_volume = self._dynamic_glossary_volume_for_file()
+        if dynamic_volume is None:
+            return self.config
+
+        if hasattr(self.config, "clone"):
+            prompt_config = self.config.clone()
+        else:
+            prompt_config = copy.deepcopy(self.config)
+        prompt_config.dynamic_glossary_volume = dynamic_volume
+        return prompt_config
+
+    def _dynamic_glossary_volume_for_file(self):
+        if not getattr(self.config, "dynamic_glossary_switch", False):
+            return None
+
+        volume_map = getattr(self.config, "dynamic_glossary_volume_map", {}) or {}
+        file_path = getattr(self, "file_path_full", "")
+        volume = None
+        if isinstance(volume_map, dict):
+            volume = volume_map.get(file_path)
+            if volume is None and file_path:
+                volume = volume_map.get(os.path.basename(str(file_path)))
+        if volume is None:
+            volume = getattr(self.config, "dynamic_glossary_volume", None)
+        return volume
 
 
     # 启动任务

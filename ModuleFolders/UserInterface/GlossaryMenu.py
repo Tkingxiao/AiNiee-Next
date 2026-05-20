@@ -81,6 +81,12 @@ class GlossaryMenu:
     def i18n(self):
         return self.cli.i18n
 
+    def _tr(self, key, fallback):
+        value = self.i18n.get(key)
+        if not value or value == key:
+            return fallback
+        return value
+
     @property
     def file_selector(self):
         return self.cli.file_selector
@@ -256,7 +262,7 @@ class GlossaryMenu:
             elif choice == "13":
                 self.run_prompt_test()
 
-    def run_glossary_analysis_task(self):
+    def run_glossary_analysis_task(self, incremental_defaults=None, assume_series=False):
         """AI自动分析术语表功能入口"""
         self.display_banner()
         console.print(Panel(f"[bold]{self.i18n.get('menu_ai_glossary_analysis') or 'AI自动分析术语表'}[/bold]"))
@@ -277,6 +283,11 @@ class GlossaryMenu:
             console.print(f"[red]{self.i18n.get('err_not_file') or '错误: 路径不存在'}[/red]")
             Prompt.ask(f"\n{self.i18n.get('msg_press_enter')}")
             return
+
+        incremental_options = self._prompt_incremental_glossary_options(
+            defaults=incremental_defaults,
+            assume_series=assume_series,
+        )
 
         # 选择分析模式
         console.print(f"\n[cyan]{self.i18n.get('prompt_select_glossary_analysis_mode') or '请选择术语提取模式:'}[/cyan]")
@@ -374,6 +385,10 @@ class GlossaryMenu:
                 analysis_mode=analysis_mode,
                 prompt_file=prompt_file,
                 translate_during_analysis=translate_during_analysis,
+                new=incremental_options.get("new", False),
+                replace=incremental_options.get("replace", False),
+                source_label=incremental_options.get("source_label"),
+                source_volume=incremental_options.get("source_volume"),
             )
 
             if analysis_result is None:
@@ -405,6 +420,7 @@ class GlossaryMenu:
                 save_result.get('glossary_path'),
                 temp_platform_config,
                 save_result.get('structured_rules'),
+                save_result.get('incremental_options'),
             )
 
         except Exception as e:
@@ -413,6 +429,61 @@ class GlossaryMenu:
             traceback.print_exc()
 
         Prompt.ask(f"\n{self.i18n.get('msg_press_enter')}")
+
+    def _prompt_incremental_glossary_options(self, defaults=None, assume_series=False):
+        """询问是否按系列作启用增量术语提取。"""
+        defaults = defaults or {}
+        if not assume_series and not Confirm.ask(
+            self._tr('confirm_glossary_series_incremental', "该文件是否属于同一系列作，需要在现有术语表上增量叠加?"),
+            default=bool(defaults.get("enabled", False)),
+        ):
+            return {"enabled": False, "new": False, "replace": False, "source_label": "", "source_volume": None}
+
+        if assume_series:
+            console.print(
+                f"[cyan]{self._tr('msg_continue_series_glossary_analysis', '继续为该系列作品提取术语表，请确认当前文件对应的卷号。')}[/cyan]"
+            )
+
+        default_volume = defaults.get("source_volume", 1)
+        try:
+            default_volume = int(default_volume)
+        except (TypeError, ValueError):
+            default_volume = 1
+        default_volume = max(1, default_volume)
+        source_volume = IntPrompt.ask(
+            self._tr('prompt_glossary_source_volume', "请输入当前卷号（例如 2）"),
+            default=default_volume,
+        )
+        source_volume = max(1, source_volume)
+        previous_volume = defaults.get("source_volume")
+        try:
+            previous_volume = int(previous_volume)
+        except (TypeError, ValueError):
+            previous_volume = None
+        default_label = defaults.get("source_label") if previous_volume == source_volume else f"Vol_{source_volume}"
+        default_label = default_label or f"Vol_{source_volume}"
+        source_label = Prompt.ask(
+            self._tr('prompt_glossary_source_label', "请输入本次来源标签"),
+            default=default_label,
+        ).strip()
+        allow_new = Confirm.ask(
+            self._tr('confirm_glossary_incremental_new', "是否允许新增本卷出现但当前术语表未记录的新术语/规则? (new)"),
+            default=bool(defaults.get("new", True)),
+        )
+        allow_replace = Confirm.ask(
+            self._tr('confirm_glossary_incremental_replace', "是否允许根据本卷证据补全或替换现有术语/角色描述? (replace)"),
+            default=bool(defaults.get("replace", True)),
+        )
+        if not allow_new and not allow_replace:
+            console.print(f"[yellow]{self._tr('msg_glossary_incremental_disabled_empty', 'new 和 replace 都未启用，将跳过增量模式并按普通提取处理。')}[/yellow]")
+            return {"enabled": False, "new": False, "replace": False, "source_label": "", "source_volume": None}
+        return {
+            "enabled": True,
+            "new": allow_new,
+            "replace": allow_replace,
+            "source_label": source_label or default_label,
+            "source_volume": source_volume,
+        }
 
     def run_prompt_test(self):
         """提示词测试功能入口"""
@@ -702,8 +773,17 @@ class GlossaryMenu:
 
         console.print(table)
 
-    def _show_glossary_action_menu(self, filtered_terms, glossary_data, glossary_path=None, temp_config=None, structured_rules=None):
+    def _show_glossary_action_menu(
+        self,
+        filtered_terms,
+        glossary_data,
+        glossary_path=None,
+        temp_config=None,
+        structured_rules=None,
+        incremental_options=None,
+    ):
         """显示术语表操作菜单"""
+        incremental_options = incremental_options or {}
         while True:
             console.print(f"\n[cyan]{self.i18n.get('prompt_select_action') or '请选择操作:'}[/cyan]")
             table = Table(show_header=False, box=None)
@@ -716,12 +796,13 @@ class GlossaryMenu:
             table.add_row("[cyan]7.[/]", (self.i18n.get('option_multi_translate') or "多翻译选择") + " " + (self.i18n.get('label_temp_api') or "(临时API)"))
             table.add_row("[cyan]8.[/]", (self.i18n.get('option_set_rounds') or "设置轮询次数") + " " + (self.i18n.get('label_current_config') or "(当前配置)"))
             table.add_row("[cyan]9.[/]", (self.i18n.get('option_set_rounds') or "设置轮询次数") + " " + (self.i18n.get('label_temp_api') or "(临时API)"))
+            table.add_row("[cyan]10.[/]", self._tr('option_continue_series_glossary_analysis', "继续为该系列作品提取术语表"))
             console.print(table)
             console.print(f"\n[dim]0. {self.i18n.get('menu_back')}[/dim]")
 
             choice = IntPrompt.ask(
                 self.i18n.get('prompt_select'),
-                choices=[str(i) for i in range(10)],
+                choices=[str(i) for i in range(11)],
                 show_choices=False,
                 default=2
             )
@@ -730,9 +811,19 @@ class GlossaryMenu:
                 return
             elif choice == 1:
                 if structured_rules:
-                    self.analyzer.save_structured_rules_directly(structured_rules, save_mode="import", base_glossary_path=glossary_path)
+                    self.analyzer.save_structured_rules_directly(
+                        structured_rules,
+                        save_mode="import",
+                        base_glossary_path=glossary_path,
+                        merge_options=incremental_options,
+                    )
                 else:
-                    self.analyzer.save_glossary_directly(glossary_data, save_mode="import", base_glossary_path=glossary_path)
+                    self.analyzer.save_glossary_directly(
+                        glossary_data,
+                        save_mode="import",
+                        base_glossary_path=glossary_path,
+                        merge_options=incremental_options,
+                    )
             elif choice == 2:
                 if not structured_rules:
                     console.print(f"[yellow]{self.i18n.get('msg_no_structured_rules_for_profile') or '没有可写入规则配置的分类结果。'}[/yellow]")
@@ -740,7 +831,12 @@ class GlossaryMenu:
                 self._create_rules_profile_from_analysis(structured_rules)
                 return
             elif choice == 3:
-                self.analyzer.save_glossary_directly(glossary_data, save_mode="import", base_glossary_path=glossary_path)
+                self.analyzer.save_glossary_directly(
+                    glossary_data,
+                    save_mode="import",
+                    base_glossary_path=glossary_path,
+                    merge_options=incremental_options,
+                )
             elif choice == 4:
                 self.analyzer.save_glossary_directly(glossary_data, save_mode="standalone", base_glossary_path=glossary_path)
             elif choice == 5:
@@ -802,6 +898,34 @@ class GlossaryMenu:
                     self.analyzer.save_glossary_directly(glossary_data, save_mode="standalone", base_glossary_path=glossary_path)
                     self._ask_translate_mode_and_run(filtered_terms, translate_config, rounds, glossary_path)
                     return
+            elif choice == 10:
+                if structured_rules:
+                    self.analyzer.save_structured_rules_directly(
+                        structured_rules,
+                        save_mode="import",
+                        base_glossary_path=glossary_path,
+                        merge_options=incremental_options,
+                    )
+                else:
+                    self.analyzer.save_glossary_directly(
+                        glossary_data,
+                        save_mode="import",
+                        base_glossary_path=glossary_path,
+                        merge_options=incremental_options,
+                    )
+                next_defaults = dict(incremental_options or {})
+                next_defaults["enabled"] = True
+                try:
+                    next_volume = int(next_defaults.get("source_volume") or 0) + 1
+                except (TypeError, ValueError):
+                    next_volume = 1
+                next_volume = max(1, next_volume)
+                next_defaults["source_volume"] = next_volume
+                next_defaults["source_label"] = f"Vol_{next_volume}"
+                next_defaults.setdefault("new", True)
+                next_defaults.setdefault("replace", True)
+                self.run_glossary_analysis_task(incremental_defaults=next_defaults, assume_series=True)
+                return
 
     def _create_rules_profile_from_analysis(self, structured_rules):
         """提示用户输入 rules_profile 名称，并创建后切换。"""

@@ -444,6 +444,42 @@ register_config(ConfigItem(
     category="prompt_feature"
 ))
 
+register_config(ConfigItem(
+    key="character_recall_switch",
+    default=True,
+    level=ConfigLevel.USER,
+    config_type=ConfigType.BOOL,
+    i18n_key="feature_character_recall_switch",
+    i18n_desc_key="feature_character_recall_switch_desc",
+    category="prompt_feature"
+))
+
+register_config(ConfigItem(
+    key="character_recall_context_lines",
+    default=50,
+    level=ConfigLevel.USER,
+    config_type=ConfigType.INT,
+    i18n_key="setting_character_recall_context_lines",
+    i18n_desc_key="setting_character_recall_context_lines_desc",
+    min_value=0,
+    max_value=200,
+    depends_on="character_recall_switch",
+    category="prompt_feature"
+))
+
+register_config(ConfigItem(
+    key="character_recall_lookahead_lines",
+    default=10,
+    level=ConfigLevel.USER,
+    config_type=ConfigType.INT,
+    i18n_key="setting_character_recall_lookahead_lines",
+    i18n_desc_key="setting_character_recall_lookahead_lines_desc",
+    min_value=0,
+    max_value=50,
+    depends_on="character_recall_switch",
+    category="prompt_feature"
+))
+
 # --- 数据存储 (SYSTEM) - 不对用户显示 ---
 register_config(ConfigItem(
     key="pre_translation_data",

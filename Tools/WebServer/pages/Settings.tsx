@@ -1039,6 +1039,27 @@ export const Settings: React.FC = () => {
             <Toggle field="prompt_dictionary_switch" label={t('feature_prompt_dictionary_switch')} />
             <Toggle field="exclusion_list_switch" label={t('feature_exclusion_list_switch')} />
             <Toggle field="characterization_switch" label={t('feature_characterization_switch')} />
+            <Toggle
+              field="character_recall_switch"
+              label={t('feature_character_recall_switch')}
+              desc={t('feature_character_recall_switch_desc')}
+            />
+            {config.character_recall_switch && (
+              <>
+                <div className="p-3 rounded-lg border border-slate-700 bg-slate-900/40 space-y-2">
+                  <label className="text-xs font-semibold text-slate-400 uppercase">{t('setting_character_recall_context_lines')}</label>
+                  <p className="text-[10px] text-slate-500">{t('setting_character_recall_context_lines_desc')}</p>
+                  <input type="number" min={0} max={200} value={config.character_recall_context_lines ?? 50} onChange={(e) => handleChange('character_recall_context_lines', parseInt(e.target.value) || 0)}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-slate-200 focus:border-primary text-sm" />
+                </div>
+                <div className="p-3 rounded-lg border border-slate-700 bg-slate-900/40 space-y-2">
+                  <label className="text-xs font-semibold text-slate-400 uppercase">{t('setting_character_recall_lookahead_lines')}</label>
+                  <p className="text-[10px] text-slate-500">{t('setting_character_recall_lookahead_lines_desc')}</p>
+                  <input type="number" min={0} max={50} value={config.character_recall_lookahead_lines ?? 10} onChange={(e) => handleChange('character_recall_lookahead_lines', parseInt(e.target.value) || 0)}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-slate-200 focus:border-primary text-sm" />
+                </div>
+              </>
+            )}
             <Toggle field="world_building_switch" label={t('feature_world_building_switch')} />
             <Toggle field="writing_style_switch" label={t('feature_writing_style_switch')} />
             <Toggle field="translation_example_switch" label={t('feature_translation_example_switch')} />

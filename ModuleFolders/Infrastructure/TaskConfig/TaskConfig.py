@@ -2,6 +2,7 @@ import os
 import re
 import threading
 import urllib
+import copy
 
 import rapidjson as json
 
@@ -63,6 +64,19 @@ class TaskConfig(Base):
         self.writing_style_content = ""
         self.translation_example_switch = False
         self.translation_example_data = []
+        self.world_building_history = []
+        self.writing_style_history = []
+        self.dynamic_glossary_switch = False
+        self.dynamic_glossary_series = ""
+        self.dynamic_glossary_volume = None
+        self.dynamic_glossary_volume_map = {}
+        self.character_recall_switch = True
+        self.character_recall_context_lines = 50
+        self.character_recall_lookahead_lines = 10
+        self.character_recall_max_strong = 5
+        self.character_recall_max_candidates = 2
+        self.character_recall_min_strong_score = 80
+        self.character_recall_min_candidate_score = 40
         self.few_shot_and_example_switch = False
 
         # 故障转移配置
@@ -167,6 +181,11 @@ class TaskConfig(Base):
     # 修复：添加 get 方法以兼容字典操作，解决 AttributeError
     def get(self, key, default=None):
         return getattr(self, key, default)
+
+    def clone(self):
+        cloned = TaskConfig()
+        cloned.load_config_from_dict(copy.deepcopy(self.get_vars()))
+        return cloned
 
     # 从字典加载配置 (用于从外部传入配置)
     def load_config_from_dict(self, config_dict: dict) -> None:

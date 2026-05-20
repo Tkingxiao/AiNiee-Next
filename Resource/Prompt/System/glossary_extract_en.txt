@@ -70,6 +70,8 @@ Each item format:
   "age": "",
   "personality": "",
   "speech_style": "",
+  "pronouns": "",
+  "speech_quirks": "",
   "additional_info": ""
 }
 ```
@@ -79,6 +81,8 @@ Rules:
 - Do not guess translated_name; leave it empty.
 - personality should contain traits supported by the text.
 - speech_style should capture tone, verbal habits, politeness, slang, catchphrases, or register.
+- pronouns should capture first-person/second-person pronouns and address patterns, such as 私, 俺, 僕, あなた, 君. If they change across the text, describe the change.
+- speech_quirks should capture catchphrases, sentence endings, verbal tics, honorific habits, profanity habits, or fixed expressions. Leave it empty if there is no evidence.
 - additional_info should contain identity, faction, relationships, or narrative role.
 - Leave unknown fields as empty strings, not null.
 
@@ -128,6 +132,8 @@ Leave dst empty for the user to fill later.
       "age": "",
       "personality": "Cautious and polite, guarded around strangers",
       "speech_style": "Uses short replies to test the other person's intent; restrained tone",
+      "pronouns": "Uses first-person pronoun \"I\" in a formal register",
+      "speech_quirks": "",
       "additional_info": "Main character in the current passage"
     }
   ],

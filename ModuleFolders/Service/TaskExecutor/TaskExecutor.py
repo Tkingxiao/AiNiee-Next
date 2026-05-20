@@ -22,6 +22,13 @@ from ModuleFolders.Infrastructure.RequestLimiter.RequestLimiter import RequestLi
 from ModuleFolders.Service.TaskExecutor.TranslatorUtil import get_source_language_for_file
 
 
+def _safe_int(value, default=0):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 # 翻译器
 class TaskExecutor(Base):
 
@@ -172,6 +179,31 @@ class TaskExecutor(Base):
             "file_filtered_total_line": max(raw_total - excluded_total, 0),
             "file_excluded_total_line": excluded_total,
         }
+
+    def _build_character_recall_window(self, file_path: str, chunk: list) -> tuple[list, list]:
+        if not getattr(self.config, "character_recall_switch", True):
+            return [], []
+        if not chunk or not self.cache_manager.project:
+            return [], []
+
+        previous_count = max(0, _safe_int(getattr(self.config, "character_recall_context_lines", 50), 50))
+        lookahead_count = max(0, _safe_int(getattr(self.config, "character_recall_lookahead_lines", 10), 10))
+        if previous_count <= 0 and lookahead_count <= 0:
+            return [], []
+
+        cache_file = self.cache_manager.project.get_file(file_path)
+        if not cache_file or not cache_file.items:
+            return [], []
+
+        try:
+            start_idx = cache_file.index_of(chunk[0].text_index)
+            end_idx = cache_file.index_of(chunk[-1].text_index)
+        except (KeyError, IndexError, AttributeError):
+            return [], []
+
+        previous_items = cache_file.items[max(0, start_idx - previous_count):start_idx] if previous_count > 0 else []
+        lookahead_items = cache_file.items[end_idx + 1:end_idx + 1 + lookahead_count] if lookahead_count > 0 else []
+        return previous_items, lookahead_items
 
     def _with_filter_progress_info(self, stats_dict: dict) -> dict:
         raw_total = self.cache_manager.get_item_count()
@@ -720,6 +752,9 @@ class TaskExecutor(Base):
                     task.set_items(chunk)  # 传入该任务待翻译原文
                     task.set_previous_items(previous_chunk)  # 传入该任务待翻译原文的上文
                     task.set_source_context_items(source_context)  # 传入原文上下文（用于上下文增强）
+                    task.set_character_recall_items(
+                        *self._build_character_recall_window(file_path, chunk)
+                    )
                     if getattr(self.config, "translation_consistency_enhancement", False):
                         task.set_consistency_context_provider(self.get_translation_consistency_state_snapshot)
                         task.set_consistency_state_updater(self.update_translation_consistency_state)

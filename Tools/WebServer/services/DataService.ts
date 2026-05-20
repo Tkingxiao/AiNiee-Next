@@ -37,7 +37,10 @@ export const DataService = {
 
     async getSystemMode(): Promise<{ mode: 'full' | 'monitor' }> {
         try {
-            const res = await fetch(`${API_BASE}/system/mode`);
+            const controller = new AbortController();
+            const timeout = window.setTimeout(() => controller.abort(), 2000);
+            const res = await fetch(`${API_BASE}/system/mode`, { signal: controller.signal });
+            window.clearTimeout(timeout);
             if (!res.ok) throw new Error('Failed to fetch system mode');
             return await res.json();
         } catch (error) {

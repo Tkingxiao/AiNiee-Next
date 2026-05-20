@@ -20,7 +20,9 @@ RULE_DATA_KEYS = (
     "exclusion_list_data",
     "characterization_data",
     "world_building_content",
+    "world_building_history",
     "writing_style_content",
+    "writing_style_history",
     "translation_example_data",
 )
 
@@ -170,7 +172,9 @@ def default_rules_payload() -> dict:
         "exclusion_list_data": [],
         "characterization_data": [],
         "world_building_content": "",
+        "world_building_history": [],
         "writing_style_content": "",
+        "writing_style_history": [],
         "translation_example_data": [],
         "prompt_dictionary_switch": False,
         "exclusion_list_switch": False,

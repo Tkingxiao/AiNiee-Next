@@ -3,6 +3,7 @@
 负责AI自动分析术语表的核心逻辑
 """
 import os
+import re
 import threading
 import concurrent.futures
 from datetime import datetime
@@ -26,8 +27,22 @@ STRUCTURED_RULE_KEYS = (
     "exclusion_list_data",
     "characterization_data",
     "world_building_content",
+    "world_building_history",
     "writing_style_content",
+    "writing_style_history",
     "translation_example_data",
+)
+
+GLOSSARY_TIMELINE_FIELDS = ("dst", "info")
+CHARACTER_TIMELINE_FIELDS = (
+    "translated_name",
+    "gender",
+    "age",
+    "personality",
+    "speech_style",
+    "pronouns",
+    "speech_quirks",
+    "additional_info",
 )
 
 
@@ -82,6 +97,10 @@ class GlossaryAnalyzer:
         analysis_mode="full",
         prompt_file=None,
         translate_during_analysis=False,
+        new=False,
+        replace=False,
+        source_label=None,
+        source_volume=None,
     ):
         """
         执行术语表分析的核心逻辑
@@ -94,6 +113,10 @@ class GlossaryAnalyzer:
             analysis_mode: full=全本/按比例单次提取，split=按行拆分提取
             prompt_file: 自定义术语分析提示词路径（可选）
             translate_during_analysis: 分析时让 LLM 同时输出目标语言译名和注释
+            new: 增量模式下允许新增当前文本中出现的新术语/规则
+            replace: 增量模式下允许补全或替换现有术语/角色/规则描述
+            source_label: 本次提取来源标签，例如 Vol_2
+            source_volume: 本次提取卷号，用于动态术语表时间线
 
         Returns:
             tuple: (filtered_terms, glossary_data) 或 None（如果失败）
@@ -163,6 +186,13 @@ class GlossaryAnalyzer:
         with open(prompt_path, 'r', encoding='utf-8') as f:
             system_prompt = f.read()
 
+        incremental_options = self._build_incremental_options(
+            new=new,
+            replace=replace,
+            source_label=source_label,
+            source_volume=source_volume,
+        )
+
         # 配置请求
         task_config = TaskConfig()
         task_config.load_config_from_dict(self.config)
@@ -183,8 +213,26 @@ class GlossaryAnalyzer:
                 f"[cyan]{self._tr('msg_glossary_analysis_translate_enabled', '已启用分析阶段直译：LLM 将同时输出译名和注释。')}[/cyan]"
             )
 
+        if incremental_options.get("enabled"):
+            existing_context = self._build_incremental_existing_rules_context()
+            system_prompt = self._append_incremental_analysis_instruction(
+                system_prompt,
+                existing_context,
+                incremental_options,
+            )
+            mode_bits = []
+            if incremental_options.get("new"):
+                mode_bits.append("new")
+            if incremental_options.get("replace"):
+                mode_bits.append("replace")
+            console.print(
+                f"[cyan]{self._tr('msg_glossary_incremental_enabled', '已启用增量术语提取')}: "
+                f"{'/'.join(mode_bits) or 'metadata'} | {incremental_options.get('source_label') or '-'}[/cyan]"
+            )
+
         all_terms = []
         structured_analysis = self._empty_analysis_payload()
+        raw_response_diagnostics = []
         completed_count = 0
         error_count = 0
 
@@ -200,6 +248,15 @@ class GlossaryAnalyzer:
                     terms = parsed.get("terms", [])
                     all_terms.extend(terms)
                     self._merge_analysis_payload(structured_analysis, parsed)
+                    if not terms and not self._has_non_glossary_analysis(parsed):
+                        raw_response_diagnostics.append(
+                            self._build_raw_response_diagnostic(
+                                "full",
+                                response,
+                                prompt_tokens,
+                                completion_tokens,
+                            )
+                        )
                     completed_count = 1
                     console.print(
                         f"[green]√ {self._tr('msg_analysis_complete', '分析完成!')} "
@@ -249,6 +306,15 @@ class GlossaryAnalyzer:
                         with terms_lock:
                             all_terms.extend(terms)
                             self._merge_analysis_payload(structured_analysis, parsed)
+                            if not terms and not self._has_non_glossary_analysis(parsed):
+                                raw_response_diagnostics.append(
+                                    self._build_raw_response_diagnostic(
+                                        batch_idx + 1,
+                                        response,
+                                        prompt_tokens,
+                                        completion_tokens,
+                                    )
+                                )
                             completed_counter[0] += 1
                         console.print(
                             f"[green]√ [{batch_idx+1:03d}] "
@@ -305,6 +371,11 @@ class GlossaryAnalyzer:
         if not term_freq:
             if not self._has_non_glossary_analysis(structured_analysis):
                 console.print(f"[yellow]{self.i18n.get('msg_no_terms_found') or '未找到专有名词'}[/yellow]")
+                diagnostic_path = self._save_raw_analysis_response_log(input_path, raw_response_diagnostics)
+                if diagnostic_path:
+                    console.print(
+                        f"[yellow]{self._tr('msg_glossary_parse_empty_with_response', '模型返回了内容，但未解析到术语/分类 JSON；已保存原始响应诊断: {}', diagnostic_path)}[/yellow]"
+                    )
                 return None
             console.print(f"[yellow]{self.i18n.get('msg_no_terms_found') or '未找到专有名词'}[/yellow]")
             console.print(f"[cyan]{self._tr('msg_structured_analysis_found', '已提取到角色/世界观/禁翻表等分类设定，将继续保存分类结果。')}[/cyan]")
@@ -320,6 +391,8 @@ class GlossaryAnalyzer:
             'prompt_file': prompt_path,
             'structured_analysis': structured_analysis,
             'translate_during_analysis': translate_during_analysis,
+            'incremental_options': incremental_options,
+            'raw_response_diagnostics': raw_response_diagnostics,
         }
 
     def filter_and_save(self, analysis_result, min_freq):
@@ -341,6 +414,8 @@ class GlossaryAnalyzer:
         estimated_tokens = analysis_result.get('estimated_tokens', 0)
         prompt_file = analysis_result.get('prompt_file', '')
         structured_analysis = analysis_result.get('structured_analysis') or self._empty_analysis_payload()
+        incremental_options = analysis_result.get('incremental_options') or {}
+        raw_response_diagnostics = analysis_result.get('raw_response_diagnostics') or []
 
         # 过滤低频词
         filtered_terms = {k: v for k, v in term_freq.items() if v['count'] >= min_freq}
@@ -350,6 +425,11 @@ class GlossaryAnalyzer:
 
         if not filtered_terms and not self._has_non_glossary_analysis(structured_analysis):
             console.print(f"[yellow]{self.i18n.get('msg_no_terms_after_filter') or '过滤后无剩余词条'}[/yellow]")
+            diagnostic_path = self._save_raw_analysis_response_log(input_path, raw_response_diagnostics)
+            if diagnostic_path:
+                console.print(
+                    f"[yellow]{self._tr('msg_glossary_parse_empty_with_response', '模型返回了内容，但未解析到术语/分类 JSON；已保存原始响应诊断: {}', diagnostic_path)}[/yellow]"
+                )
             return None
 
         # 生成术语表文件
@@ -362,6 +442,11 @@ class GlossaryAnalyzer:
 
         # 保存术语表
         glossary_data = self._generate_glossary_json(filtered_terms)
+        if incremental_options.get("enabled"):
+            glossary_data = [
+                self._with_source_metadata(item, incremental_options.get("source_label"), incremental_options.get("source_volume"))
+                for item in glossary_data
+            ]
         if glossary_data:
             with open(glossary_path, 'w', encoding='utf-8') as f:
                 json.dump(glossary_data, f, indent=2, ensure_ascii=False)
@@ -369,6 +454,8 @@ class GlossaryAnalyzer:
             console.print(f"[bold green]{self.i18n.get('msg_glossary_saved') or '术语表已保存'}: {glossary_path}[/bold green]")
 
         structured_rules = self._build_structured_rules_config(filtered_terms, structured_analysis)
+        if incremental_options.get("enabled"):
+            self._annotate_structured_rules_source(structured_rules, incremental_options)
         if self._has_structured_rules(structured_rules):
             with open(structured_path, 'w', encoding='utf-8') as f:
                 json.dump(structured_rules, f, indent=2, ensure_ascii=False)
@@ -382,6 +469,8 @@ class GlossaryAnalyzer:
             estimated_tokens=estimated_tokens,
             prompt_file=prompt_file,
             structured_rules=structured_rules,
+            incremental_options=incremental_options,
+            raw_response_diagnostics=raw_response_diagnostics,
         )
 
         console.print(f"[green]{self.i18n.get('msg_log_saved') or '分析日志已保存'}: {log_path}[/green]")
@@ -392,13 +481,50 @@ class GlossaryAnalyzer:
             'glossary_path': glossary_path,
             'structured_rules': structured_rules,
             'structured_path': structured_path,
+            'incremental_options': incremental_options,
         }
 
-    def save_glossary_directly(self, glossary_data, save_mode="import", base_glossary_path=None):
+    def save_glossary_directly(self, glossary_data, save_mode="import", base_glossary_path=None, merge_options=None):
         """直接保存术语表（无翻译）"""
+        options = merge_options or {}
+        incremental_enabled = bool(options.get("enabled"))
+        allow_new = bool(options.get("new")) if incremental_enabled else True
+        allow_replace = bool(options.get("replace"))
+        source_label = self._normalize_glossary_text(options.get("source_label"))
+        source_volume = self._normalize_volume_number(options.get("source_volume"))
+        track_history = incremental_enabled and source_volume is not None
+
         if save_mode in ("import", "both"):
             existing_data = self.config.get("prompt_dictionary_data", [])
-            existing_data.extend(glossary_data)
+            existing_by_src = {
+                self._normalize_glossary_text(item.get("src")): item
+                for item in existing_data
+                if isinstance(item, dict) and self._normalize_glossary_text(item.get("src"))
+            }
+            for item in glossary_data:
+                if not isinstance(item, dict) or not item.get("src"):
+                    continue
+                prepared = self._with_source_metadata(item, source_label, source_volume)
+                src = self._normalize_glossary_text(prepared.get("src"))
+                existing = existing_by_src.get(src)
+                if existing:
+                    if allow_replace:
+                        self._merge_timeline_item(
+                            existing,
+                            prepared,
+                            source_label,
+                            source_volume,
+                            GLOSSARY_TIMELINE_FIELDS,
+                            key_field="src",
+                            track_history=track_history,
+                        )
+                    continue
+                if not allow_new:
+                    continue
+                existing_data.append(prepared)
+                existing_by_src[src] = prepared
+                if track_history:
+                    self._ensure_timeline_history(prepared, source_label, source_volume, GLOSSARY_TIMELINE_FIELDS, key_field="src")
             self.config["prompt_dictionary_data"] = existing_data
             self.config["prompt_dictionary_switch"] = True
             self.save_config()
@@ -409,7 +535,13 @@ class GlossaryAnalyzer:
             self._save_glossary_json_to_path(glossary_data, save_path)
             console.print(f"[bold green]{self.i18n.get('msg_glossary_saved') or '术语表已保存'}: {save_path}[/bold green]")
 
-    def save_structured_rules_directly(self, structured_rules, save_mode="import", base_glossary_path=None):
+    def save_structured_rules_directly(
+        self,
+        structured_rules,
+        save_mode="import",
+        base_glossary_path=None,
+        merge_options=None,
+    ):
         """保存分类规则配置：术语表、禁翻表、角色设定、世界观、文风和翻译示例。"""
         if not structured_rules:
             console.print(f"[yellow]{self._tr('msg_structured_rules_empty', '没有可保存的分类规则。')}[/yellow]")
@@ -418,7 +550,7 @@ class GlossaryAnalyzer:
         summary = {}
 
         if save_mode in ("import", "both"):
-            summary = self._merge_structured_rules_into_config(structured_rules)
+            summary = self._merge_structured_rules_into_config(structured_rules, merge_options=merge_options)
             self.save_config()
             world_status = self._tr("label_updated", "已更新") if summary.get('world_building_content', 0) else self._tr("label_none", "无")
             style_status = self._tr("label_updated", "已更新") if summary.get('writing_style_content', 0) else self._tr("label_none", "无")
@@ -458,7 +590,10 @@ class GlossaryAnalyzer:
         if os.path.exists(profile_path):
             raise FileExistsError(self._tr("msg_rules_profile_exists", "规则配置已存在: {}", profile_name))
 
-        rules_payload = {key: structured_rules.get(key, [] if key.endswith("_data") else "") for key in STRUCTURED_RULE_KEYS}
+        rules_payload = {
+            key: structured_rules.get(key, [] if key.endswith("_data") or key.endswith("_history") else "")
+            for key in STRUCTURED_RULE_KEYS
+        }
         rules_payload = normalize_rules_payload(rules_payload)
         atomic_write_json(profile_path, rules_payload)
 
@@ -486,6 +621,89 @@ class GlossaryAnalyzer:
             "writing_style_content": "",
             "translation_example_data": [],
         }
+
+    def _build_incremental_options(self, new=False, replace=False, source_label=None, source_volume=None):
+        label = self._normalize_glossary_text(source_label)
+        volume = self._normalize_volume_number(source_volume)
+        if not label and volume is not None:
+            label = self._format_volume_label(volume)
+
+        enabled = bool(new or replace)
+        return {
+            "enabled": enabled,
+            "new": bool(new),
+            "replace": bool(replace),
+            "source_label": label,
+            "source_volume": volume,
+        }
+
+    def _append_incremental_analysis_instruction(self, system_prompt, existing_context, options):
+        allow_new = bool(options.get("new"))
+        allow_replace = bool(options.get("replace"))
+        source_label = options.get("source_label") or "Current_Volume"
+        source_volume = options.get("source_volume")
+        volume_text = source_volume if source_volume is not None else "unknown"
+        new_rule = "允许输出当前文本中确有必要加入的新术语、角色、设定和示例。" if allow_new else "禁止输出当前规则中不存在的新术语、角色、设定和示例。"
+        replace_rule = (
+            "允许输出对既有术语、角色、世界观、文风在当前卷视角下的补全或修正；"
+            "这只会写入当前卷历史版本，不代表全局覆盖旧卷。"
+            if allow_replace
+            else "禁止改写既有术语、角色、世界观、文风描述。"
+        )
+        delta_rule = (
+            "输出必须是增量 JSON：只包含新增项或当前卷有证据需要补全/修正的当前卷版本，不要把旧规则原样全量复制出来。"
+            "不要输出删除指令，不要要求删除旧卷视角；旧卷术语和角色描述必须保留给旧卷翻译使用。"
+            "如果没有必要新增或替换，对应字段返回空数组或空字符串。"
+        )
+        metadata_rule = (
+            f"本次来源标签为 {source_label}，卷号为 {volume_text}。"
+            "replace 只表示为当前卷写入新的历史版本，不是全局覆盖。"
+            "你可以在条目中保留 source、volume、updated_in、updated_volume、history 等字段，但不要改变基础 JSON 字段名。"
+        )
+        linguistic_rule = (
+            "角色 characterization 额外支持两个字段：pronouns 和 speech_quirks。"
+            "pronouns 用来记录第一人称/第二人称/称呼体系，例如 私/俺/僕/あなた/君。"
+            "speech_quirks 用来记录口癖、语尾、固定句式、敬语习惯、粗口习惯等。"
+            "如果角色在本卷发生伪装、暴露、立场反转或语气变化，请把这种变化写进对应卷的角色说明和语言特征。"
+        )
+        context_json = json.dumps(existing_context, ensure_ascii=False, indent=2)
+        instruction = f"""
+
+## 增量术语表叠加模式
+你正在对同一系列的后续文本做术语/规则增量维护。请先参考“现有规则快照”，再阅读用户提供的新文本。
+
+- {new_rule}
+- {replace_rule}
+- {delta_rule}
+- {metadata_rule}
+- 非必要不新增，非必要不修改；不要因为词频高就提取普通名词。
+- 如果后续卷揭示角色反转或设定变化，不要删除早期卷视角；输出当前卷之后应使用的新描述即可，程序会记录历史版本。
+- {linguistic_rule}
+
+### 现有规则快照
+{context_json}
+"""
+        return f"{system_prompt.rstrip()}\n{instruction.strip()}\n"
+
+    def _build_incremental_existing_rules_context(self):
+        context = {}
+        for key in STRUCTURED_RULE_KEYS:
+            if key.endswith("_history"):
+                continue
+            value = self.config.get(key, [] if key.endswith("_data") else "")
+            context[key] = self._trim_existing_rule_value(value)
+        return context
+
+    def _trim_existing_rule_value(self, value, max_items=300, max_chars=12000):
+        if isinstance(value, list):
+            trimmed = value[:max_items]
+            if len(value) > max_items:
+                trimmed = [*trimmed, {"_truncated": f"{len(value) - max_items} more items omitted"}]
+            return trimmed
+        text = self._normalize_glossary_text(value)
+        if len(text) > max_chars:
+            return text[:max_chars] + f"\n...({len(text) - max_chars} chars omitted)"
+        return text
 
     def _merge_analysis_payload(self, target, source):
         if not source:
@@ -548,6 +766,37 @@ class GlossaryAnalyzer:
             bool(structured_rules.get("translation_example_data")),
         ])
 
+    def _build_raw_response_diagnostic(self, batch, response, prompt_tokens=0, completion_tokens=0):
+        return {
+            "batch": batch,
+            "prompt_tokens": prompt_tokens or 0,
+            "completion_tokens": completion_tokens or 0,
+            "preview": self._normalize_glossary_text(response)[:4000],
+        }
+
+    def _save_raw_analysis_response_log(self, input_path, diagnostics):
+        diagnostics = [item for item in diagnostics or [] if item and item.get("preview")]
+        if not diagnostics:
+            return ""
+
+        input_basename = os.path.splitext(os.path.basename(input_path))[0]
+        input_dir = os.path.dirname(input_path) or "."
+        diagnostic_path = os.path.join(input_dir, f"{input_basename}_分析原始响应.txt")
+        lines = [
+            "=== AI术语表分析原始响应诊断 ===",
+            "说明: 模型返回了文本，但程序未能解析出术语表/角色/世界观等结构化内容。请检查输出是否为合法 JSON，或是否使用了程序暂不支持的字段结构。",
+        ]
+        for item in diagnostics:
+            lines.extend([
+                "",
+                f"--- batch: {item.get('batch')} | tokens: {item.get('prompt_tokens', 0)}+{item.get('completion_tokens', 0)}T ---",
+                str(item.get("preview") or ""),
+            ])
+
+        with open(diagnostic_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        return diagnostic_path
+
     def _build_structured_rules_config(self, filtered_terms, structured_analysis):
         return {
             "prompt_dictionary_data": self._generate_glossary_json(filtered_terms),
@@ -558,19 +807,64 @@ class GlossaryAnalyzer:
             "translation_example_data": structured_analysis.get("translation_example_data", []),
         }
 
-    def _merge_structured_rules_into_config(self, structured_rules):
+    def _annotate_structured_rules_source(self, structured_rules, options):
+        if not structured_rules:
+            return structured_rules
+        source_label = self._normalize_glossary_text(options.get("source_label"))
+        source_volume = self._normalize_volume_number(options.get("source_volume"))
+        structured_rules["prompt_dictionary_data"] = [
+            self._with_source_metadata(item, source_label, source_volume)
+            for item in structured_rules.get("prompt_dictionary_data", []) or []
+            if isinstance(item, dict)
+        ]
+        structured_rules["characterization_data"] = [
+            self._with_source_metadata(item, source_label, source_volume)
+            for item in structured_rules.get("characterization_data", []) or []
+            if isinstance(item, dict)
+        ]
+        return structured_rules
+
+    def _merge_structured_rules_into_config(self, structured_rules, merge_options=None):
         summary = {key: 0 for key in STRUCTURED_RULE_KEYS}
+        options = merge_options or {}
+        incremental_enabled = bool(options.get("enabled"))
+        allow_new = bool(options.get("new")) if incremental_enabled else True
+        allow_replace = bool(options.get("replace"))
+        source_label = self._normalize_glossary_text(options.get("source_label"))
+        source_volume = self._normalize_volume_number(options.get("source_volume"))
+        track_history = incremental_enabled and source_volume is not None
 
         glossary_items = structured_rules.get("prompt_dictionary_data") or []
         existing_glossary = self.config.get("prompt_dictionary_data", [])
-        existing_srcs = {item.get("src") for item in existing_glossary if isinstance(item, dict)}
+        existing_by_src = {
+            self._normalize_glossary_text(item.get("src")): item
+            for item in existing_glossary
+            if isinstance(item, dict) and self._normalize_glossary_text(item.get("src"))
+        }
         for item in glossary_items:
             if not isinstance(item, dict) or not item.get("src"):
                 continue
-            if item.get("src") in existing_srcs:
+            prepared = self._with_source_metadata(item, source_label, source_volume)
+            src = self._normalize_glossary_text(prepared.get("src"))
+            existing = existing_by_src.get(src)
+            if existing:
+                if allow_replace and self._merge_timeline_item(
+                    existing,
+                    prepared,
+                    source_label,
+                    source_volume,
+                    GLOSSARY_TIMELINE_FIELDS,
+                    key_field="src",
+                    track_history=track_history,
+                ):
+                    summary["prompt_dictionary_data"] += 1
                 continue
-            existing_glossary.append(item)
-            existing_srcs.add(item.get("src"))
+            if not allow_new:
+                continue
+            existing_glossary.append(prepared)
+            existing_by_src[src] = prepared
+            if track_history:
+                self._ensure_timeline_history(prepared, source_label, source_volume, GLOSSARY_TIMELINE_FIELDS, key_field="src")
             summary["prompt_dictionary_data"] += 1
         if glossary_items:
             self.config["prompt_dictionary_data"] = existing_glossary
@@ -589,6 +883,8 @@ class GlossaryAnalyzer:
             key = (item.get("markers", ""), item.get("regex", ""))
             if not any(key) or key in existing_keys:
                 continue
+            if not allow_new:
+                continue
             existing_exclusion.append(item)
             existing_keys.add(key)
             summary["exclusion_list_data"] += 1
@@ -598,27 +894,67 @@ class GlossaryAnalyzer:
 
         character_items = structured_rules.get("characterization_data") or []
         existing_characters = self.config.get("characterization_data", [])
-        before = len(existing_characters)
-        self._merge_character_lists(existing_characters, character_items, fill_existing=True)
-        summary["characterization_data"] = max(0, len(existing_characters) - before)
+        existing_by_name = {
+            self._normalize_glossary_text(item.get("original_name")): item
+            for item in existing_characters
+            if isinstance(item, dict) and self._normalize_glossary_text(item.get("original_name"))
+        }
+        for item in character_items:
+            if not isinstance(item, dict):
+                continue
+            name = self._normalize_glossary_text(item.get("original_name"))
+            if not name:
+                continue
+            prepared = self._with_source_metadata(item, source_label, source_volume)
+            existing = existing_by_name.get(name)
+            if existing:
+                if incremental_enabled and not allow_replace:
+                    continue
+                if self._merge_character_item(
+                    existing,
+                    prepared,
+                    source_label,
+                    source_volume,
+                    allow_replace=allow_replace,
+                    track_history=track_history,
+                ):
+                    summary["characterization_data"] += 1
+                continue
+            if not allow_new:
+                continue
+            existing_characters.append(prepared)
+            existing_by_name[name] = prepared
+            if track_history:
+                self._ensure_timeline_history(prepared, source_label, source_volume, CHARACTER_TIMELINE_FIELDS, key_field="original_name")
+            summary["characterization_data"] += 1
         if character_items:
             self.config["characterization_data"] = existing_characters
             self.config["characterization_switch"] = True
 
         world_building = self._normalize_glossary_text(structured_rules.get("world_building_content"))
-        if world_building:
-            self.config["world_building_content"] = self._append_text_block(
-                self.config.get("world_building_content", ""),
+        if world_building and (allow_new or self._normalize_glossary_text(self.config.get("world_building_content"))):
+            self.config["world_building_content"] = self._merge_text_rule_with_history(
+                "world_building_content",
+                "world_building_history",
                 world_building,
+                source_label,
+                source_volume,
+                replace=allow_replace,
+                track_history=track_history,
             )
             self.config["world_building_switch"] = True
             summary["world_building_content"] = 1
 
         writing_style = self._normalize_glossary_text(structured_rules.get("writing_style_content"))
-        if writing_style:
-            self.config["writing_style_content"] = self._append_text_block(
-                self.config.get("writing_style_content", ""),
+        if writing_style and (allow_new or self._normalize_glossary_text(self.config.get("writing_style_content"))):
+            self.config["writing_style_content"] = self._merge_text_rule_with_history(
+                "writing_style_content",
+                "writing_style_history",
                 writing_style,
+                source_label,
+                source_volume,
+                replace=allow_replace,
+                track_history=track_history,
             )
             self.config["writing_style_switch"] = True
             summary["writing_style_content"] = 1
@@ -635,6 +971,8 @@ class GlossaryAnalyzer:
                 continue
             key = (item.get("src", ""), item.get("dst", ""))
             if key in example_keys:
+                continue
+            if not allow_new:
                 continue
             existing_examples.append(item)
             example_keys.add(key)
@@ -970,54 +1308,123 @@ Translation|Note"""
     def _parse_glossary_response(self, response):
         """解析LLM返回的分类规则 JSON，兼容旧版术语数组。"""
         import re
-        payload = self._empty_analysis_payload()
         parsed = self._load_json_from_response(response, re)
 
         if isinstance(parsed, list):
+            payload = self._empty_analysis_payload()
             payload["terms"] = self._normalize_term_items(parsed)
             return payload
 
         if not isinstance(parsed, dict):
-            return payload
+            return self._empty_analysis_payload()
 
+        return self._parse_glossary_payload_dict(parsed)
+
+    def _parse_glossary_payload_dict(self, parsed):
+        payload = self._empty_analysis_payload()
+        for source in self._iter_analysis_dicts(parsed):
+            single_payload = self._parse_single_glossary_payload(source)
+            self._merge_analysis_payload(payload, single_payload)
+        return payload
+
+    def _iter_analysis_dicts(self, parsed, depth=0, seen=None):
+        if not isinstance(parsed, dict) or depth > 4:
+            return []
+        seen = seen or set()
+        object_id = id(parsed)
+        if object_id in seen:
+            return []
+        seen.add(object_id)
+
+        wrapper_keys = (
+            "data", "result", "results", "analysis", "rules", "rule_config",
+            "payload", "output", "response", "content",
+        )
+        for key in wrapper_keys:
+            wrapped = self._first_present(parsed, (key,), None)
+            if isinstance(wrapped, dict):
+                return self._iter_analysis_dicts(wrapped, depth + 1, seen)
+            if isinstance(wrapped, list):
+                return [{"glossary": wrapped}]
+
+        sources = [parsed]
+        incremental_keys = (
+            "new", "replace", "updated", "updates", "delta", "changes",
+            "新增", "新增项", "替换", "更新", "补全", "修改", "变更",
+        )
+        for key in incremental_keys:
+            value = self._first_present(parsed, (key,), None)
+            if isinstance(value, dict):
+                sources.extend(self._iter_analysis_dicts(value, depth + 1, seen))
+            elif isinstance(value, list):
+                sources.append({"glossary": value})
+        return sources
+
+    def _parse_single_glossary_payload(self, parsed):
+        payload = self._empty_analysis_payload()
         term_items = self._first_present(
             parsed,
-            ("glossary", "terms", "terminology", "term_list", "prompt_dictionary_data"),
+            (
+                "glossary", "terms", "terminology", "term_list", "prompt_dictionary_data",
+                "prompt_dictionary", "dictionary", "term_dictionary", "new_terms",
+                "replace_terms", "updated_terms", "术语表", "专有名词", "词汇表",
+                "名词表", "新增术语", "更新术语", "替换术语",
+            ),
             [],
         )
         payload["terms"] = self._normalize_term_items(term_items)
 
         exclusion_items = self._first_present(
             parsed,
-            ("exclusion_list", "non_translation_list", "no_translate", "ntl", "exclusion_list_data"),
+            (
+                "exclusion_list", "non_translation_list", "no_translate", "ntl",
+                "exclusion_list_data", "do_not_translate", "preserve_list",
+                "禁翻表", "排除列表", "不翻译列表", "保留原文列表",
+            ),
             [],
         )
         payload["exclusion_list_data"] = self._normalize_exclusion_items(exclusion_items)
 
         character_items = self._first_present(
             parsed,
-            ("characterization", "characters", "character_profiles", "characterization_data"),
+            (
+                "characterization", "characters", "character_profiles",
+                "characterization_data", "character_data", "人物设定",
+                "角色设定", "角色", "人物",
+            ),
             [],
         )
         payload["characterization_data"] = self._normalize_character_items(character_items)
 
         world_building = self._first_present(
             parsed,
-            ("world_building", "worldview", "world_settings", "setting", "world_building_content"),
+            (
+                "world_building", "worldview", "world_settings", "setting",
+                "world_building_content", "background", "lore", "世界观",
+                "世界观设定", "世界设定", "背景设定", "设定",
+            ),
             "",
         )
         payload["world_building_content"] = self._format_analysis_sections(world_building)
 
         writing_style = self._first_present(
             parsed,
-            ("writing_style", "style", "translation_style", "writing_style_content"),
+            (
+                "writing_style", "style", "translation_style",
+                "writing_style_content", "tone", "文风", "文风要求",
+                "翻译风格", "风格", "语体",
+            ),
             "",
         )
         payload["writing_style_content"] = self._format_analysis_sections(writing_style)
 
         examples = self._first_present(
             parsed,
-            ("translation_examples", "translation_example", "translation_example_data"),
+            (
+                "translation_examples", "translation_example",
+                "translation_example_data", "examples", "sample_translations",
+                "翻译示例", "翻译例句", "例句",
+            ),
             [],
         )
         payload["translation_example_data"] = self._normalize_translation_examples(examples)
@@ -1030,10 +1437,14 @@ Translation|Note"""
 
         text = response.strip()
         candidates = []
-        fence_match = re_module.search(r"```(?:json)?\s*([\s\S]*?)```", text, re_module.IGNORECASE)
-        if fence_match:
-            candidates.append(fence_match.group(1).strip())
+        fence_matches = re_module.findall(r"```(?:json)?\s*([\s\S]*?)```", text, re_module.IGNORECASE)
+        for fence_content in fence_matches:
+            candidates.append(fence_content.strip())
         candidates.append(text)
+
+        candidates.extend(self._extract_json_span_candidates(text))
+        for fence_content in fence_matches:
+            candidates.extend(self._extract_json_span_candidates(fence_content.strip()))
 
         object_match = re_module.search(r"\{[\s\S]*\}", text)
         if object_match:
@@ -1049,6 +1460,44 @@ Translation|Note"""
                 continue
         return None
 
+    def _extract_json_span_candidates(self, text, max_candidates=12):
+        spans = []
+        for open_char, close_char in (("{", "}"), ("[", "]")):
+            for start, char in enumerate(text):
+                if char != open_char:
+                    continue
+                candidate = self._extract_balanced_json_span(text, start, open_char, close_char)
+                if candidate:
+                    spans.append(candidate)
+                    if len(spans) >= max_candidates:
+                        return spans
+        return spans
+
+    def _extract_balanced_json_span(self, text, start, open_char, close_char):
+        depth = 0
+        in_string = False
+        escape = False
+        for index in range(start, len(text)):
+            char = text[index]
+            if in_string:
+                if escape:
+                    escape = False
+                elif char == "\\":
+                    escape = True
+                elif char == '"':
+                    in_string = False
+                continue
+
+            if char == '"':
+                in_string = True
+            elif char == open_char:
+                depth += 1
+            elif char == close_char:
+                depth -= 1
+                if depth == 0:
+                    return text[start:index + 1].strip()
+        return ""
+
     def _first_present(self, data, keys, default):
         for key in keys:
             if key in data:
@@ -1056,10 +1505,36 @@ Translation|Note"""
                 return default if value is None else value
         return default
 
+    def _coerce_analysis_items(self, items, single_item_keys=()):
+        if isinstance(items, list):
+            return items
+        if not isinstance(items, dict):
+            return []
+
+        direct_keys = (
+            "items", "data", "list", "entries", "values", "records",
+            "new", "replace", "updated", "updates", "delta", "changes",
+            "新增", "新增项", "替换", "更新", "补全", "修改", "变更",
+        )
+        collected = []
+        for key in direct_keys:
+            value = items.get(key)
+            if value is None:
+                continue
+            collected.extend(self._coerce_analysis_items(value, single_item_keys))
+        if collected:
+            return collected
+
+        if any(key in items for key in single_item_keys):
+            return [items]
+        return []
+
     def _normalize_term_items(self, items):
-        if isinstance(items, dict):
-            items = items.get("items") or items.get("data") or []
-        if not isinstance(items, list):
+        items = self._coerce_analysis_items(
+            items,
+            ("src", "term", "name", "original", "source", "原文术语", "术语", "原文", "名称"),
+        )
+        if not items:
             return []
 
         terms = []
@@ -1067,14 +1542,28 @@ Translation|Note"""
             if not isinstance(item, dict):
                 continue
             src = self._normalize_glossary_text(
-                item.get("src") or item.get("term") or item.get("name") or item.get("original")
+                item.get("src")
+                or item.get("term")
+                or item.get("name")
+                or item.get("original")
+                or item.get("source")
+                or item.get("原文术语")
+                or item.get("术语")
+                or item.get("原文")
+                or item.get("名称")
             )
             if not src:
                 continue
-            category = self._normalize_glossary_text(item.get("category"))
-            term_type = self._normalize_glossary_text(item.get("type") or category, "专有名词")
+            category = self._normalize_glossary_text(item.get("category") or item.get("大类") or item.get("分类"))
+            term_type = self._normalize_glossary_text(item.get("type") or item.get("类别") or category, "专有名词")
             dst = self._normalize_glossary_text(
-                item.get("dst") or item.get("target") or item.get("translation") or item.get("translated_name")
+                item.get("dst")
+                or item.get("target")
+                or item.get("translation")
+                or item.get("translated_name")
+                or item.get("译名")
+                or item.get("翻译")
+                or item.get("目标译文")
             )
             raw_info = self._normalize_glossary_info(item)
             terms.append({
@@ -1087,11 +1576,14 @@ Translation|Note"""
         return terms
 
     def _normalize_exclusion_items(self, items):
-        if isinstance(items, dict):
-            items = items.get("items") or items.get("data") or []
         if isinstance(items, str):
             items = [{"markers": line.strip()} for line in items.splitlines() if line.strip()]
-        if not isinstance(items, list):
+        else:
+            items = self._coerce_analysis_items(
+                items,
+                ("markers", "marker", "src", "text", "regex", "保留文本", "禁翻文本", "正则"),
+            )
+        if not items:
             return []
 
         result = []
@@ -1102,11 +1594,17 @@ Translation|Note"""
             if not isinstance(item, dict):
                 continue
             markers = self._normalize_glossary_text(
-                item.get("markers") or item.get("marker") or item.get("src") or item.get("text")
+                item.get("markers")
+                or item.get("marker")
+                or item.get("src")
+                or item.get("text")
+                or item.get("保留文本")
+                or item.get("禁翻文本")
+                or item.get("原文")
             )
-            regex = self._normalize_glossary_text(item.get("regex"))
+            regex = self._normalize_glossary_text(item.get("regex") or item.get("正则"))
             info = self._normalize_glossary_text(
-                item.get("info") or item.get("description") or item.get("desc")
+                item.get("info") or item.get("description") or item.get("desc") or item.get("说明") or item.get("原因")
             )
             if not markers and not regex:
                 continue
@@ -1118,9 +1616,11 @@ Translation|Note"""
         return result
 
     def _normalize_character_items(self, items):
-        if isinstance(items, dict):
-            items = items.get("items") or items.get("data") or []
-        if not isinstance(items, list):
+        items = self._coerce_analysis_items(
+            items,
+            ("original_name", "src", "name", "original", "角色原名", "原名", "角色名", "人物名"),
+        )
+        if not items:
             return []
 
         result = []
@@ -1128,38 +1628,57 @@ Translation|Note"""
             if not isinstance(item, dict):
                 continue
             original_name = self._normalize_glossary_text(
-                item.get("original_name") or item.get("src") or item.get("name") or item.get("original")
+                item.get("original_name")
+                or item.get("src")
+                or item.get("name")
+                or item.get("original")
+                or item.get("角色原名")
+                or item.get("原名")
+                or item.get("角色名")
+                or item.get("人物名")
             )
             if not original_name:
                 continue
             additional_parts = []
-            for key in ("identity", "role", "relationship", "relationships", "info", "description", "desc", "note", "annotation"):
+            for key in (
+                "identity", "role", "relationship", "relationships", "info",
+                "description", "desc", "note", "annotation", "身份", "立场",
+                "关系", "剧情作用", "说明", "备注", "附加信息",
+            ):
                 value = self._normalize_glossary_text(item.get(key))
                 if value:
                     additional_parts.append(value)
             additional_info = self._normalize_glossary_text(
-                item.get("additional_info"),
+                item.get("additional_info") or item.get("附加信息"),
                 "；".join(dict.fromkeys(additional_parts)),
             )
             result.append({
                 "original_name": original_name,
                 "translated_name": self._normalize_glossary_text(
-                    item.get("translated_name") or item.get("dst") or item.get("translation")
+                    item.get("translated_name") or item.get("dst") or item.get("translation") or item.get("译名") or item.get("翻译名")
                 ),
-                "gender": self._normalize_glossary_text(item.get("gender")),
-                "age": self._normalize_glossary_text(item.get("age")),
-                "personality": self._normalize_glossary_text(item.get("personality")),
+                "gender": self._normalize_glossary_text(item.get("gender") or item.get("性别")),
+                "age": self._normalize_glossary_text(item.get("age") or item.get("年龄")),
+                "personality": self._normalize_glossary_text(item.get("personality") or item.get("性格")),
                 "speech_style": self._normalize_glossary_text(
-                    item.get("speech_style") or item.get("speaking_style") or item.get("tone")
+                    item.get("speech_style") or item.get("speaking_style") or item.get("tone") or item.get("说话方式") or item.get("语气")
+                ),
+                "pronouns": self._normalize_glossary_text(
+                    item.get("pronouns") or item.get("first_second_person") or item.get("person_pronouns") or item.get("第一人称/第二人称") or item.get("人称代词") or item.get("称呼体系")
+                ),
+                "speech_quirks": self._normalize_glossary_text(
+                    item.get("speech_quirks") or item.get("verbal_quirks") or item.get("catchphrase") or item.get("ending_particles") or item.get("口癖") or item.get("语尾")
                 ),
                 "additional_info": additional_info,
             })
         return result
 
     def _normalize_translation_examples(self, items):
-        if isinstance(items, dict):
-            items = items.get("items") or items.get("data") or []
-        if not isinstance(items, list):
+        items = self._coerce_analysis_items(
+            items,
+            ("src", "source", "original", "原文", "例句"),
+        )
+        if not items:
             return []
 
         result = []
@@ -1167,8 +1686,8 @@ Translation|Note"""
         for item in items:
             if not isinstance(item, dict):
                 continue
-            src = self._normalize_glossary_text(item.get("src") or item.get("source") or item.get("original"))
-            dst = self._normalize_glossary_text(item.get("dst") or item.get("target") or item.get("translation"))
+            src = self._normalize_glossary_text(item.get("src") or item.get("source") or item.get("original") or item.get("原文") or item.get("例句"))
+            dst = self._normalize_glossary_text(item.get("dst") or item.get("target") or item.get("translation") or item.get("译文") or item.get("翻译"))
             if not src:
                 continue
             key = (src, dst)
@@ -1216,6 +1735,19 @@ Translation|Note"""
             return existing
         return f"{existing.rstrip()}\n\n{addition}" if existing else addition
 
+    def _append_timeline_text_block(self, existing, addition):
+        existing = self._normalize_glossary_text(existing)
+        addition = self._normalize_glossary_text(addition)
+        if not addition:
+            return existing
+        if not existing:
+            return addition
+        if addition in existing:
+            return existing
+        if existing in addition:
+            return addition
+        return f"{existing.rstrip()}\n\n{addition}"
+
     def _extend_unique_dicts(self, target, incoming, key_fields):
         seen = {
             tuple(self._normalize_glossary_text(item.get(field)) for field in key_fields)
@@ -1232,7 +1764,14 @@ Translation|Note"""
             seen.add(key)
         return target
 
-    def _merge_character_lists(self, target, incoming, fill_existing=False):
+    def _timeline_item_has_content(self, item, tracked_fields, key_field="src"):
+        if not isinstance(item, dict):
+            return False
+        if self._normalize_glossary_text(item.get(key_field)):
+            return True
+        return any(self._normalize_glossary_text(item.get(field)) for field in tracked_fields)
+
+    def _merge_character_lists(self, target, incoming, fill_existing=False, replace_existing=False):
         by_name = {
             self._normalize_glossary_text(item.get("original_name")): item
             for item in target
@@ -1246,15 +1785,349 @@ Translation|Note"""
                 continue
             existing = by_name.get(name)
             if existing:
-                if fill_existing:
+                if fill_existing or replace_existing:
                     for key, value in item.items():
                         value_text = self._normalize_glossary_text(value)
-                        if value_text and not self._normalize_glossary_text(existing.get(key)):
+                        if not value_text:
+                            continue
+                        if replace_existing or not self._normalize_glossary_text(existing.get(key)):
                             existing[key] = value
                 continue
             target.append(item)
             by_name[name] = item
         return target
+
+    def _merge_character_item(self, existing, incoming, source_label, source_volume, allow_replace=False, track_history=True):
+        if allow_replace:
+            return self._merge_timeline_item(
+                existing,
+                incoming,
+                source_label,
+                source_volume,
+                CHARACTER_TIMELINE_FIELDS,
+                key_field="original_name",
+                track_history=track_history,
+            )
+
+        changed = False
+        for key in CHARACTER_TIMELINE_FIELDS:
+            value = incoming.get(key)
+            if not self._normalize_glossary_text(value):
+                continue
+            if not self._normalize_glossary_text(existing.get(key)):
+                changed = True
+                break
+
+        if not changed:
+            return False
+
+        for key in CHARACTER_TIMELINE_FIELDS:
+            value = incoming.get(key)
+            if self._normalize_glossary_text(value) and not self._normalize_glossary_text(existing.get(key)):
+                existing[key] = value
+        if track_history:
+            self._ensure_timeline_history(existing, source_label, source_volume, CHARACTER_TIMELINE_FIELDS, key_field="original_name")
+        return True
+
+    def _with_source_metadata(self, item, source_label, source_volume):
+        prepared = dict(item)
+        label = self._normalize_glossary_text(prepared.get("source") or source_label)
+        volume = self._normalize_volume_number(prepared.get("volume"))
+        if volume is None:
+            volume = source_volume
+        if label:
+            prepared["source"] = label
+        if volume is not None:
+            prepared["volume"] = volume
+            if not label:
+                prepared["source"] = self._format_volume_label(volume)
+        return prepared
+
+    def _ensure_timeline_history(self, item, source_label, source_volume, tracked_fields, key_field="src"):
+        if not isinstance(item, dict):
+            return []
+        history = item.get("history")
+        if not isinstance(history, list):
+            history = []
+            item["history"] = history
+
+        volume = self._normalize_volume_number(source_volume)
+        if volume is None:
+            volume = self._normalize_volume_number(item.get("volume"))
+        label = self._normalize_glossary_text(source_label)
+        if not label:
+            label = self._normalize_glossary_text(item.get("source"))
+        if volume is None:
+            volume = self._normalize_volume_number(label)
+        if volume is None and self._timeline_item_has_content(item, tracked_fields, key_field):
+            volume = 1
+        if not label and volume is not None:
+            label = self._format_volume_label(volume)
+
+        snapshot = self._build_history_snapshot(item, label, volume, tracked_fields, key_field=key_field)
+        if not snapshot:
+            return history
+
+        snap_key = self._history_key(snapshot)
+        for existing in history:
+            if self._history_key(existing) == snap_key:
+                return history
+        history.append(snapshot)
+        history.sort(key=lambda entry: self._history_sort_key(entry))
+        return history
+
+    def _merge_timeline_item(self, existing, incoming, source_label, source_volume, tracked_fields, key_field="src", track_history=True):
+        incoming_values = {
+            key: incoming.get(key)
+            for key in tracked_fields
+            if self._normalize_glossary_text(incoming.get(key))
+        }
+        if not incoming_values:
+            return False
+
+        if track_history:
+            self._ensure_timeline_history(
+                existing,
+                existing.get("source"),
+                existing.get("volume"),
+                tracked_fields,
+                key_field=key_field,
+            )
+        label = self._normalize_glossary_text(source_label or incoming.get("source"))
+        volume = self._normalize_volume_number(source_volume)
+        if volume is None:
+            volume = self._normalize_volume_number(incoming.get("volume"))
+
+        changed = False
+        if track_history:
+            incoming_snapshot = self._build_history_snapshot(
+                {**incoming, **incoming_values},
+                label,
+                volume,
+                tracked_fields,
+                key_field=key_field,
+            )
+            if not incoming_snapshot:
+                return False
+            incoming_snapshot = self._merge_snapshot_with_previous_history(
+                existing,
+                incoming_snapshot,
+                volume,
+                tracked_fields,
+                key_field=key_field,
+            )
+            changed = self._upsert_timeline_history(existing, incoming_snapshot)
+            if changed:
+                self._sync_latest_timeline_metadata(existing)
+            return changed
+
+        for key, value in incoming_values.items():
+            if self._normalize_glossary_text(existing.get(key)) != self._normalize_glossary_text(value):
+                existing[key] = value
+                changed = True
+        return changed
+
+    def _upsert_timeline_history(self, item, snapshot):
+        history = item.get("history")
+        if not isinstance(history, list):
+            history = []
+            item["history"] = history
+
+        snap_key = self._history_key(snapshot)
+        for index, existing in enumerate(history):
+            if self._history_key(existing) == snap_key:
+                merged = self._merge_history_snapshot(existing, snapshot)
+                if existing == merged:
+                    return False
+                history[index] = merged
+                history.sort(key=lambda entry: self._history_sort_key(entry))
+                return True
+
+        history.append(snapshot)
+        history.sort(key=lambda entry: self._history_sort_key(entry))
+        return True
+
+    def _merge_snapshot_with_previous_history(self, item, snapshot, source_volume, tracked_fields, key_field="src"):
+        volume = self._normalize_volume_number(source_volume)
+        if volume is None:
+            return snapshot
+
+        effective = self._effective_history_snapshot(
+            item.get("history") if isinstance(item, dict) else [],
+            volume,
+            tracked_fields,
+            key_field=key_field,
+        )
+        if not effective:
+            return snapshot
+
+        merged = {}
+        key_value = snapshot.get(key_field) or effective.get(key_field)
+        if self._normalize_glossary_text(key_value):
+            merged[key_field] = key_value
+        if snapshot.get("source"):
+            merged["source"] = snapshot.get("source")
+        if self._normalize_volume_number(snapshot.get("volume")) is not None:
+            merged["volume"] = self._normalize_volume_number(snapshot.get("volume"))
+        for field in tracked_fields:
+            if self._normalize_glossary_text(effective.get(field)):
+                merged[field] = effective.get(field)
+            if self._normalize_glossary_text(snapshot.get(field)):
+                merged[field] = snapshot.get(field)
+        return merged
+
+    def _effective_history_snapshot(self, history, current_volume, tracked_fields, key_field="src"):
+        if not isinstance(history, list):
+            return {}
+        volume = self._normalize_volume_number(current_volume)
+        if volume is None:
+            return {}
+
+        effective = {}
+        for entry in sorted((item for item in history if isinstance(item, dict)), key=self._history_sort_key):
+            entry_volume = self._normalize_volume_number(entry.get("volume"))
+            if entry_volume is None or entry_volume > volume:
+                continue
+            key_value = entry.get(key_field)
+            if self._normalize_glossary_text(key_value):
+                effective[key_field] = key_value
+            for field in tracked_fields:
+                if self._normalize_glossary_text(entry.get(field)):
+                    effective[field] = entry.get(field)
+        return effective
+
+    def _merge_history_snapshot(self, existing, incoming):
+        if not isinstance(existing, dict):
+            return incoming
+        if not isinstance(incoming, dict):
+            return existing
+
+        merged = dict(existing)
+        for key, value in incoming.items():
+            if key in ("source", "volume"):
+                if self._normalize_glossary_text(value):
+                    merged[key] = value
+                continue
+            if self._normalize_glossary_text(value):
+                merged[key] = value
+        return merged
+
+    def _sync_latest_timeline_metadata(self, item):
+        history = item.get("history")
+        if not isinstance(history, list) or not history:
+            return
+        entries = [entry for entry in history if isinstance(entry, dict)]
+        numbered_entries = [
+            entry for entry in entries
+            if self._normalize_volume_number(entry.get("volume")) is not None
+        ]
+        candidates = numbered_entries or entries
+        if not candidates:
+            return
+        latest = max(candidates, key=self._history_sort_key)
+        label = self._normalize_glossary_text(latest.get("source")) if isinstance(latest, dict) else ""
+        volume = self._normalize_volume_number(latest.get("volume")) if isinstance(latest, dict) else None
+        if label:
+            item["updated_in"] = label
+        if volume is not None:
+            item["updated_volume"] = volume
+            if not label:
+                item["updated_in"] = self._format_volume_label(volume)
+
+    def _build_history_snapshot(self, item, source_label, source_volume, tracked_fields, key_field="src"):
+        if not isinstance(item, dict):
+            return {}
+        snapshot = {}
+        key_value = self._normalize_glossary_text(item.get(key_field))
+        if key_value:
+            snapshot[key_field] = key_value
+        label = self._normalize_glossary_text(source_label)
+        volume = self._normalize_volume_number(source_volume)
+        if label:
+            snapshot["source"] = label
+        if volume is not None:
+            snapshot["volume"] = volume
+            if not label:
+                snapshot["source"] = self._format_volume_label(volume)
+        for key in tracked_fields:
+            value = item.get(key)
+            if self._normalize_glossary_text(value):
+                snapshot[key] = value
+        return snapshot
+
+    def _history_key(self, entry):
+        if not isinstance(entry, dict):
+            return ("", "")
+        volume = self._normalize_volume_number(entry.get("volume"))
+        if volume is not None:
+            return ("volume", volume)
+        return ("source", self._normalize_glossary_text(entry.get("source")))
+
+    def _history_sort_key(self, entry):
+        volume = self._normalize_volume_number(entry.get("volume")) if isinstance(entry, dict) else None
+        if volume is None:
+            return (10**9, self._normalize_glossary_text(entry.get("source") if isinstance(entry, dict) else ""))
+        return (volume, "")
+
+    def _merge_text_rule_with_history(self, data_key, history_key, incoming_text, source_label, source_volume, replace=False, track_history=True):
+        current_text = self._normalize_glossary_text(self.config.get(data_key))
+        if not track_history:
+            next_text = incoming_text if replace else self._append_text_block(current_text, incoming_text)
+            return next_text
+
+        history = self.config.get(history_key)
+        if not isinstance(history, list):
+            history = []
+
+        if current_text and not history:
+            base_entry = {
+                "source": self._format_volume_label(1),
+                "volume": 1,
+                "content": current_text,
+            }
+            history.append(base_entry)
+
+        label = self._normalize_glossary_text(source_label)
+        volume = self._normalize_volume_number(source_volume)
+        if not label and volume is not None:
+            label = self._format_volume_label(volume)
+
+        base_text = self._select_text_history_for_merge(history, volume) or current_text
+        version_text = self._append_timeline_text_block(base_text, incoming_text)
+        if version_text:
+            entry = {"source": label, "content": version_text}
+            if volume is not None:
+                entry["volume"] = volume
+                if not label:
+                    entry["source"] = self._format_volume_label(volume)
+            merged = []
+            replaced = False
+            for old in history:
+                if self._history_key(old) == self._history_key(entry):
+                    merged.append(entry)
+                    replaced = True
+                else:
+                    merged.append(old)
+            if not replaced:
+                merged.append(entry)
+            history = merged
+            history.sort(key=lambda item: self._history_sort_key(item))
+            self.config[history_key] = history
+        return current_text or incoming_text
+
+    def _select_text_history_for_merge(self, history, current_volume):
+        if not isinstance(history, list):
+            return ""
+        volume = self._normalize_volume_number(current_volume)
+        if volume is None:
+            return ""
+        selected = ""
+        for entry in sorted((item for item in history if isinstance(item, dict)), key=self._history_sort_key):
+            entry_volume = self._normalize_volume_number(entry.get("volume"))
+            if entry_volume is None or entry_volume >= volume:
+                continue
+            selected = self._append_timeline_text_block(selected, entry.get("content"))
+        return selected
 
     def _derive_characters_from_terms(self, terms):
         result = []
@@ -1274,6 +2147,8 @@ Translation|Note"""
                 "age": "",
                 "personality": "",
                 "speech_style": "",
+                "pronouns": "",
+                "speech_quirks": "",
                 "additional_info": "" if info.lower() in ("null", "none") else info,
             })
         return result
@@ -1310,8 +2185,29 @@ Translation|Note"""
         text = str(value).strip()
         return text if text else default
 
+    def _normalize_volume_number(self, value):
+        if value is None or value == "":
+            return None
+        if isinstance(value, bool):
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            pass
+        match = re.search(r"(?i)(?:vol(?:ume)?|book|v|第)?[\s._\-]*0*(\d{1,4})(?:\s*[卷册集部])?", str(value))
+        if match:
+            try:
+                return int(match.group(1))
+            except ValueError:
+                return None
+        return None
+
+    def _format_volume_label(self, volume):
+        normalized = self._normalize_volume_number(volume)
+        return f"Vol_{normalized}" if normalized is not None else ""
+
     def _normalize_glossary_info(self, item):
-        for key in ("info", "description", "desc"):
+        for key in ("info", "description", "desc", "note", "annotation", "说明", "注释", "备注"):
             if key in item:
                 value = item.get(key)
                 if value is None:
@@ -1444,11 +2340,15 @@ Additional output requirement:
         """生成标准术语表JSON格式"""
         glossary = []
         for term, data in filtered_terms.items():
-            glossary.append({
+            item = {
                 "src": term,
                 "dst": self._normalize_glossary_text(data.get('dst')),
                 "info": self._clean_analysis_info(data.get('info'), data.get('type'), data.get('category'))
-            })
+            }
+            for meta_key in ("source", "volume", "updated_in", "updated_volume", "history"):
+                if meta_key in data:
+                    item[meta_key] = data.get(meta_key)
+            glossary.append(item)
         return glossary
 
     def _save_glossary_analysis_log(
@@ -1464,6 +2364,8 @@ Additional output requirement:
         estimated_tokens=0,
         prompt_file="",
         structured_rules=None,
+        incremental_options=None,
+        raw_response_diagnostics=None,
     ):
         """保存分析日志文件"""
         range_str = (
@@ -1486,6 +2388,19 @@ Additional output requirement:
             f"{self._tr('glossary_log_analysis_mode', '分析模式')}: {mode_label}",
             f"{self._tr('glossary_log_estimated_tokens', '预估Token')}: {estimated_tokens}",
             f"{self._tr('glossary_log_prompt_file', '提示词文件')}: {prompt_label}",
+        ]
+        if incremental_options and incremental_options.get("enabled"):
+            modes = []
+            if incremental_options.get("new"):
+                modes.append("new")
+            if incremental_options.get("replace"):
+                modes.append("replace")
+            log_lines.extend([
+                f"{self._tr('glossary_log_incremental_mode', '增量模式')}: {'/'.join(modes) or '-'}",
+                f"{self._tr('glossary_log_incremental_source', '来源标签')}: {incremental_options.get('source_label') or '-'}",
+                f"{self._tr('glossary_log_incremental_volume', '来源卷号')}: {incremental_options.get('source_volume') if incremental_options.get('source_volume') is not None else '-'}",
+            ])
+        log_lines.extend([
             "",
             f"【{self._tr('glossary_log_notice_title', '重要提示')}】",
             self._tr(
@@ -1494,7 +2409,7 @@ Additional output requirement:
             ),
             "",
             f"=== {self._tr('glossary_log_term_frequency_title', '词频统计')} ===",
-        ]
+        ])
         for term, data in all_terms.items():
             type_info = self._format_glossary_info(data.get('type'), data.get('info'))
             log_lines.append(self._tr("glossary_log_term_line", "{} ({}): 出现 {} 次", term, type_info, data['count']))
@@ -1518,6 +2433,23 @@ Additional output requirement:
                 self._tr("glossary_log_structured_style_chars", "文风要求: {} 字符", len(structured_rules.get('writing_style_content', ''))),
                 self._tr("glossary_log_structured_example_count", "翻译示例: {}", len(structured_rules.get('translation_example_data', []))),
             ])
+
+        diagnostics = [item for item in raw_response_diagnostics or [] if item and item.get("preview")]
+        if diagnostics:
+            log_lines.extend([
+                "",
+                f"=== {self._tr('glossary_log_parse_diagnostics_title', '解析诊断')} ===",
+                self._tr(
+                    "glossary_log_parse_diagnostics_notice",
+                    "以下批次有模型响应，但未解析到术语/角色/世界观等结构化内容。下方仅保留响应预览，完整排查请重新运行或查看原始响应诊断文件。"
+                ),
+            ])
+            for item in diagnostics:
+                log_lines.extend([
+                    "",
+                    f"--- batch: {item.get('batch')} | tokens: {item.get('prompt_tokens', 0)}+{item.get('completion_tokens', 0)}T ---",
+                    str(item.get("preview") or "")[:2000],
+                ])
 
         with open(log_path, 'w', encoding='utf-8') as f:
             f.write("\n".join(log_lines) + "\n")

@@ -70,6 +70,8 @@ info 应说明它是什么、上下文作用、翻译时要注意什么。无法
   "age": "",
   "personality": "",
   "speech_style": "",
+  "pronouns": "",
+  "speech_quirks": "",
   "additional_info": ""
 }
 ```
@@ -79,6 +81,8 @@ info 应说明它是什么、上下文作用、翻译时要注意什么。无法
 - translated_name 不要猜译，留空字符串。
 - personality 填文本可推断的性格。
 - speech_style 填说话方式、口癖、语气、敬语习惯、粗口习惯等。
+- pronouns 填角色使用的第一人称、第二人称、称呼体系，例如「私」「俺」「僕」「あなた」「君」；如果随剧情变化，请说明变化。
+- speech_quirks 填口癖、语尾、固定句式、标志性语气，例如「喵」「～デス」「的说」；没有证据则留空字符串。
 - additional_info 填身份、立场、关系、剧情作用等。
 - 没有证据的字段留空字符串，不要写 null。
 
@@ -128,6 +132,8 @@ dst 留空字符串，供用户之后补译。
       "age": "",
       "personality": "谨慎、礼貌，面对陌生人保持戒备",
       "speech_style": "常用短句确认对方意图，语气克制",
+      "pronouns": "常用第一人称「私」",
+      "speech_quirks": "",
       "additional_info": "当前章节主要角色"
     }
   ],

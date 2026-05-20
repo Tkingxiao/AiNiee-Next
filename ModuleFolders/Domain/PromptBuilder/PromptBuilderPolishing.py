@@ -5,6 +5,7 @@ from ModuleFolders.Base.Base import Base
 from ModuleFolders.Infrastructure.TaskConfig.TaskConfig import TaskConfig
 from ModuleFolders.Domain.PromptBuilder.PromptBuilderEnum import PromptBuilderEnum
 from ModuleFolders.Domain.PromptBuilder.PromptBuilder import PromptBuilder
+from ModuleFolders.Domain.PromptBuilder.DynamicGlossary import apply_dynamic_glossary
 class PromptBuilderPolishing(Base):
 
     def __init__(self) -> None:
@@ -60,6 +61,9 @@ class PromptBuilderPolishing(Base):
 
     # 构造术语表
     def build_glossary_prompt(config: TaskConfig, input_dict: dict) -> str:
+        if getattr(config, "dynamic_glossary_switch", False):
+            apply_dynamic_glossary(config, getattr(config, "dynamic_glossary_volume", None))
+
         # 将输入字典中的所有值合并为一个字符串，方便正则全局匹配
         full_text = "\n".join(input_dict.values())
 
@@ -193,6 +197,9 @@ class PromptBuilderPolishing(Base):
 
     # 构造文风要求
     def build_writing_style(config: TaskConfig) -> str:
+        if getattr(config, "dynamic_glossary_switch", False):
+            apply_dynamic_glossary(config, getattr(config, "dynamic_glossary_volume", None))
+
         # 获取自定义内容
         writing_style = getattr(
             config,

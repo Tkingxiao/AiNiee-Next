@@ -939,6 +939,83 @@ class CLIMenu:
     def plugin_settings_menu(self):
         self.plugin_settings_menu_handler.show()
 
+    def _i18n_text(self, key, fallback):
+        value = i18n.get(key)
+        if not value or value == key:
+            return fallback
+        return value
+
+    def _configure_dynamic_glossary_for_task(self, task_mode, interactive=True):
+        self.config["dynamic_glossary_switch"] = False
+        self.config["dynamic_glossary_series"] = ""
+        self.config["dynamic_glossary_volume"] = None
+        self.config["dynamic_glossary_volume_map"] = {}
+
+        if task_mode != TaskType.TRANSLATION or not interactive:
+            return
+
+        has_history = self._has_dynamic_glossary_history()
+        if not has_history:
+            return
+
+        if not Confirm.ask(
+            self._i18n_text("confirm_dynamic_glossary_series", "本次翻译文件是否属于一个系列作，需要启用动态术语表按卷号过滤?"),
+            default=False,
+        ):
+            return
+
+        series_label = Prompt.ask(
+            self._i18n_text("prompt_dynamic_glossary_series", "请输入系列标签（仅用于本次任务记录，可留空）"),
+            default="",
+        ).strip()
+        volume = IntPrompt.ask(
+            self._i18n_text("prompt_dynamic_glossary_volume", "请输入当前翻译卷号"),
+            default=1,
+        )
+        volume = max(1, volume)
+        self.config["dynamic_glossary_switch"] = True
+        self.config["dynamic_glossary_series"] = series_label
+        self.config["dynamic_glossary_volume"] = volume
+        self.config["dynamic_glossary_volume_map"] = {}
+        console.print(
+            f"[cyan]{self._i18n_text('msg_dynamic_glossary_enabled', '已启用动态术语表')}: "
+            f"{series_label or '-'} Vol_{volume}[/cyan]"
+        )
+
+    def _configure_dynamic_glossary_volume_map(self, cache_project, interactive=True):
+        self.config["dynamic_glossary_volume_map"] = {}
+        if not interactive or not self.config.get("dynamic_glossary_switch"):
+            return
+        files = sorted(
+            path
+            for path, cache_file in getattr(cache_project, "files", {}).items()
+            if getattr(cache_file, "items", None)
+        )
+        if len(files) <= 1:
+            return
+
+        console.print(f"\n[cyan]{self._i18n_text('prompt_dynamic_glossary_volume_map_title', '检测到多个文件，请为每个系列文件指定卷号:')}[/cyan]")
+        volume_map = {}
+        default_volume = self.config.get("dynamic_glossary_volume") or 1
+        for file_path in files:
+            display_name = os.path.basename(str(file_path)) or str(file_path)
+            volume = IntPrompt.ask(
+                self._i18n_text("prompt_dynamic_glossary_file_volume", "请输入当前文件卷号") + f" [{display_name}]",
+                default=default_volume,
+            )
+            volume_map[file_path] = max(1, volume)
+        self.config["dynamic_glossary_volume_map"] = volume_map
+        self.task_executor.config.dynamic_glossary_volume_map = dict(volume_map)
+
+    def _has_dynamic_glossary_history(self):
+        for item in self.config.get("prompt_dictionary_data", []) or []:
+            if isinstance(item, dict) and isinstance(item.get("history"), list) and item.get("history"):
+                return True
+        for item in self.config.get("characterization_data", []) or []:
+            if isinstance(item, dict) and isinstance(item.get("history"), list) and item.get("history"):
+                return True
+        return bool(self.config.get("world_building_history") or self.config.get("writing_style_history"))
+
     def run_task(self, task_mode, target_path=None, continue_status=False, non_interactive=False, web_mode=False, from_queue=False, skip_prompt_validation=False, save_runtime_config=True, skip_preflight=False):
         # 如果是非交互模式，直接跳过菜单
         if target_path is None:
@@ -1076,6 +1153,11 @@ class CLIMenu:
 
         if save_runtime_config:
             self.save_config()
+
+        self._configure_dynamic_glossary_for_task(
+            task_mode,
+            interactive=not non_interactive and not web_mode and not from_queue,
+        )
         
         # --- NEW: Enhanced Output Directory Handling ---
         if not continue_status and os.path.exists(opath) and not non_interactive:
@@ -1467,6 +1549,10 @@ class CLIMenu:
                         if not cache_project:
                             self.ui.log("[red]No files loaded.[/red]")
                             time.sleep(2); raise Exception("Load failed")
+                        self._configure_dynamic_glossary_volume_map(
+                            cache_project,
+                            interactive=not non_interactive and not web_mode and not from_queue,
+                        )
                         self.cache_manager.load_from_project(cache_project)
                         
                     total_items = self.cache_manager.get_item_count()

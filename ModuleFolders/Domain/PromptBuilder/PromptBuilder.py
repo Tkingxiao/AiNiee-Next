@@ -5,6 +5,8 @@ from ModuleFolders.Base.Base import Base
 from ModuleFolders.Service.TaskExecutor import TranslatorUtil
 from ModuleFolders.Infrastructure.TaskConfig.TaskConfig import TaskConfig
 from ModuleFolders.Domain.PromptBuilder.PromptBuilderEnum import PromptBuilderEnum
+from ModuleFolders.Domain.PromptBuilder.DynamicGlossary import apply_dynamic_glossary
+from ModuleFolders.Domain.PromptBuilder.CharacterRecall import recall_characters
 class PromptBuilder(Base):
     def __init__(self) -> None:
         super().__init__()
@@ -424,6 +426,9 @@ class PromptBuilder(Base):
 
     # 构造术语表
     def build_glossary_prompt(config: TaskConfig, input_dict: dict) -> str:
+        if getattr(config, "dynamic_glossary_switch", False):
+            apply_dynamic_glossary(config, getattr(config, "dynamic_glossary_volume", None))
+
         # 将输入字典中的所有值合并为一个字符串，方便正则全局匹配
         full_text = "\n".join(input_dict.values())
 
@@ -556,11 +561,29 @@ class PromptBuilder(Base):
         return result
 
     # 构造角色设定
-    def build_characterization(config: TaskConfig, input_dict: dict) -> str:
+    def build_characterization(
+        config: TaskConfig,
+        input_dict: dict,
+        character_recall_previous_text_list: list[str] = None,
+        character_recall_lookahead_text_list: list[str] = None,
+    ) -> str:
+        if getattr(config, "dynamic_glossary_switch", False):
+            apply_dynamic_glossary(config, getattr(config, "dynamic_glossary_volume", None))
+
         # 将数据存储到中间字典中
         dictionary = {}
         for v in config.characterization_data:
             dictionary[v.get("original_name", "")] = v
+
+        if getattr(config, "character_recall_switch", True):
+            recall_result = recall_characters(
+                list(dictionary.values()),
+                input_dict,
+                character_recall_previous_text_list,
+                character_recall_lookahead_text_list,
+                config,
+            )
+            return PromptBuilder._format_character_recall_profile(config, recall_result)
 
         # 筛选，如果该key在发送文本中，则存储进新字典中
         temp_dict = {}
@@ -598,6 +621,8 @@ class PromptBuilder(Base):
                 age = value.get("age")
                 personality = value.get("personality")
                 speech_style = value.get("speech_style")
+                pronouns = value.get("pronouns")
+                speech_quirks = value.get("speech_quirks")
                 additional_info = value.get("additional_info")
 
                 profile += f"\n【{original_name}】"
@@ -616,6 +641,12 @@ class PromptBuilder(Base):
                 if speech_style:
                     profile += f"\n- 说话方式：{speech_style}"
 
+                if pronouns:
+                    profile += f"\n- 第一/第二人称：{pronouns}"
+
+                if speech_quirks:
+                    profile += f"\n- 口癖/语尾：{speech_quirks}"
+
                 if additional_info:
                     profile += f"\n- 补充信息：{additional_info}"
 
@@ -630,6 +661,8 @@ class PromptBuilder(Base):
                 age = value.get("age")
                 personality = value.get("personality")
                 speech_style = value.get("speech_style")
+                pronouns = value.get("pronouns")
+                speech_quirks = value.get("speech_quirks")
                 additional_info = value.get("additional_info")
 
                 profile += f"\n[{original_name}]"
@@ -648,6 +681,12 @@ class PromptBuilder(Base):
                 if speech_style:
                     profile += f"\n- Speech_style: {speech_style}"
 
+                if pronouns:
+                    profile += f"\n- Pronouns: {pronouns}"
+
+                if speech_quirks:
+                    profile += f"\n- Speech quirks: {speech_quirks}"
+
                 if additional_info:
                     profile += f"\n- Additional_info: {additional_info}"
 
@@ -657,6 +696,9 @@ class PromptBuilder(Base):
 
     # 构造背景设定
     def build_world_building(config: TaskConfig) -> str:
+        if getattr(config, "dynamic_glossary_switch", False):
+            apply_dynamic_glossary(config, getattr(config, "dynamic_glossary_volume", None))
+
         # 获取自定义内容
         world_building = config.world_building_content
 
@@ -674,6 +716,9 @@ class PromptBuilder(Base):
 
     # 构造文风要求
     def build_writing_style(config: TaskConfig) -> str:
+        if getattr(config, "dynamic_glossary_switch", False):
+            apply_dynamic_glossary(config, getattr(config, "dynamic_glossary_volume", None))
+
         # 获取自定义内容
         writing_style = config.writing_style_content
 
@@ -756,6 +801,103 @@ class PromptBuilder(Base):
         profile += "</source_context>\n"
 
         return profile
+
+    def _format_character_recall_profile(config: TaskConfig, recall_result: dict) -> str:
+        strong_items = recall_result.get("strong", []) if isinstance(recall_result, dict) else []
+        candidate_items = recall_result.get("candidates", []) if isinstance(recall_result, dict) else []
+        if not strong_items and not candidate_items:
+            return ""
+
+        if config.target_language in ("chinese_simplified", "chinese_traditional"):
+            profile = ""
+            if strong_items:
+                profile += "\n###本段明确相关角色"
+                for item in strong_items:
+                    profile += PromptBuilder._format_character_profile_item(config, item.get("character"), include_full=True)
+
+            if candidate_items:
+                profile += (
+                    "\n###近邻上下文候选角色"
+                    "\n以下角色只是在当前片段附近出现，可能与当前说话人或被指代对象有关。"
+                    "只有当原文证据吻合时才使用，不要把其口癖或语气强行套给其他角色。"
+                )
+                for item in candidate_items:
+                    profile += PromptBuilder._format_character_profile_item(config, item.get("character"), include_full=False)
+            return profile
+
+        profile = ""
+        if strong_items:
+            profile += "\n###Clearly Relevant Characters In This Segment"
+            for item in strong_items:
+                profile += PromptBuilder._format_character_profile_item(config, item.get("character"), include_full=True)
+
+        if candidate_items:
+            profile += (
+                "\n###Nearby Context Candidate Characters"
+                "\nThese characters only appear near the current segment and may be relevant to the speaker or referenced person. "
+                "Use them only when the source evidence matches; do not force their speech quirks or tone onto other characters."
+            )
+            for item in candidate_items:
+                profile += PromptBuilder._format_character_profile_item(config, item.get("character"), include_full=False)
+        return profile
+
+    def _format_character_profile_item(config: TaskConfig, value: dict, include_full: bool = True) -> str:
+        if not isinstance(value, dict):
+            return ""
+
+        original_name = str(value.get("original_name", "") or "").replace("[Separator]", "")
+        if not original_name:
+            return ""
+
+        translated_name = value.get("translated_name")
+        gender = value.get("gender")
+        age = value.get("age")
+        personality = value.get("personality")
+        speech_style = value.get("speech_style")
+        pronouns = value.get("pronouns")
+        speech_quirks = value.get("speech_quirks")
+        additional_info = value.get("additional_info")
+
+        if config.target_language in ("chinese_simplified", "chinese_traditional"):
+            profile = f"\n【{original_name}】"
+            if translated_name:
+                profile += f"\n- 译名：{translated_name}"
+            if pronouns:
+                profile += f"\n- 第一/第二人称：{pronouns}"
+            if speech_quirks:
+                profile += f"\n- 口癖/语尾：{speech_quirks}"
+            if speech_style:
+                profile += f"\n- 说话方式：{speech_style}"
+            if include_full:
+                if gender:
+                    profile += f"\n- 性别：{gender}"
+                if age:
+                    profile += f"\n- 年龄：{age}"
+                if personality:
+                    profile += f"\n- 性格：{personality}"
+                if additional_info:
+                    profile += f"\n- 补充信息：{additional_info}"
+            return profile + "\n"
+
+        profile = f"\n[{original_name}]"
+        if translated_name:
+            profile += f"\n- Translated_name: {translated_name}"
+        if pronouns:
+            profile += f"\n- Pronouns: {pronouns}"
+        if speech_quirks:
+            profile += f"\n- Speech quirks: {speech_quirks}"
+        if speech_style:
+            profile += f"\n- Speech_style: {speech_style}"
+        if include_full:
+            if gender:
+                profile += f"\n- Gender: {gender}"
+            if age:
+                profile += f"\n- Age: {age}"
+            if personality:
+                profile += f"\n- Personality: {personality}"
+            if additional_info:
+                profile += f"\n- Additional_info: {additional_info}"
+        return profile + "\n"
 
     def build_translation_consistency_instruction(config: TaskConfig) -> str:
         if config.target_language in ("chinese_simplified", "chinese_traditional"):
@@ -864,6 +1006,8 @@ class PromptBuilder(Base):
         rag_context: str = "",
         source_context_text_list: list[str] = None,
         consistency_context: dict | None = None,
+        character_recall_previous_text_list: list[str] = None,
+        character_recall_lookahead_text_list: list[str] = None,
     ) -> tuple[list[dict], str, list[str]]:
         # 储存指令
         messages = []
@@ -913,7 +1057,12 @@ class PromptBuilder(Base):
 
         # 如果角色介绍开关打开
         if config.characterization_switch == True:
-            characterization = PromptBuilder.build_characterization(config, source_text_dict)
+            characterization = PromptBuilder.build_characterization(
+                config,
+                source_text_dict,
+                character_recall_previous_text_list,
+                character_recall_lookahead_text_list,
+            )
             if characterization != "":
                 system += characterization
                 extra_log.append(characterization)

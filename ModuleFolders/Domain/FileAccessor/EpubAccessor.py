@@ -15,6 +15,7 @@ class EpubAccessor:
     XHTML_MEDIA_TYPES = {"application/xhtml+xml", "text/html"}
     NCX_MEDIA_TYPE = "application/x-dtbncx+xml"
     CSS_MEDIA_TYPE = "text/css"
+    UTF8_NORMALIZED_EXTENSIONS = (".xhtml", ".xhtm", ".html", ".htm", ".opf", ".ncx", ".xml")
     NOISE_PAGE_TEXTS = {
         "次ページへ",
         "次のページへ",
@@ -331,4 +332,43 @@ class EpubAccessor:
         self, content: dict[str, str], write_file_path: Path,
         source_file_path: Path,
     ):
-        ZipUtil.replace_in_zip_file(source_file_path, write_file_path, content)
+        normalized_content = {
+            filename: self._normalize_output_text(filename, file_content)
+            for filename, file_content in content.items()
+        }
+        ZipUtil.replace_in_zip_file(source_file_path, write_file_path, normalized_content)
+
+    def _normalize_output_text(self, filename, content):
+        if isinstance(content, bytes):
+            return content
+        if not self._should_normalize_utf8(filename):
+            return content
+
+        content = self._normalize_charset_declarations(str(content))
+        return content.encode("utf-8")
+
+    def _should_normalize_utf8(self, filename):
+        return str(filename or "").lower().endswith(self.UTF8_NORMALIZED_EXTENSIONS)
+
+    def _normalize_charset_declarations(self, content):
+        content = re.sub(
+            r'(<\?xml\b[^>]*\bencoding\s*=\s*)(["\'])(.*?)(\2)',
+            r'\1\2utf-8\4',
+            content,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        content = re.sub(
+            r'(<meta\b[^>]*\bcharset\s*=\s*)(["\']?)([^"\'\s/>]+)(["\']?)',
+            r'\1\2utf-8\4',
+            content,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        return re.sub(
+            r'(<meta\b[^>]*\bhttp-equiv\s*=\s*["\']content-type["\'][^>]*\bcontent\s*=\s*["\'][^"\']*charset=)([^;"\']+)',
+            r'\1utf-8',
+            content,
+            count=1,
+            flags=re.IGNORECASE,
+        )
