@@ -6,6 +6,17 @@ DEFAULT_MAX_STRONG = 5
 DEFAULT_MAX_CANDIDATES = 2
 DEFAULT_MIN_STRONG_SCORE = 80
 DEFAULT_MIN_CANDIDATE_SCORE = 40
+COMMON_JA_HONORIFICS = (
+    "さん",
+    "ちゃん",
+    "くん",
+    "君",
+    "様",
+    "さま",
+    "殿",
+    "先輩",
+    "先生",
+)
 
 
 def recall_characters(
@@ -132,10 +143,14 @@ def _collect_name_keywords(character):
     ):
         for keyword in _split_name_field(character.get(field_name)):
             keywords.append((keyword, weight))
+            for derived in _derive_source_name_aliases(keyword):
+                keywords.append((derived, max(85, weight - 10)))
 
     for field_name in ("alias", "aliases", "nicknames", "other_names"):
         for keyword in _split_alias_field(character.get(field_name)):
             keywords.append((keyword, 90))
+            for derived in _derive_source_name_aliases(keyword):
+                keywords.append((derived, 85))
 
     result = []
     seen = set()
@@ -188,6 +203,67 @@ def _usable_name_keyword(keyword):
     if len(keyword) >= 2:
         return True
     return keyword.isascii() and keyword.isalnum() and len(keyword) >= 2
+
+
+def _derive_source_name_aliases(value):
+    """Conservatively derive source-side aliases from Japanese names.
+
+    This is intentionally narrow: it mainly covers names like 御空マヒル,
+    where the source often later uses only マヒル or マヒルさん.
+    """
+    text = _clean_keyword(value)
+    if not text:
+        return []
+
+    candidates = []
+    stripped = _strip_common_japanese_honorific(text)
+    if stripped and stripped != text:
+        candidates.append(stripped)
+
+    for candidate in (text, stripped):
+        if not candidate:
+            continue
+        candidates.extend(_derive_kana_tail_aliases(candidate))
+
+    result = []
+    seen = set()
+    for candidate in candidates:
+        candidate = _clean_keyword(candidate)
+        if not _usable_derived_alias(candidate):
+            continue
+        marker = candidate.casefold()
+        if marker in seen:
+            continue
+        seen.add(marker)
+        result.append(candidate)
+    return result
+
+
+def _strip_common_japanese_honorific(text):
+    for suffix in COMMON_JA_HONORIFICS:
+        if text.endswith(suffix) and len(text) > len(suffix):
+            return text[: -len(suffix)]
+    return text
+
+
+def _derive_kana_tail_aliases(text):
+    aliases = []
+    if "・" in text or "＝" in text or "=" in text:
+        return aliases
+    matches = list(re.finditer(r"[\u4e00-\u9fff々〆ヵヶ]+([\u3040-\u309f\u30a0-\u30ffー]{2,})$", text))
+    if matches:
+        tail = matches[-1].group(1)
+        if tail != text:
+            aliases.append(tail)
+    return aliases
+
+
+def _usable_derived_alias(keyword):
+    if not _usable_name_keyword(keyword):
+        return False
+    if len(keyword) < 2:
+        return False
+    return bool(re.search(r"[\u3040-\u309f\u30a0-\u30ff]", keyword))
 
 
 def _contains(text, keyword):

@@ -506,6 +506,7 @@ class ExclusionItem(BaseModel):
 class CharacterizationItem(BaseModel):
     original_name: str
     translated_name: str
+    aliases: Optional[List[str]] = []
     gender: Optional[str] = ""
     age: Optional[str] = ""
     personality: Optional[str] = ""
@@ -1552,6 +1553,7 @@ def _normalize_exclusion_items(items) -> list:
     return result
 
 def _normalize_character_items(items) -> list:
+    import re
     if isinstance(items, dict):
         items = items.get("items") or items.get("data") or []
     if not isinstance(items, list):
@@ -1571,13 +1573,50 @@ def _normalize_character_items(items) -> list:
         result.append({
             "original_name": original_name,
             "translated_name": _normalize_glossary_text(item.get("translated_name") or item.get("dst") or item.get("translation")),
+            "aliases": _normalize_aliases(
+                item.get("aliases")
+                or item.get("alias")
+                or item.get("nicknames")
+                or item.get("other_names")
+                or item.get("别名")
+                or item.get("昵称")
+                or item.get("称呼")
+                or item.get("其他称呼"),
+                re,
+            ),
             "gender": _normalize_glossary_text(item.get("gender")),
             "age": _normalize_glossary_text(item.get("age")),
             "personality": _normalize_glossary_text(item.get("personality")),
             "speech_style": _normalize_glossary_text(item.get("speech_style") or item.get("speaking_style") or item.get("tone")),
+            "pronouns": _normalize_glossary_text(item.get("pronouns") or item.get("first_second_person") or item.get("person_pronouns")),
+            "speech_quirks": _normalize_glossary_text(item.get("speech_quirks") or item.get("verbal_quirks") or item.get("catchphrase") or item.get("ending_particles")),
             "additional_info": _normalize_glossary_text(item.get("additional_info"), "；".join(dict.fromkeys(additional_parts))),
         })
     return result
+
+def _normalize_aliases(value, re_module) -> list:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        raw_items = value
+    else:
+        text = _normalize_glossary_text(value)
+        if not text:
+            return []
+        raw_items = re_module.split(r"[,;|/，、；／\n]+", text.replace("[Separator]", "\n"))
+
+    aliases = []
+    seen = set()
+    for item in raw_items:
+        alias = _normalize_glossary_text(item)
+        if not alias:
+            continue
+        marker = alias.casefold()
+        if marker in seen:
+            continue
+        seen.add(marker)
+        aliases.append(alias)
+    return aliases
 
 def _normalize_translation_examples(items) -> list:
     if isinstance(items, dict):
@@ -1678,10 +1717,13 @@ def _derive_characters_from_terms(terms: list) -> list:
         result.append({
             "original_name": src,
             "translated_name": "",
+            "aliases": [],
             "gender": "",
             "age": "",
             "personality": "",
             "speech_style": "",
+            "pronouns": "",
+            "speech_quirks": "",
             "additional_info": "" if info.lower() in ("null", "none") else info,
         })
     return result

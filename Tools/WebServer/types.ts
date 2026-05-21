@@ -171,6 +171,7 @@ export interface ExclusionItem {
 export interface CharacterizationItem {
   original_name: string;
   translated_name: string;
+  aliases?: string[] | string;
   gender?: string;
   age?: string;
   personality?: string;

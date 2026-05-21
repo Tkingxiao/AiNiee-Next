@@ -36,6 +36,7 @@ STRUCTURED_RULE_KEYS = (
 GLOSSARY_TIMELINE_FIELDS = ("dst", "info")
 CHARACTER_TIMELINE_FIELDS = (
     "translated_name",
+    "aliases",
     "gender",
     "age",
     "personality",
@@ -661,7 +662,8 @@ class GlossaryAnalyzer:
             "你可以在条目中保留 source、volume、updated_in、updated_volume、history 等字段，但不要改变基础 JSON 字段名。"
         )
         linguistic_rule = (
-            "角色 characterization 额外支持两个字段：pronouns 和 speech_quirks。"
+            "角色 characterization 额外支持三个字段：aliases、pronouns 和 speech_quirks。"
+            "aliases 用来记录源文中实际出现过、指向该角色的短称、昵称、敬称称呼或别名，例如 マヒル、マヒルさん；不要填译名，不要编造未出现的称呼。"
             "pronouns 用来记录第一人称/第二人称/称呼体系，例如 私/俺/僕/あなた/君。"
             "speech_quirks 用来记录口癖、语尾、固定句式、敬语习惯、粗口习惯等。"
             "如果角色在本卷发生伪装、暴露、立场反转或语气变化，请把这种变化写进对应卷的角色说明和语言特征。"
@@ -1652,11 +1654,22 @@ Translation|Note"""
                 item.get("additional_info") or item.get("附加信息"),
                 "；".join(dict.fromkeys(additional_parts)),
             )
+            aliases = self._normalize_aliases(
+                item.get("aliases")
+                or item.get("alias")
+                or item.get("nicknames")
+                or item.get("other_names")
+                or item.get("别名")
+                or item.get("昵称")
+                or item.get("称呼")
+                or item.get("其他称呼")
+            )
             result.append({
                 "original_name": original_name,
                 "translated_name": self._normalize_glossary_text(
                     item.get("translated_name") or item.get("dst") or item.get("translation") or item.get("译名") or item.get("翻译名")
                 ),
+                "aliases": aliases,
                 "gender": self._normalize_glossary_text(item.get("gender") or item.get("性别")),
                 "age": self._normalize_glossary_text(item.get("age") or item.get("年龄")),
                 "personality": self._normalize_glossary_text(item.get("personality") or item.get("性格")),
@@ -1769,7 +1782,7 @@ Translation|Note"""
             return False
         if self._normalize_glossary_text(item.get(key_field)):
             return True
-        return any(self._normalize_glossary_text(item.get(field)) for field in tracked_fields)
+        return any(self._rule_field_has_content(item.get(field)) for field in tracked_fields)
 
     def _merge_character_lists(self, target, incoming, fill_existing=False, replace_existing=False):
         by_name = {
@@ -1812,9 +1825,9 @@ Translation|Note"""
         changed = False
         for key in CHARACTER_TIMELINE_FIELDS:
             value = incoming.get(key)
-            if not self._normalize_glossary_text(value):
+            if not self._rule_field_has_content(value):
                 continue
-            if not self._normalize_glossary_text(existing.get(key)):
+            if not self._rule_field_has_content(existing.get(key)):
                 changed = True
                 break
 
@@ -1823,7 +1836,7 @@ Translation|Note"""
 
         for key in CHARACTER_TIMELINE_FIELDS:
             value = incoming.get(key)
-            if self._normalize_glossary_text(value) and not self._normalize_glossary_text(existing.get(key)):
+            if self._rule_field_has_content(value) and not self._rule_field_has_content(existing.get(key)):
                 existing[key] = value
         if track_history:
             self._ensure_timeline_history(existing, source_label, source_volume, CHARACTER_TIMELINE_FIELDS, key_field="original_name")
@@ -1880,7 +1893,7 @@ Translation|Note"""
         incoming_values = {
             key: incoming.get(key)
             for key in tracked_fields
-            if self._normalize_glossary_text(incoming.get(key))
+            if self._rule_field_has_content(incoming.get(key))
         }
         if not incoming_values:
             return False
@@ -1972,7 +1985,7 @@ Translation|Note"""
         for field in tracked_fields:
             if self._normalize_glossary_text(effective.get(field)):
                 merged[field] = effective.get(field)
-            if self._normalize_glossary_text(snapshot.get(field)):
+            if self._rule_field_has_content(snapshot.get(field)):
                 merged[field] = snapshot.get(field)
         return merged
 
@@ -1992,7 +2005,7 @@ Translation|Note"""
             if self._normalize_glossary_text(key_value):
                 effective[key_field] = key_value
             for field in tracked_fields:
-                if self._normalize_glossary_text(entry.get(field)):
+                if self._rule_field_has_content(entry.get(field)):
                     effective[field] = entry.get(field)
         return effective
 
@@ -2008,7 +2021,7 @@ Translation|Note"""
                 if self._normalize_glossary_text(value):
                     merged[key] = value
                 continue
-            if self._normalize_glossary_text(value):
+            if self._rule_field_has_content(value):
                 merged[key] = value
         return merged
 
@@ -2051,7 +2064,7 @@ Translation|Note"""
                 snapshot["source"] = self._format_volume_label(volume)
         for key in tracked_fields:
             value = item.get(key)
-            if self._normalize_glossary_text(value):
+            if self._rule_field_has_content(value):
                 snapshot[key] = value
         return snapshot
 
@@ -2143,6 +2156,7 @@ Translation|Note"""
             result.append({
                 "original_name": src,
                 "translated_name": "",
+                "aliases": [],
                 "gender": "",
                 "age": "",
                 "personality": "",
@@ -2184,6 +2198,37 @@ Translation|Note"""
             return default
         text = str(value).strip()
         return text if text else default
+
+    def _rule_field_has_content(self, value):
+        if value is None:
+            return False
+        if isinstance(value, (list, tuple, set)):
+            return any(self._normalize_glossary_text(item) for item in value)
+        return bool(self._normalize_glossary_text(value))
+
+    def _normalize_aliases(self, value):
+        if value is None:
+            return []
+        if isinstance(value, (list, tuple, set)):
+            raw_items = value
+        else:
+            text = self._normalize_glossary_text(value)
+            if not text:
+                return []
+            raw_items = re.split(r"[,;|/，、；／\n]+", text.replace("[Separator]", "\n"))
+
+        aliases = []
+        seen = set()
+        for item in raw_items:
+            alias = self._normalize_glossary_text(item)
+            if not alias:
+                continue
+            marker = alias.casefold()
+            if marker in seen:
+                continue
+            seen.add(marker)
+            aliases.append(alias)
+        return aliases
 
     def _normalize_volume_number(self, value):
         if value is None or value == "":

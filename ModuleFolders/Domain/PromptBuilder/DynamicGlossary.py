@@ -47,6 +47,7 @@ def apply_dynamic_glossary(config, current_volume):
                 "original_name",
                 (
                     "translated_name",
+                    "aliases",
                     "gender",
                     "age",
                     "personality",
@@ -157,6 +158,8 @@ def _history_sort_key(entry):
 
 
 def _has_text(value):
+    if isinstance(value, (list, tuple, set)):
+        return any(_has_text(item) for item in value)
     return bool(str(value).strip()) if value is not None else False
 
 

@@ -85,7 +85,10 @@ export const Rules: React.FC = () => {
         return match ? Number(match[1]) : null;
     };
 
-    const hasText = (value: any) => value !== null && value !== undefined && String(value).trim().length > 0;
+    const hasText = (value: any) => {
+        if (Array.isArray(value)) return value.some(item => hasText(item));
+        return value !== null && value !== undefined && String(value).trim().length > 0;
+    };
 
     const getHistory = (item: any): Record<string, any>[] => (
         Array.isArray(item?.history) ? item.history.filter((entry: any) => entry && typeof entry === 'object') : []
@@ -446,6 +449,7 @@ export const Rules: React.FC = () => {
     const previewCharacters = timelineCharacterSource
         .map(item => timelineItemForVolume(item, timelineVolume, 'original_name', [
             'translated_name',
+            'aliases',
             'gender',
             'age',
             'personality',
@@ -495,12 +499,22 @@ export const Rules: React.FC = () => {
     const addCharacterItem = () => {
         setCharacterization([{ 
             original_name: '', translated_name: '', gender: '', age: '', 
-            personality: '', speech_style: '', pronouns: '', speech_quirks: '', additional_info: ''
+            aliases: [], personality: '', speech_style: '', pronouns: '', speech_quirks: '', additional_info: ''
         }, ...characterization]);
         triggerDraftSave();
     };
 
-    const updateCharacterItem = (originalIdx: number, field: keyof CharacterizationItem, val: string) => {
+    const formatAliases = (value: CharacterizationItem['aliases']) => {
+        if (Array.isArray(value)) return value.join('、');
+        return value || '';
+    };
+
+    const parseAliases = (value: string) => value
+        .split(/[,;|/，、；／\n]+/)
+        .map(item => item.trim())
+        .filter(Boolean);
+
+    const updateCharacterItem = (originalIdx: number, field: keyof CharacterizationItem, val: CharacterizationItem[keyof CharacterizationItem]) => {
         const newItems = [...characterization];
         newItems[originalIdx] = { ...newItems[originalIdx], [field]: val };
         setCharacterization(newItems);
@@ -743,7 +757,7 @@ export const Rules: React.FC = () => {
                             {fields.filter(field => hasText(entry[field])).map(field => (
                                 <div key={field} className="break-words">
                                     <span className="text-slate-500">{field}: </span>
-                                    <span className="text-slate-300 whitespace-pre-wrap">{String(entry[field])}</span>
+                                    <span className="text-slate-300 whitespace-pre-wrap">{Array.isArray(entry[field]) ? entry[field].join('、') : String(entry[field])}</span>
                                 </div>
                             ))}
                         </div>
@@ -832,6 +846,7 @@ export const Rules: React.FC = () => {
                                                 {item.personality && <div>personality: {item.personality}</div>}
                                                 {item.speech_style && <div>speech_style: {item.speech_style}</div>}
                                                 {item.pronouns && <div>pronouns: {item.pronouns}</div>}
+                                                {item.aliases && formatAliases(item.aliases) && <div>aliases: {formatAliases(item.aliases)}</div>}
                                                 {item.speech_quirks && <div>speech_quirks: {item.speech_quirks}</div>}
                                                 {item.additional_info && <div className="whitespace-pre-wrap">additional_info: {item.additional_info}</div>}
                                             </div>
@@ -871,7 +886,7 @@ export const Rules: React.FC = () => {
                                     {timelineCharacters.map((item, idx) => (
                                         <div key={`c-${item.original_name}-${idx}`} className="p-3 rounded border border-slate-800 bg-slate-950/40">
                                             <div className="text-sm text-green-300">{item.original_name}</div>
-                                            {renderHistoryTimeline(item, 'original_name', ['translated_name', 'gender', 'age', 'personality', 'speech_style', 'pronouns', 'speech_quirks', 'additional_info'])}
+                                            {renderHistoryTimeline(item, 'original_name', ['translated_name', 'aliases', 'gender', 'age', 'personality', 'speech_style', 'pronouns', 'speech_quirks', 'additional_info'])}
                                         </div>
                                     ))}
                                 </div>
@@ -1122,6 +1137,7 @@ export const Rules: React.FC = () => {
                                                     <input type="text" placeholder={t('ui_rules_character_personality')} value={item.personality} onChange={(e) => updateCharacterItem(originalIdx, 'personality', e.target.value)} className="bg-slate-950 border border-slate-700 rounded px-3 py-2 text-slate-300 focus:border-primary outline-none transition-all" />
                                                     <input type="text" placeholder={t('ui_rules_character_speech')} value={item.speech_style} onChange={(e) => updateCharacterItem(originalIdx, 'speech_style', e.target.value)} className="bg-slate-950 border border-slate-700 rounded px-3 py-2 text-slate-300 focus:border-primary outline-none transition-all" />
                                                 </div>
+                                                <input type="text" placeholder={t('ui_rules_character_aliases') || '原文别名/称呼'} value={formatAliases(item.aliases)} onChange={(e) => updateCharacterItem(originalIdx, 'aliases', parseAliases(e.target.value))} className="w-full bg-slate-950 border border-slate-700 rounded px-3 py-2 text-slate-300 focus:border-primary outline-none transition-all" />
                                                 <div className="grid grid-cols-2 gap-3">
                                                     <input type="text" placeholder={t('ui_rules_character_pronouns') || '第一人称/第二人称'} value={item.pronouns || ''} onChange={(e) => updateCharacterItem(originalIdx, 'pronouns', e.target.value)} className="bg-slate-950 border border-slate-700 rounded px-3 py-2 text-slate-300 focus:border-primary outline-none transition-all" />
                                                     <input type="text" placeholder={t('ui_rules_character_speech_quirks') || '口癖/语尾'} value={item.speech_quirks || ''} onChange={(e) => updateCharacterItem(originalIdx, 'speech_quirks', e.target.value)} className="bg-slate-950 border border-slate-700 rounded px-3 py-2 text-slate-300 focus:border-primary outline-none transition-all" />

@@ -621,6 +621,7 @@ class PromptBuilder(Base):
                 age = value.get("age")
                 personality = value.get("personality")
                 speech_style = value.get("speech_style")
+                aliases = PromptBuilder._format_aliases(value.get("aliases") or value.get("alias") or value.get("nicknames") or value.get("other_names"))
                 pronouns = value.get("pronouns")
                 speech_quirks = value.get("speech_quirks")
                 additional_info = value.get("additional_info")
@@ -628,6 +629,9 @@ class PromptBuilder(Base):
                 profile += f"\n【{original_name}】"
                 if translated_name:
                     profile += f"\n- 译名：{translated_name}"
+
+                if aliases:
+                    profile += f"\n- 原文别名/称呼：{aliases}"
 
                 if gender:
                     profile += f"\n- 性别：{gender}"
@@ -661,6 +665,7 @@ class PromptBuilder(Base):
                 age = value.get("age")
                 personality = value.get("personality")
                 speech_style = value.get("speech_style")
+                aliases = PromptBuilder._format_aliases(value.get("aliases") or value.get("alias") or value.get("nicknames") or value.get("other_names"))
                 pronouns = value.get("pronouns")
                 speech_quirks = value.get("speech_quirks")
                 additional_info = value.get("additional_info")
@@ -668,6 +673,9 @@ class PromptBuilder(Base):
                 profile += f"\n[{original_name}]"
                 if translated_name:
                     profile += f"\n- Translated_name: {translated_name}"
+
+                if aliases:
+                    profile += f"\n- Source aliases: {aliases}"
 
                 if gender:
                     profile += f"\n- Gender: {gender}"
@@ -850,6 +858,7 @@ class PromptBuilder(Base):
             return ""
 
         translated_name = value.get("translated_name")
+        aliases = PromptBuilder._format_aliases(value.get("aliases") or value.get("alias") or value.get("nicknames") or value.get("other_names"))
         gender = value.get("gender")
         age = value.get("age")
         personality = value.get("personality")
@@ -862,6 +871,8 @@ class PromptBuilder(Base):
             profile = f"\n【{original_name}】"
             if translated_name:
                 profile += f"\n- 译名：{translated_name}"
+            if aliases:
+                profile += f"\n- 原文别名/称呼：{aliases}"
             if pronouns:
                 profile += f"\n- 第一/第二人称：{pronouns}"
             if speech_quirks:
@@ -882,6 +893,8 @@ class PromptBuilder(Base):
         profile = f"\n[{original_name}]"
         if translated_name:
             profile += f"\n- Translated_name: {translated_name}"
+        if aliases:
+            profile += f"\n- Source aliases: {aliases}"
         if pronouns:
             profile += f"\n- Pronouns: {pronouns}"
         if speech_quirks:
@@ -898,6 +911,30 @@ class PromptBuilder(Base):
             if additional_info:
                 profile += f"\n- Additional_info: {additional_info}"
         return profile + "\n"
+
+    def _format_aliases(value) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, (list, tuple, set)):
+            raw_items = value
+        else:
+            text = str(value or "").strip()
+            if not text:
+                return ""
+            raw_items = re.split(r"[,;|/，、；／\n]+", text.replace("[Separator]", "\n"))
+
+        aliases = []
+        seen = set()
+        for item in raw_items:
+            alias = str(item or "").strip()
+            if not alias:
+                continue
+            marker = alias.casefold()
+            if marker in seen:
+                continue
+            seen.add(marker)
+            aliases.append(alias)
+        return "、".join(aliases)
 
     def build_translation_consistency_instruction(config: TaskConfig) -> str:
         if config.target_language in ("chinese_simplified", "chinese_traditional"):
