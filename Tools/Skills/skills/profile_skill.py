@@ -1,35 +1,18 @@
 from __future__ import annotations
 
-import json
 import os
 from typing import Any, Dict, List
 
 from Tools.Skills.skill_base import Skill, SkillMeta, SkillParameter, SkillResult
-
-
-PROJECT_ROOT = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "..")
+from Tools.Skills.skills.common import (
+    PROFILES_PATH,
+    atomic_write_json,
+    list_profile_names,
+    load_dict_json,
+    load_root_config,
+    resolve_profile_path,
+    save_root_config,
 )
-RESOURCE_ROOT = os.path.join(PROJECT_ROOT, "Resource")
-PROFILES_PATH = os.path.join(RESOURCE_ROOT, "profiles")
-ROOT_CONFIG = os.path.join(RESOURCE_ROOT, "config.json")
-
-
-def _safe_load_json(path: str) -> Dict[str, Any]:
-    try:
-        with open(path, "r", encoding="utf-8-sig") as f:
-            return json.load(f) if isinstance((d := json.load(f)), dict) else {}
-    except Exception:
-        return {}
-
-
-def _save_root_config(cfg: Dict[str, Any]) -> bool:
-    try:
-        with open(ROOT_CONFIG, "w", encoding="utf-8") as f:
-            json.dump(cfg, f, ensure_ascii=False, indent=2)
-        return True
-    except OSError:
-        return False
 
 
 class ProfileSkill(Skill):
@@ -70,19 +53,14 @@ class ProfileSkill(Skill):
         )
 
     def _list_profiles(self) -> List[str]:
-        if not os.path.isdir(PROFILES_PATH):
-            return []
-        return sorted([
-            n[:-5] for n in os.listdir(PROFILES_PATH)
-            if n.endswith(".json")
-        ])
+        return list_profile_names(PROFILES_PATH)
 
     def execute(self, args: Dict[str, Any]) -> SkillResult:
         action = (args.get("action") or "").strip().lower()
 
         if action == "list":
             profiles = self._list_profiles()
-            root = _safe_load_json(ROOT_CONFIG)
+            root = load_root_config()
             active = root.get("active_profile", "default")
             return SkillResult.ok({
                 "profiles": profiles,
@@ -91,7 +69,7 @@ class ProfileSkill(Skill):
             })
 
         if action == "current":
-            root = _safe_load_json(ROOT_CONFIG)
+            root = load_root_config()
             active = root.get("active_profile", "default")
             rules_active = root.get("active_rules_profile", "default")
             return SkillResult.ok({
@@ -103,46 +81,55 @@ class ProfileSkill(Skill):
             name = (args.get("name") or "").strip()
             if not name:
                 return SkillResult.fail("Missing required parameter: name", "MISSING_PARAM")
+            try:
+                _, name = resolve_profile_path(PROFILES_PATH, name)
+            except ValueError as e:
+                return SkillResult.fail(str(e), "INVALID_PROFILE")
             profiles = self._list_profiles()
             if name not in profiles:
                 return SkillResult.fail(
                     f"Profile '{name}' not found. Available: {', '.join(profiles)}",
                     "NOT_FOUND",
                 )
-            root = _safe_load_json(ROOT_CONFIG)
+            root = load_root_config()
+            previous = root.get("active_profile", "default")
             root["active_profile"] = name
-            if _save_root_config(root):
+            try:
+                save_root_config(root)
                 return SkillResult.ok({
                     "switched": True,
                     "profile": name,
-                    "previous": root.get("active_profile"),
+                    "previous": previous,
                 })
-            return SkillResult.fail("Failed to save config.", "WRITE_ERROR")
+            except Exception as e:
+                return SkillResult.fail(f"Failed to save config: {e}", "WRITE_ERROR")
 
         if action == "create":
             name = (args.get("name") or "").strip()
             if not name:
                 return SkillResult.fail("Missing required parameter: name", "MISSING_PARAM")
-            profile_path = os.path.join(PROFILES_PATH, f"{name}.json")
+            try:
+                profile_path, name = resolve_profile_path(PROFILES_PATH, name)
+            except ValueError as e:
+                return SkillResult.fail(str(e), "INVALID_PROFILE")
             if os.path.exists(profile_path):
                 return SkillResult.fail(f"Profile '{name}' already exists.", "ALREADY_EXISTS")
 
             base = (args.get("base") or "default").strip()
-            base_path = os.path.join(PROFILES_PATH, f"{base}.json")
+            try:
+                base_path, base = resolve_profile_path(PROFILES_PATH, base)
+            except ValueError as e:
+                return SkillResult.fail(str(e), "INVALID_PROFILE")
             if os.path.isfile(base_path):
                 try:
-                    with open(base_path, "r", encoding="utf-8") as f:
-                        base_data = json.load(f)
-                    with open(profile_path, "w", encoding="utf-8") as f:
-                        json.dump(base_data or {}, f, ensure_ascii=False, indent=2)
-                except (OSError, json.JSONDecodeError) as e:
+                    base_data = load_dict_json(base_path)
+                    atomic_write_json(profile_path, base_data or {})
+                except Exception as e:
                     return SkillResult.fail(f"Failed to create profile: {e}", "CREATE_ERROR")
             else:
-                # Create empty profile
                 try:
-                    with open(profile_path, "w", encoding="utf-8") as f:
-                        json.dump({}, f, ensure_ascii=False, indent=2)
-                except OSError as e:
+                    atomic_write_json(profile_path, {})
+                except Exception as e:
                     return SkillResult.fail(f"Failed to create profile: {e}", "CREATE_ERROR")
 
             return SkillResult.ok({
@@ -155,17 +142,23 @@ class ProfileSkill(Skill):
             name = (args.get("name") or "").strip()
             if not name:
                 return SkillResult.fail("Missing required parameter: name", "MISSING_PARAM")
+            try:
+                profile_path, name = resolve_profile_path(PROFILES_PATH, name)
+            except ValueError as e:
+                return SkillResult.fail(str(e), "INVALID_PROFILE")
             if name == "default":
                 return SkillResult.fail("Cannot delete the default profile.", "PROTECTED")
 
-            profile_path = os.path.join(PROFILES_PATH, f"{name}.json")
             if not os.path.isfile(profile_path):
                 return SkillResult.fail(f"Profile '{name}' not found.", "NOT_FOUND")
 
-            root = _safe_load_json(ROOT_CONFIG)
+            root = load_root_config()
             if root.get("active_profile") == name:
                 root["active_profile"] = "default"
-                _save_root_config(root)
+                try:
+                    save_root_config(root)
+                except Exception as e:
+                    return SkillResult.fail(f"Failed to save config: {e}", "WRITE_ERROR")
 
             try:
                 os.remove(profile_path)

@@ -11,7 +11,7 @@ MCP 服务器（`Tools/MCPServer/`）是一套完整的 [Model Context Protocol]
 - 从 WebServer 自动发现路由
 
 Skills 则完全不同：
-- **零额外依赖** — 仅用 Python 标准库（`http.server`、`json`）
+- **零额外服务依赖** — HTTP 层仅用 Python 标准库（`http.server`、`json`），业务层复用项目现有模块
 - **简洁 REST/JSON** — 不是 JSON-RPC，就是 HTTP + JSON
 - **精选操作** — 预定义的 skill 覆盖核心工作流，不自动暴露所有路由
 - **多种执行模式** — 可通过 HTTP 服务、CLI、或直接 Python 调用
@@ -25,6 +25,15 @@ Skills 则完全不同：
 ```bash
 python Tools/Skills/server.py --port 8766
 ```
+
+默认情况下，`POST /skills/{name}` 需要鉴权。服务启动时会在终端输出本次运行的
+`X-AiNiee-Skills-Auth` token；也可以用环境变量固定 token：
+
+```bash
+AINIEE_SKILLS_AUTH_TOKEN="your-token" python Tools/Skills/server.py --port 8766
+```
+
+只在可信本机调试时，可以用 `--no-auth` 临时关闭 HTTP 鉴权。
 
 或用启动脚本：
 ```bash
@@ -55,8 +64,8 @@ curl http://127.0.0.1:8766/skills
 | `system` | system | 系统信息与健康检查 |
 | `config` | config | 读写配置文件的设置项 |
 | `translate` | task | 执行翻译任务 |
-| `queue` | queue | 管理翻译任务队列 |
-| `profile` | config | 管理配置方案（新建/切换/删除） |
+| `queue` | queue | 管理项目内置任务队列（`Resource/queue_tasks.json`） |
+| `profile` | config | 管理配置方案（新建/切换/删除，自动限制在 profiles 目录内） |
 | `file` | files | 文件发现与暂存 |
 
 ## API 参考
@@ -82,6 +91,7 @@ curl http://127.0.0.1:8766/skills/system
 ```bash
 curl -X POST http://127.0.0.1:8766/skills/system \
   -H "Content-Type: application/json" \
+  -H "X-AiNiee-Skills-Auth: your-token" \
   -d '{"action": "ping"}'
 ```
 返回：
@@ -93,6 +103,7 @@ curl -X POST http://127.0.0.1:8766/skills/system \
 ```bash
 curl -X POST http://127.0.0.1:8766/skills/config \
   -H "Content-Type: application/json" \
+  -H "X-AiNiee-Skills-Auth: your-token" \
   -d '{"action": "get", "key": "target_platform"}'
 ```
 
@@ -100,6 +111,7 @@ curl -X POST http://127.0.0.1:8766/skills/config \
 ```bash
 curl -X POST http://127.0.0.1:8766/skills/profile \
   -H "Content-Type: application/json" \
+  -H "X-AiNiee-Skills-Auth: your-token" \
   -d '{"action": "list"}'
 ```
 
@@ -107,6 +119,7 @@ curl -X POST http://127.0.0.1:8766/skills/profile \
 ```bash
 curl -X POST http://127.0.0.1:8766/skills/translate \
   -H "Content-Type: application/json" \
+  -H "X-AiNiee-Skills-Auth: your-token" \
   -d '{
     "action": "run",
     "task_type": "translate",

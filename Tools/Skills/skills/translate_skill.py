@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import json
 import os
+import shlex
 import subprocess
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from Tools.Skills.skill_base import Skill, SkillMeta, SkillParameter, SkillResult
 
@@ -154,12 +154,19 @@ class TranslateSkill(Skill):
 
         try:
             result = _run_ainiee_cli(cli_args, timeout=3600)
-            return SkillResult.ok({
+            data = {
                 "exit_code": result.returncode,
                 "stdout": result.stdout[-2000:] if result.stdout else "",
                 "stderr": result.stderr[-2000:] if result.stderr else "",
-                "command": "uv run ainiee_cli.py " + " ".join(cli_args),
-            })
+                "command": shlex.join([sys.executable, "-m", "ainiee_cli", *cli_args]),
+            }
+            if result.returncode != 0:
+                return SkillResult.fail(
+                    f"Translation subprocess failed with exit code {result.returncode}.",
+                    "SUBPROCESS_FAILED",
+                    data=data,
+                )
+            return SkillResult.ok(data)
         except subprocess.TimeoutExpired:
             return SkillResult.fail("Translation task timed out.", "TIMEOUT")
         except FileNotFoundError as e:

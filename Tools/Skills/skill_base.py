@@ -43,8 +43,13 @@ class SkillResult:
         return cls(success=True, data=data)
 
     @classmethod
-    def fail(cls, message: str, code: str = "SKILL_ERROR") -> SkillResult:
-        return cls(success=False, error=message, error_code=code)
+    def fail(
+        cls,
+        message: str,
+        code: str = "SKILL_ERROR",
+        data: Any = None,
+    ) -> SkillResult:
+        return cls(success=False, data=data, error=message, error_code=code)
 
 
 @dataclass

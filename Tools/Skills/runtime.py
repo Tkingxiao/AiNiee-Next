@@ -17,6 +17,7 @@ REQUIRED_SKILL_FILES = (
     "skill_base.py",
     "server.py",
     "skills/__init__.py",
+    "skills/common.py",
     "skills/system_skill.py",
     "skills/config_skill.py",
     "skills/translate_skill.py",
@@ -41,7 +42,7 @@ def inspect_skills_runtime(project_root: str | None = None) -> Dict[str, Any]:
         if not os.path.exists(os.path.join(component_root, filename))
     ]
 
-    # Skills framework has zero extra dependencies — everything is stdlib.
+    # The HTTP layer has no extra server dependencies; business logic reuses project modules.
     required_modules = {"json", "http.server", "urllib.parse"}
     missing_modules = [
         name for name in required_modules if not _module_exists(name)
@@ -55,7 +56,7 @@ def inspect_skills_runtime(project_root: str | None = None) -> Dict[str, Any]:
         "component_root": component_root,
         "missing_files": missing_files,
         "missing_modules": missing_modules,
-        "note": "The Skills framework has no Python package dependencies beyond the standard library.",
+        "note": "The Skills HTTP layer has no server package dependencies beyond the standard library.",
     }
 
 
@@ -74,6 +75,6 @@ def format_runtime_status_lines(status: Dict[str, Any]) -> List[str]:
         lines.extend(f"  - {name}" for name in missing_modules)
 
     if not lines:
-        lines.append("AiNiee Skills runtime is ready (no extra dependencies required).")
+        lines.append("AiNiee Skills runtime is ready (no extra server dependencies required).")
 
     return lines
