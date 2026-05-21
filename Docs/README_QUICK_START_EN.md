@@ -22,27 +22,21 @@ Recommended order:
 
 In short: CLI/TUI is best for learning the workflow; WebUI is best for monitoring and management after the workflow is clear.
 
-## 1. Download the Project
+## 1. Clone the Project with Git
 
-Open the GitHub project page and download the project.
+Please clone the project with Git instead of downloading the ZIP archive. This makes future updates easier.
 
-Common options:
-
-1. Click **Code**.
-2. Click **Download ZIP**.
-3. Extract the ZIP file to a local folder.
-
-On Windows, the files you usually need first are:
-
-- `prepare.bat`: prepares the runtime environment.
-- `Launch.bat`: starts AiNiee-Next.
-
-You can also clone the project with Git:
+If Git is not installed yet, install [Git for Windows](https://git-scm.com/download/win) first. Then open a terminal in the folder where you want to keep the project and run:
 
 ```bash
 git clone https://github.com/ShadowLoveElysia/AiNiee-Next.git
 cd AiNiee-Next
 ```
+
+On Windows, the files you usually need first are:
+
+- `prepare.bat`: prepares the runtime environment.
+- `Launch.bat`: starts AiNiee-Next.
 
 ## 2. Prepare the Runtime Environment
 
