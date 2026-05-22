@@ -241,6 +241,8 @@
     "setting_manga_detect_device": "漫畫偵測裝置",
     "setting_manga_ocr_device": "漫畫 OCR 裝置",
     "setting_manga_inpaint_device": "漫畫修復裝置",
+    "setting_enable_background_prewarm": "背景預熱普通翻譯元件",
+    "setting_enable_background_prewarm_desc": "進入主選單後分批載入普通文字翻譯依賴，不預熱 MangaCore、視覺模型或漫畫 Runtime；低記憶體設備可關閉。",
     "choice_auto": "自動",
     "choice_cpu": "CPU",
     "choice_cuda": "CUDA",

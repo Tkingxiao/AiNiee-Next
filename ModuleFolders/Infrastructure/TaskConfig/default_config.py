@@ -78,6 +78,7 @@ DEFAULT_CONFIG = {
     "enable_session_logging": True,
     "enable_task_notification": True,
     "enable_github_promotion": True,
+    "enable_background_prewarm": True,
     "exclude_rule_str": "",
     "recent_projects": [],
     "mcp_server_port": 8765,

@@ -202,6 +202,8 @@
     "setting_manga_detect_device": "Manga Detect Device",
     "setting_manga_ocr_device": "Manga OCR Device",
     "setting_manga_inpaint_device": "Manga Inpaint Device",
+    "setting_enable_background_prewarm": "Background Prewarm for Text Tasks",
+    "setting_enable_background_prewarm_desc": "After the main menu opens, gradually load regular text translation dependencies in the background. MangaCore, visual models, and manga runtimes are not prewarmed; turn this off on low-memory devices.",
     "choice_auto": "Auto",
     "choice_cpu": "CPU",
     "choice_cuda": "CUDA",

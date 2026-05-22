@@ -202,6 +202,8 @@
     "setting_manga_detect_device": "漫画検出デバイス",
     "setting_manga_ocr_device": "漫画 OCR デバイス",
     "setting_manga_inpaint_device": "漫画修復デバイス",
+    "setting_enable_background_prewarm": "通常翻訳コンポーネントのバックグラウンド予熱",
+    "setting_enable_background_prewarm_desc": "メインメニュー表示後、通常テキスト翻訳の依存関係を少しずつバックグラウンドで読み込みます。MangaCore、視覚モデル、漫画 Runtime は予熱しません。低メモリ環境では無効にできます。",
     "choice_auto": "自動",
     "choice_cpu": "CPU",
     "choice_cuda": "CUDA",

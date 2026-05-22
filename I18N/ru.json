@@ -241,6 +241,8 @@
     "setting_manga_detect_device": "Устройство Manga Detect",
     "setting_manga_ocr_device": "Устройство Manga OCR",
     "setting_manga_inpaint_device": "Устройство Manga Inpaint",
+    "setting_enable_background_prewarm": "Фоновый прогрев компонентов обычного перевода",
+    "setting_enable_background_prewarm_desc": "После открытия главного меню постепенно загружает зависимости обычного текстового перевода в фоне. MangaCore, визуальные модели и manga runtime не прогреваются; на устройствах с малым объемом памяти это можно отключить.",
     "choice_auto": "Авто",
     "choice_cpu": "CPU",
     "choice_cuda": "CUDA",

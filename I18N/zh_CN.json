@@ -177,6 +177,8 @@
     "setting_interface_language_desc": "修改 CLI/TUI 菜单显示语言，保存后立即生效",
     "setting_github_promotion": "启用GitHub推广信息",
     "setting_github_promotion_desc": "任务完成后显示 GitHub star 支持提示",
+    "setting_enable_background_prewarm": "后台预热普通翻译组件",
+    "setting_enable_background_prewarm_desc": "进入主菜单后分批加载普通文本翻译依赖，不预热 MangaCore、视觉模型或漫画 Runtime；低内存设备可关闭。",
     "choice_zh_CN": "中文 (简体)",
     "choice_zh_CNTW": "中文 (繁體)",
     "choice_ja": "日本語",

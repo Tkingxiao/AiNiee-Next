@@ -241,6 +241,8 @@
     "setting_manga_detect_device": "Dispositivo Manga Detect",
     "setting_manga_ocr_device": "Dispositivo Manga OCR",
     "setting_manga_inpaint_device": "Dispositivo Manga Inpaint",
+    "setting_enable_background_prewarm": "Precarga en segundo plano para traducción de texto",
+    "setting_enable_background_prewarm_desc": "Después de abrir el menú principal, carga gradualmente las dependencias de traducción de texto en segundo plano. No precarga MangaCore, modelos visuales ni runtimes de manga; puede desactivarse en equipos con poca memoria.",
     "choice_auto": "Automático",
     "choice_cpu": "CPU",
     "choice_cuda": "CUDA",

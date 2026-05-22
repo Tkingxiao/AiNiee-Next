@@ -241,6 +241,8 @@
     "setting_manga_detect_device": "만화 Detect 장치",
     "setting_manga_ocr_device": "만화 OCR 장치",
     "setting_manga_inpaint_device": "만화 Inpaint 장치",
+    "setting_enable_background_prewarm": "일반 번역 구성요소 백그라운드 예열",
+    "setting_enable_background_prewarm_desc": "메인 메뉴가 열린 뒤 일반 텍스트 번역 의존성을 백그라운드에서 단계적으로 불러옵니다. MangaCore, 시각 모델, 만화 Runtime은 예열하지 않습니다. 메모리가 적은 장비에서는 끌 수 있습니다.",
     "choice_auto": "자동",
     "choice_cpu": "CPU",
     "choice_cuda": "CUDA",

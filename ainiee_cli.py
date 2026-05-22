@@ -43,7 +43,7 @@ from ModuleFolders.UserInterface.UIHelpers import (
     get_calibre_lang_code,
 )
 from ModuleFolders.UserInterface.WebLogger import WebLogger
-from ModuleFolders.UserInterface.RuntimeBootstrap import ensure_runtime_bootstrap
+from ModuleFolders.UserInterface.RuntimeBootstrap import ensure_runtime_bootstrap, start_background_prewarm
 from ModuleFolders.UserInterface.ConsoleInputGuard import suppress_console_mouse_input
 from ModuleFolders.UserInterface.ConfigExperience import calculate_output_path
 from ModuleFolders.Infrastructure.TaskConfig.ConfigProfileService import (
@@ -714,6 +714,18 @@ class CLIMenu:
         thread = threading.Thread(target=fetch, daemon=True)
         thread.start()
 
+    def _maybe_start_background_prewarm(self):
+        if not self.config.get("enable_background_prewarm", True):
+            return
+
+        start_background_prewarm(
+            enabled=True,
+            should_continue=lambda: (
+                not getattr(self, "task_running", False)
+                and bool(self.config.get("enable_background_prewarm", True))
+            ),
+        )
+
     def display_banner(self):
         console.clear()
         console.print(build_status_banner(self, PROJECT_ROOT))
@@ -761,6 +773,8 @@ class CLIMenu:
         if not self.root_config.get("wizard_completed"):
             self.run_wizard()
 
+        self._maybe_start_background_prewarm()
+
         # 启动时自动检查更新
         if self.config.get("enable_auto_update", False):
             self.update_manager.check_update(silent=True)
@@ -773,6 +787,7 @@ class CLIMenu:
                 self._github_fetch_event.wait(timeout=3)
 
         while True:
+            self._maybe_start_background_prewarm()
             self.display_banner()
             table = Table(show_header=False, box=None)
             menus = ["start_translation", "start_manga_translation", "start_polishing", "start_all_in_one", "export_only", "editor", "settings", "api_settings", "glossary", "plugin_settings", "task_queue", "profiles", "qa", "update", "update_web", "start_web_server", "start_mcp_server", "manga_runtime_manager"]

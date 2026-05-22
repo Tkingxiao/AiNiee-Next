@@ -980,6 +980,16 @@ register_config(ConfigItem(
     category="advanced"
 ))
 
+register_config(ConfigItem(
+    key="enable_background_prewarm",
+    default=True,
+    level=ConfigLevel.USER,
+    config_type=ConfigType.BOOL,
+    i18n_key="setting_enable_background_prewarm",
+    i18n_desc_key="setting_enable_background_prewarm_desc",
+    category="project_general"
+))
+
 # --- MangaCore Runtime 配置 (ADVANCED) ---
 _manga_engine_defaults = {
     "manga_detect_engine": "comic-text-bubble-detector",
