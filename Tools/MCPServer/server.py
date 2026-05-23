@@ -109,6 +109,21 @@ DEFAULT_REGISTER_ROUTE_TOOLS = (
 )
 
 
+def _mcp_tool_doc(summary: str, details: str = "") -> str:
+    parts = [summary.strip(), get_server_instructions_text().strip()]
+    if details.strip():
+        parts.append(details.strip())
+    return "\n\n".join(parts)
+
+
+def _mcp_tool(mcp, summary: str, details: str = ""):
+    def decorator(func):
+        func.__doc__ = _mcp_tool_doc(summary, details)
+        return mcp.tool()(func)
+
+    return decorator
+
+
 def _t_from_host(host_cli: Any, key: str, default: str) -> str:
     """Read an i18n string from the host CLI when available."""
     i18n = getattr(host_cli, "i18n", None)
@@ -625,7 +640,7 @@ def _normalize_public_api_path(path: str) -> str:
     if not _is_public_api_route(normalized):
         raise ValueError(
             "Only public /api/* routes are available through MCP. "
-            "Internal routes and direct WebUI bypass paths are not allowed."
+            "Internal routes and non-MCP Web UI paths are not available through this tool."
         )
     return normalized
 
@@ -661,12 +676,13 @@ def _register_route_proxy_tools(mcp, api: AiNieeAPIClient, routes: List[Dict[str
                 return api.request(route_method, rendered_path, params=query, payload=body)
 
             route_tool.__name__ = route_tool_name
-            route_tool.__doc__ = (
-                f"Proxy WebServer route {_method_display(route_method)} {route_path}. "
-                f"Category: {route_category}. "
-                "Use path_params for templated segments, query for URL params, body for JSON payload. "
-                "Call get_mcp_tool_catalog for structured examples. "
-                "Do not bypass MCP by making direct WebUI or localhost HTTP requests."
+            route_tool.__doc__ = _mcp_tool_doc(
+                f"Proxy WebServer route {_method_display(route_method)} {route_path}. Category: {route_category}.",
+                (
+                    "Use path_params for templated segments, query for URL params, body for JSON payload. "
+                    "Call get_mcp_tool_categories first, then get_mcp_tool_catalog(category='<needed-category>') "
+                    "for structured examples. Do not guess API paths."
+                ),
             )
             return route_tool
 
@@ -728,47 +744,51 @@ def _build_mcp_app(
 
     routes = _extract_api_routes(ws_module)
 
-    @mcp.tool()
+    @_mcp_tool(
+        mcp,
+        "Read the built-in MCP usage manual.",
+        (
+            "Call this first when the MCP client cannot inspect repository files. "
+            "It also states that LLM-driven operations should use MCP tools instead of direct Web UI HTTP requests."
+        ),
+    )
     def get_mcp_usage_manual(section: str = "all") -> str:
-        """
-        Read the built-in MCP usage manual.
-
-        Call this first when the MCP client cannot inspect repository files.
-        It also states that the model must not bypass MCP by sending direct WebUI HTTP requests.
-        """
         return load_mcp_manual(section)
 
-    @mcp.tool()
+    @_mcp_tool(
+        mcp,
+        "Read the MCP security policy.",
+        (
+            "This explains Web UI session cookie / MCP bridge token channel gates "
+            "and how secret redaction behaves."
+        ),
+    )
     def get_mcp_security_policy() -> Dict[str, Any]:
-        """
-        Read the MCP security policy.
-
-        This explicitly forbids bypassing MCP with direct WebUI / localhost / LAN HTTP requests
-        and explains how secret redaction behaves.
-        """
         return build_security_policy()
 
-    @mcp.tool()
+    @_mcp_tool(
+        mcp,
+        "Read the lightweight MCP category index.",
+        (
+            "Use this before get_mcp_tool_catalog(category=...) so the client only loads "
+            "the endpoint category it actually needs."
+        ),
+    )
     def get_mcp_tool_categories() -> Dict[str, Any]:
-        """
-        Read the lightweight MCP category index.
-
-        Use this before get_mcp_tool_catalog(category=...) so the client only loads
-        the endpoint category it actually needs.
-        """
         return build_tool_category_index(
             routes,
             route_tools_exposed=register_route_tools,
         )
 
-    @mcp.tool()
+    @_mcp_tool(
+        mcp,
+        "Read the structured MCP endpoint catalog for one category.",
+        (
+            "Defaults to a lightweight category index. Pass category='config', category='queue', "
+            "or another category from get_mcp_tool_categories to avoid loading the full catalog."
+        ),
+    )
     def get_mcp_tool_catalog(category: str = "index", include_examples: bool = True) -> Dict[str, Any]:
-        """
-        Read the structured MCP endpoint catalog for one category.
-
-        Defaults to a lightweight category index. Pass category='config', category='queue',
-        or another category from get_mcp_tool_categories to avoid loading the full catalog.
-        """
         return build_tool_catalog(
             routes,
             category=category,
@@ -776,25 +796,39 @@ def _build_mcp_app(
             route_tools_exposed=register_route_tools,
         )
 
-    @mcp.tool()
+    @_mcp_tool(
+        mcp,
+        "Read the four MCP security validation scenarios.",
+        "Use this to validate config/queue redaction and placeholder writeback protection.",
+    )
     def get_mcp_validation_checklist() -> Dict[str, Any]:
-        """
-        Read the four MCP security validation scenarios.
-
-        Use this to validate config/queue redaction and placeholder writeback protection.
-        """
         return build_validation_checklist()
 
-    @mcp.tool()
+    @_mcp_tool(
+        mcp,
+        "List public WebServer API routes exposed through MCP. Pass category for a compact group.",
+        (
+            "Prefer get_mcp_tool_categories() and "
+            "get_mcp_tool_catalog(category='<needed-category>') before calling API routes, "
+            "so you do not guess endpoint paths."
+        ),
+    )
     def list_web_api_routes(category: str = "all") -> List[Dict[str, str]]:
-        """List public WebServer API routes exposed through MCP. Pass category for a compact group."""
         filtered_routes = _filter_routes_by_category(routes, category)
         return _build_route_index(
             filtered_routes,
             route_tools_exposed=register_route_tools,
         )
 
-    @mcp.tool()
+    @_mcp_tool(
+        mcp,
+        "Call one public /api/* route through MCP.",
+        (
+            "Use get_mcp_tool_categories and get_mcp_tool_catalog(category=...) to choose "
+            "the route. Do not guess endpoint paths or mix this MCP proxy with direct Web UI HTTP calls. "
+            "Internal routes are blocked."
+        ),
+    )
     def call_web_api(
         method: str,
         path: str,
@@ -803,21 +837,16 @@ def _build_mcp_app(
         body: Optional[Any] = None,
         confirm_advanced_change: bool = False,
     ) -> Any:
-        """
-        Call one public /api/* route through MCP.
-
-        Use get_mcp_tool_categories and get_mcp_tool_catalog(category=...) to choose
-        the route. Never use external direct HTTP requests to bypass MCP protections.
-        Internal routes are blocked.
-        """
         normalized_path = _normalize_public_api_path(path)
         _ensure_advanced_change_confirmed(normalized_path, body, confirm_advanced_change)
         rendered_path = _render_path_template(normalized_path, path_params)
         return api.request(method.upper(), rendered_path, params=query, payload=body)
 
-    @mcp.tool()
+    @_mcp_tool(
+        mcp,
+        "Upload a local file through the WebServer multipart endpoint.",
+    )
     def upload_file(file_path: str, policy: str = "default") -> Dict[str, Any]:
-        """Upload a local file through the WebServer multipart endpoint."""
         import requests
 
         source = Path(file_path).expanduser()

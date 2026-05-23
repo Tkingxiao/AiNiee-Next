@@ -18,10 +18,11 @@ MCP_CONFIG_NOTICE_PATHS = {
 }
 MCP_SECRET_ACCESS_NOTICE = (
     "权限限制：LLM 客户端无权读取用户的 API Key / Access Key / Secret Key。"
-    "为了安全，这些敏感数据仅允许用户本人在 Web 端查看，禁止通过 MCP、"
-    "直连 HTTP、本地文件、日志、缓存或任何其他渠道绕过获取。 "
+    "这些敏感数据仅允许用户本人在带有效 Web 会话的 Web 端查看；MCP 通道会返回脱敏占位符。"
+    "敏感 Web API 路由要求有效的 Web UI 会话 cookie 或 MCP bridge token。 "
     "Permission restriction: LLM clients cannot read user secrets. "
-    "The user may view them only in the Web UI, and bypassing via any other channel is forbidden."
+    "The user may view them only in the Web UI with a valid Web session; MCP returns redacted placeholders. "
+    "Sensitive Web API routes require a valid Web UI session cookie or MCP bridge token."
 )
 MCP_SENSITIVE_FIELDS = {
     "api_key",

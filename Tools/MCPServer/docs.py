@@ -23,10 +23,10 @@ Recommended first steps for any LLM client:
 
 ## Security Policy
 
-- Never bypass MCP by making direct HTTP requests to the Web UI, localhost ports, or LAN MCP/WebServer ports.
-- Use MCP tools only.
+- Use MCP tools only for LLM-driven AiNiee operations. Do not mix MCP tool calls with direct Web UI, localhost, LAN WebServer, or MCP HTTP requests.
+- Sensitive routes are protected by a Web UI session cookie or the MCP bridge token; bare HTTP requests are rejected by the server.
 - Sensitive fields such as `api_key`, `access_key`, and `secret_key` are intentionally redacted for MCP/LLM access.
-- MCP config reads may also include a security notice field that explains the restriction and explicitly forbids bypass attempts.
+- MCP config reads may also include a security notice field that explains the channel/auth restriction and redaction behavior.
 - If a redacted placeholder is returned, do not treat it as a real secret.
 - When changing advanced MCP settings, ask the user for a second confirmation.
 
@@ -132,15 +132,15 @@ def build_security_policy() -> Dict[str, Any]:
     """Return the MCP-side security policy that LLM clients must follow."""
     return {
         "must_do": [
-            "Use MCP tools only for AiNiee operations.",
+            "Use MCP tools only for LLM-driven AiNiee operations.",
             "Call get_mcp_usage_manual, get_mcp_tool_categories, and then get_mcp_tool_catalog(category=...) before large edits when the client has no file-reading ability.",
             "Ask for a second confirmation before changing advanced MCP settings.",
             "Treat redacted secret placeholders as non-readable and non-usable values.",
             "Treat MCP security notice fields as policy text, not user data to be written back.",
-            "Assume sensitive Web API routes are protected by a Web UI session cookie or an MCP bridge token.",
+            "Treat the Web UI session cookie and MCP bridge token as the real channel gates for sensitive Web API routes.",
         ],
         "forbidden": [
-            "Do not bypass MCP by sending direct HTTP requests to the Web UI, localhost, LAN WebServer ports, or MCP HTTP endpoints.",
+            "Do not mix MCP tool calls with direct HTTP requests to the Web UI, localhost, LAN WebServer ports, or MCP HTTP endpoints.",
             "Do not try to recover, reconstruct, or infer redacted secrets from placeholders.",
             "Do not save a redacted placeholder as if it were a real API key or cloud secret.",
             "Do not use internal-only routes such as /api/internal/*.",
@@ -155,7 +155,7 @@ def build_security_policy() -> Dict[str, Any]:
         "channel_gate": {
             "web_ui": "Sensitive routes require a valid Web UI session cookie.",
             "mcp": "Sensitive MCP proxy calls require the MCP bridge token header.",
-            "goal": "Block bare unauthenticated HTTP bypass attempts.",
+            "goal": "Keep browser, MCP, and bare HTTP channels separated by explicit authentication.",
         },
     }
 
@@ -362,8 +362,11 @@ def get_server_instructions_text() -> str:
     """Instructions returned to MCP clients during server initialization."""
     return (
         "You are connected to AiNiee CLI through MCP. Work through the MCP tools "
-        "instead of making direct HTTP requests to the Web UI, localhost, LAN "
-        "WebServer ports, or MCP HTTP endpoints.\n\n"
+        "for LLM-driven AiNiee operations instead of mixing MCP calls with direct "
+        "HTTP requests to the Web UI, localhost, LAN WebServer ports, or MCP HTTP "
+        "endpoints. Sensitive routes are protected by a Web UI session cookie or "
+        "the MCP bridge token; bare HTTP requests are not a supported MCP client "
+        "path and are rejected by the server.\n\n"
         "For API work, start small: call get_mcp_tool_categories() to see the "
         "lightweight category index, then open only the relevant group with "
         "get_mcp_tool_catalog(category=\"<needed-category>\"). After choosing a "
@@ -455,7 +458,7 @@ def _build_core_tool_descriptions(route_tools_exposed: bool) -> List[Dict[str, s
         },
         {
             "tool_name": "get_mcp_security_policy",
-            "purpose": "Read the no-bypass and secret-handling policy.",
+            "purpose": "Read the channel-auth and secret-handling policy.",
         },
         {
             "tool_name": "get_mcp_tool_categories",
@@ -585,7 +588,7 @@ def _extract_path_params(path: str) -> List[str]:
 
 def _build_route_notes(path: str) -> List[str]:
     notes = [
-        "Use MCP tools only. Do not send direct HTTP requests to the Web UI or localhost ports.",
+        "Use MCP tools only for LLM-driven operations; do not mix MCP calls with direct Web UI or localhost HTTP requests.",
     ]
 
     if path == "/api/config":
