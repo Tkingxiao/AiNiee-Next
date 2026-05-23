@@ -671,7 +671,7 @@
     "msg_mcp_runtime_missing": "Отсутствуют компоненты MCP или их зависимости.",
     "msg_mcp_import_failed": "Не удалось импортировать компоненты MCP.",
     "msg_mcp_route_update_notice": "Примечание: при изменении порта MCP-сервера нужно также обновить MCP-маршрут в Codex и других MCP-клиентах.",
-    "msg_mcp_guide_tools_hint": "Инструменты справки: get_mcp_usage_manual / get_mcp_security_policy / get_mcp_tool_catalog / get_mcp_validation_checklist",
+    "msg_mcp_guide_tools_hint": "Инструменты справки: get_mcp_usage_manual / get_mcp_security_policy / get_mcp_tool_categories / get_mcp_tool_catalog(category=...) / get_mcp_validation_checklist",
     "msg_mcp_missing_component_files": "Отсутствующие файлы компонентов MCP:",
     "msg_mcp_missing_python_modules": "Отсутствующие модули Python:",
     "msg_mcp_suggested_install_commands": "Рекомендуемые команды установки:",

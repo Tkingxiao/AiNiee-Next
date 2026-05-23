@@ -648,7 +648,7 @@
         "msg_mcp_runtime_missing": "MCP コンポーネントまたは依存関係が不足しています。",
         "msg_mcp_import_failed": "MCP コンポーネントの読み込みに失敗しました。",
         "msg_mcp_route_update_notice": "注意: MCP サービスポートを変更した場合、Codex などの MCP クライアント側の接続ルートも更新する必要があります。",
-        "msg_mcp_guide_tools_hint": "ガイド用ツール: get_mcp_usage_manual / get_mcp_security_policy / get_mcp_tool_catalog / get_mcp_validation_checklist",
+        "msg_mcp_guide_tools_hint": "ガイド用ツール: get_mcp_usage_manual / get_mcp_security_policy / get_mcp_tool_categories / get_mcp_tool_catalog(category=...) / get_mcp_validation_checklist",
         "msg_mcp_missing_component_files": "不足している MCP コンポーネントファイル:",
         "msg_mcp_missing_python_modules": "不足している Python モジュール:",
         "msg_mcp_suggested_install_commands": "推奨インストールコマンド:",

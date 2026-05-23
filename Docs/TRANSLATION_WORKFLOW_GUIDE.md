@@ -521,11 +521,12 @@ MCP 的重点不是“开一个端口给 AI 随便访问”，而是“通过受
 ```text
 get_mcp_usage_manual
 get_mcp_security_policy
-get_mcp_tool_catalog
+get_mcp_tool_categories
+get_mcp_tool_catalog(category="需要的分类")
 get_mcp_validation_checklist
 ```
 
-这几个工具会告诉 AI 客户端当前 MCP 有哪些能力、参数怎么写、哪些接口受限，以及为什么不能绕过 MCP 直连 WebUI。
+这几个工具会告诉 AI 客户端当前 MCP 有哪些能力、参数怎么写、哪些接口受限，以及为什么不能绕过 MCP 直连 WebUI。端点目录默认按分类读取，避免一次性把全部 Web API 端点塞进上下文。
 
 ## 21. 插件和高级功能怎么取舍
 

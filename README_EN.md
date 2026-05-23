@@ -347,10 +347,11 @@ If the project `.venv` was created under another OS first, for example in WSL an
 **Recommended first MCP calls for LLM clients:**
 - `get_mcp_usage_manual`
 - `get_mcp_security_policy`
-- `get_mcp_tool_catalog`
+- `get_mcp_tool_categories`
+- `get_mcp_tool_catalog(category="<needed-category>")`
 - `get_mcp_validation_checklist`
 
-These four tools tell the LLM what MCP capabilities are available, how tool parameters are structured, which routes are restricted, and why bypassing MCP is forbidden.
+These tools tell the LLM what MCP capabilities are available, how tool parameters are structured, which routes are restricted, and why bypassing MCP is forbidden. The endpoint catalog is category-based by default, so clients do not need to inject every Web API endpoint into context at once.
 
 **MCP security requirements:**
 - The LLM must not bypass MCP by sending direct HTTP requests to the Web UI, localhost, or LAN ports

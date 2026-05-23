@@ -347,10 +347,11 @@ UV_PROJECT_ENVIRONMENT="$(pwd)/.venv" uv --directory "$(pwd)" add 'mcp' 'fastapi
 **LLM 客户端建议首轮调用：**
 - `get_mcp_usage_manual`
 - `get_mcp_security_policy`
-- `get_mcp_tool_catalog`
+- `get_mcp_tool_categories`
+- `get_mcp_tool_catalog(category="需要的分类")`
 - `get_mcp_validation_checklist`
 
-这 4 个工具会直接告诉 LLM 当前 MCP 暴露了哪些能力、参数如何组织、哪些接口受限，以及为什么不能绕过 MCP 直连 WebUI。
+这些工具会直接告诉 LLM 当前 MCP 暴露了哪些能力、参数如何组织、哪些接口受限，以及为什么不能绕过 MCP 直连 WebUI。端点目录默认按分类读取，避免一次性把全部 Web API 端点注入上下文。
 
 **MCP 安全要求：**
 - LLM 严禁绕过 MCP，直接向 WebUI / localhost / 局域网端口发 HTTP 请求取数

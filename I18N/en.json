@@ -602,7 +602,7 @@
         "msg_mcp_runtime_missing": "MCP components or dependencies are missing.",
         "msg_mcp_import_failed": "Failed to import MCP components.",
         "msg_mcp_route_update_notice": "Note: if you change the MCP server port, update the MCP route in Codex and other clients as well.",
-        "msg_mcp_guide_tools_hint": "Guide tools: get_mcp_usage_manual / get_mcp_security_policy / get_mcp_tool_catalog / get_mcp_validation_checklist",
+        "msg_mcp_guide_tools_hint": "Guide tools: get_mcp_usage_manual / get_mcp_security_policy / get_mcp_tool_categories / get_mcp_tool_catalog(category=...) / get_mcp_validation_checklist",
         "msg_mcp_missing_component_files": "Missing MCP component files:",
         "msg_mcp_missing_python_modules": "Missing Python modules:",
         "msg_mcp_suggested_install_commands": "Suggested install command(s):",

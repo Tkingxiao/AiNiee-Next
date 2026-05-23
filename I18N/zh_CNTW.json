@@ -671,7 +671,7 @@
     "msg_mcp_runtime_missing": "MCP 元件或依賴缺失。",
     "msg_mcp_import_failed": "MCP 元件匯入失敗。",
     "msg_mcp_route_update_notice": "注意：如果修改了 MCP 服務連接埠，Codex 等 MCP 用戶端中的服務路由也需要同步更新。",
-    "msg_mcp_guide_tools_hint": "說明工具：get_mcp_usage_manual / get_mcp_security_policy / get_mcp_tool_catalog / get_mcp_validation_checklist",
+    "msg_mcp_guide_tools_hint": "說明工具：get_mcp_usage_manual / get_mcp_security_policy / get_mcp_tool_categories / get_mcp_tool_catalog(category=...) / get_mcp_validation_checklist",
     "msg_mcp_missing_component_files": "缺少 MCP 元件檔案：",
     "msg_mcp_missing_python_modules": "缺少 Python 模組：",
     "msg_mcp_suggested_install_commands": "建議執行的安裝命令：",

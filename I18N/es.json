@@ -671,7 +671,7 @@
     "msg_mcp_runtime_missing": "Faltan componentes o dependencias de MCP.",
     "msg_mcp_import_failed": "No se pudieron importar los componentes MCP.",
     "msg_mcp_route_update_notice": "Nota: si cambias el puerto del servidor MCP, actualiza también la ruta MCP en Codex y otros clientes MCP.",
-    "msg_mcp_guide_tools_hint": "Herramientas de guía: get_mcp_usage_manual / get_mcp_security_policy / get_mcp_tool_catalog / get_mcp_validation_checklist",
+    "msg_mcp_guide_tools_hint": "Herramientas de guía: get_mcp_usage_manual / get_mcp_security_policy / get_mcp_tool_categories / get_mcp_tool_catalog(category=...) / get_mcp_validation_checklist",
     "msg_mcp_missing_component_files": "Archivos de componentes MCP faltantes:",
     "msg_mcp_missing_python_modules": "Módulos Python faltantes:",
     "msg_mcp_suggested_install_commands": "Comandos de instalación sugeridos:",

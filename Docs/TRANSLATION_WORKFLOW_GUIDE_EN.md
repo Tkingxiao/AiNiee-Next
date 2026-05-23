@@ -420,7 +420,8 @@ After connecting MCP, ask the client to read:
 ```text
 get_mcp_usage_manual
 get_mcp_security_policy
-get_mcp_tool_catalog
+get_mcp_tool_categories
+get_mcp_tool_catalog(category="<needed-category>")
 get_mcp_validation_checklist
 ```
 

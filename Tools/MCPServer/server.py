@@ -25,6 +25,7 @@ PROFILES_PATH = os.path.join(RESOURCE_ROOT, "profiles")
 from Tools.MCPServer.runtime import inspect_mcp_runtime
 from Tools.MCPServer.docs import (
     build_security_policy,
+    build_tool_category_index,
     build_tool_catalog,
     build_validation_checklist,
     load_mcp_manual,
@@ -101,6 +102,10 @@ DEFAULT_BACKEND_PORT = int(
     )
 )
 DEFAULT_MCP_AUTH_TOKEN = os.environ.get("AINIEE_MCP_AUTH_TOKEN", "")
+DEFAULT_REGISTER_ROUTE_TOOLS = (
+    os.environ.get("AINIEE_MCP_REGISTER_ROUTE_TOOLS", "").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
 
 
 def _t_from_host(host_cli: Any, key: str, default: str) -> str:
@@ -578,6 +583,42 @@ def _extract_api_routes(ws_module) -> List[Dict[str, str]]:
     return routes
 
 
+def _route_category(path: str) -> str:
+    stripped = path.strip("/")
+    parts = stripped.split("/")
+    if len(parts) < 2:
+        return "misc"
+    return parts[1]
+
+
+def _filter_routes_by_category(
+    routes: List[Dict[str, str]],
+    category: str = "all",
+) -> List[Dict[str, str]]:
+    normalized = (category or "all").strip().lower().replace(" ", "_")
+    if normalized in {"all", "*"}:
+        return routes
+    return [route for route in routes if _route_category(route["path"]) == normalized]
+
+
+def _build_route_index(
+    routes: List[Dict[str, str]],
+    *,
+    route_tools_exposed: bool,
+) -> List[Dict[str, str]]:
+    route_index = []
+    for route in routes:
+        item = {
+            "method": route["method"],
+            "path": route["path"],
+            "category": _route_category(route["path"]),
+        }
+        if route_tools_exposed:
+            item["route_tool_name"] = route["tool_name"]
+        route_index.append(item)
+    return route_index
+
+
 def _normalize_public_api_path(path: str) -> str:
     normalized = path if path.startswith("/") else f"/{path}"
     if not _is_public_api_route(normalized):
@@ -597,7 +638,7 @@ def _register_route_proxy_tools(mcp, api: AiNieeAPIClient, routes: List[Dict[str
         method = route_meta["method"]
         path = route_meta["path"]
         tool_name = route_meta["tool_name"]
-        route_category = path.strip("/").split("/")[1] if "/" in path.strip("/") else "misc"
+        route_category = _route_category(path)
 
         def make_route_tool(route_method: str, route_path: str, route_tool_name: str):
             def route_tool(
@@ -658,6 +699,7 @@ def _build_mcp_app(
     port: int,
     path: str,
     host_cli: Any = None,
+    register_route_tools: bool = DEFAULT_REGISTER_ROUTE_TOOLS,
 ):
     try:
         _patch_streamable_http_shutdown_for_windows()
@@ -705,13 +747,32 @@ def _build_mcp_app(
         return build_security_policy()
 
     @mcp.tool()
-    def get_mcp_tool_catalog(category: str = "all", include_examples: bool = True) -> Dict[str, Any]:
+    def get_mcp_tool_categories() -> Dict[str, Any]:
         """
-        Read the structured MCP tool catalog with route groups, call patterns, and examples.
+        Read the lightweight MCP category index.
 
-        Recommended before using many tools in clients that do not support source inspection.
+        Use this before get_mcp_tool_catalog(category=...) so the client only loads
+        the endpoint category it actually needs.
         """
-        return build_tool_catalog(routes, category=category, include_examples=include_examples)
+        return build_tool_category_index(
+            routes,
+            route_tools_exposed=register_route_tools,
+        )
+
+    @mcp.tool()
+    def get_mcp_tool_catalog(category: str = "index", include_examples: bool = True) -> Dict[str, Any]:
+        """
+        Read the structured MCP endpoint catalog for one category.
+
+        Defaults to a lightweight category index. Pass category='config', category='queue',
+        or another category from get_mcp_tool_categories to avoid loading the full catalog.
+        """
+        return build_tool_catalog(
+            routes,
+            category=category,
+            include_examples=include_examples,
+            route_tools_exposed=register_route_tools,
+        )
 
     @mcp.tool()
     def get_mcp_validation_checklist() -> Dict[str, Any]:
@@ -723,26 +784,34 @@ def _build_mcp_app(
         return build_validation_checklist()
 
     @mcp.tool()
-    def list_web_api_routes() -> List[Dict[str, str]]:
-        """List all public WebServer API routes exposed through MCP. Use get_mcp_tool_catalog for detailed usage."""
-        return routes
+    def list_web_api_routes(category: str = "all") -> List[Dict[str, str]]:
+        """List public WebServer API routes exposed through MCP. Pass category for a compact group."""
+        filtered_routes = _filter_routes_by_category(routes, category)
+        return _build_route_index(
+            filtered_routes,
+            route_tools_exposed=register_route_tools,
+        )
 
     @mcp.tool()
     def call_web_api(
         method: str,
         path: str,
+        path_params: Optional[Dict[str, Any]] = None,
         query: Optional[Dict[str, Any]] = None,
         body: Optional[Any] = None,
         confirm_advanced_change: bool = False,
     ) -> Any:
         """
-        Raw escape hatch for a public /api/* route when no named MCP tool is enough.
+        Call one public /api/* route through MCP.
 
-        Never use external direct HTTP requests to bypass MCP protections. Internal routes are blocked.
+        Use get_mcp_tool_categories and get_mcp_tool_catalog(category=...) to choose
+        the route. Never use external direct HTTP requests to bypass MCP protections.
+        Internal routes are blocked.
         """
         normalized_path = _normalize_public_api_path(path)
         _ensure_advanced_change_confirmed(normalized_path, body, confirm_advanced_change)
-        return api.request(method.upper(), normalized_path, params=query, payload=body)
+        rendered_path = _render_path_template(normalized_path, path_params)
+        return api.request(method.upper(), rendered_path, params=query, payload=body)
 
     @mcp.tool()
     def upload_file(file_path: str, policy: str = "default") -> Dict[str, Any]:
@@ -776,7 +845,8 @@ def _build_mcp_app(
 
         return sanitize_data_for_mcp(data, path="/api/files/upload")
 
-    _register_route_proxy_tools(mcp, api, routes)
+    if register_route_tools:
+        _register_route_proxy_tools(mcp, api, routes)
 
     return mcp
 
@@ -820,6 +890,7 @@ def run_mcp_server(
     path: str = DEFAULT_MCP_PATH,
     backend_host: str = DEFAULT_BACKEND_HOST,
     backend_port: int = DEFAULT_BACKEND_PORT,
+    register_route_tools: bool = DEFAULT_REGISTER_ROUTE_TOOLS,
 ) -> Any:
     status = inspect_mcp_runtime(PROJECT_ROOT)
     if not status.get("available"):
@@ -855,7 +926,15 @@ def run_mcp_server(
     atexit.register(backend.stop)
 
     api = AiNieeAPIClient(backend.base_url, mcp_auth_token=mcp_auth_token)
-    mcp_app = _build_mcp_app(api, backend.ws_module, host, port, path, host_cli=host_cli)
+    mcp_app = _build_mcp_app(
+        api,
+        backend.ws_module,
+        host,
+        port,
+        path,
+        host_cli=host_cli,
+        register_route_tools=register_route_tools,
+    )
 
     try:
         return _invoke_fastmcp_run(mcp_app, transport, host, port, path)
@@ -885,6 +964,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=DEFAULT_BACKEND_PORT,
         help="Embedded AiNiee WebServer port.",
     )
+    parser.add_argument(
+        "--register-route-tools",
+        action="store_true",
+        default=DEFAULT_REGISTER_ROUTE_TOOLS,
+        help=(
+            "Compatibility mode: register one named api_* MCP tool per public WebServer route. "
+            "Disabled by default to keep MCP tool discovery small."
+        ),
+    )
     return parser
 
 
@@ -907,6 +995,7 @@ def main() -> int:
         path=args.path,
         backend_host=args.backend_host,
         backend_port=args.backend_port,
+        register_route_tools=args.register_route_tools,
     )
     return 0
 
