@@ -56,11 +56,12 @@ jobs:
       - name: Build and publish Windows GUI to dev pre-release
         uses: tauri-apps/tauri-action@v0.6.1
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
         with:
           projectPath: Tools/TauriShell
           tagName: dev-build
           releaseName: "AiNiee Dev Preview (Web + GUI)"
+          releaseCommitish: ${{ github.sha }}
           releaseBody: |
             Auto-generated Windows development preview build.
             Commit: ${{ github.sha }}

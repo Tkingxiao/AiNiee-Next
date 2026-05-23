@@ -58,11 +58,12 @@ jobs:
       - name: Build and publish macOS (arm64) GUI to dev pre-release
         uses: tauri-apps/tauri-action@v0.6.1
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
         with:
           projectPath: Tools/TauriShell
           tagName: dev-build
           releaseName: "AiNiee Dev Preview (Web + GUI)"
+          releaseCommitish: ${{ github.sha }}
           releaseBody: |
             Auto-generated macOS arm64 development preview build.
             Commit: ${{ github.sha }}
@@ -111,11 +112,12 @@ jobs:
       - name: Build and publish macOS (x64) GUI to dev pre-release
         uses: tauri-apps/tauri-action@v0.6.1
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
         with:
           projectPath: Tools/TauriShell
           tagName: dev-build
           releaseName: "AiNiee Dev Preview (Web + GUI)"
+          releaseCommitish: ${{ github.sha }}
           releaseBody: |
             Auto-generated macOS x64 development preview build.
             Commit: ${{ github.sha }}

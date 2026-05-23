@@ -61,11 +61,12 @@ jobs:
       - name: Build and publish Linux GUI to dev pre-release
         uses: tauri-apps/tauri-action@v0.6.1
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
         with:
           projectPath: Tools/TauriShell
           tagName: dev-build
           releaseName: "AiNiee Dev Preview (Web + GUI)"
+          releaseCommitish: ${{ github.sha }}
           releaseBody: |
             Auto-generated Linux development preview build.
             Commit: ${{ github.sha }}
@@ -84,7 +85,9 @@ jobs:
       - name: Upload launcher scripts to dev pre-release
         uses: softprops/action-gh-release@v2
         with:
+          token: ${{ github.token }}
           tag_name: dev-build
+          target_commitish: ${{ github.sha }}
           name: "AiNiee Dev Preview (Web + GUI)"
           prerelease: true
           make_latest: false
@@ -92,8 +95,6 @@ jobs:
             LaunchGUI.bat
             LaunchGUI.sh
           overwrite_files: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   arch-linux-launcher-check:
     runs-on: ubuntu-latest
