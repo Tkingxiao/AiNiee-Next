@@ -28,6 +28,7 @@ from Tools.MCPServer.docs import (
     build_tool_category_index,
     build_tool_catalog,
     build_validation_checklist,
+    get_server_instructions_text,
     load_mcp_manual,
 )
 from Tools.MCPServer.security import (
@@ -719,6 +720,7 @@ def _build_mcp_app(
 
     mcp = FastMCP(
         "AiNiee CLI MCP",
+        instructions=get_server_instructions_text(),
         host=host,
         port=port,
         streamable_http_path=path,

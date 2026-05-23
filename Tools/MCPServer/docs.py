@@ -358,6 +358,25 @@ def get_startup_hint_text() -> str:
     )
 
 
+def get_server_instructions_text() -> str:
+    """Instructions returned to MCP clients during server initialization."""
+    return (
+        "You are connected to AiNiee CLI through MCP. Work through the MCP tools "
+        "instead of making direct HTTP requests to the Web UI, localhost, LAN "
+        "WebServer ports, or MCP HTTP endpoints.\n\n"
+        "For API work, start small: call get_mcp_tool_categories() to see the "
+        "lightweight category index, then open only the relevant group with "
+        "get_mcp_tool_catalog(category=\"<needed-category>\"). After choosing a "
+        "public /api/* route, call it with call_web_api(method, path, "
+        "path_params, query, body). Avoid get_mcp_tool_catalog(category=\"all\") "
+        "unless the user explicitly needs the full catalog.\n\n"
+        "If you need more guidance, read get_mcp_usage_manual(). Treat "
+        f"{MCP_SECRET_PLACEHOLDER} as a redacted placeholder, not a usable "
+        "secret, and ask the user for a second confirmation before changing MCP "
+        "host or port settings."
+    )
+
+
 def _read_guide_text() -> str:
     try:
         with open(GUIDE_PATH, "r", encoding="utf-8") as handle:
