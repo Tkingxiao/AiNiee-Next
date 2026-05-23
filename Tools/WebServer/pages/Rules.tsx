@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Save, Plus, Trash2, BookOpen, Ban, AlertTriangle, RefreshCw, Search, ToggleLeft, ToggleRight, Download, Upload, History, Users, Map as MapIcon, PenTool, Languages, FileJson, ChevronDown, Sparkles, Play, Square, Layers } from 'lucide-react';
-import { GlossaryItem, ExclusionItem, CharacterizationItem, TranslationExampleItem, TermItem, TermOption } from '../types';
+import { AppConfig, GlossaryItem, ExclusionItem, CharacterizationItem, TranslationExampleItem, TermItem, TermOption } from '../types';
 import { DataService } from '../services/DataService';
 import { nativeConfirm } from '../services/nativeDialog';
 import { useI18n } from '../contexts/I18nContext';
@@ -47,6 +47,7 @@ export const Rules: React.FC = () => {
     const [loading, setLoading] = useState(false);
     const [saving, setSaving] = useState(false);
     const [hasDraft, setHasDraft] = useState(false);
+    const [historyErrors, setHistoryErrors] = useState<Record<string, string>>({});
     
     // Profile State
     const [profiles, setProfiles] = useState<string[]>([]);
@@ -173,6 +174,25 @@ export const Rules: React.FC = () => {
     // Refs
     const draftTimerRef = useRef<any>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
+    const latestRulesRef = useRef({
+        glossary,
+        exclusion,
+        characterization,
+        worldBuilding,
+        writingStyle,
+        translationExample
+    });
+
+    useEffect(() => {
+        latestRulesRef.current = {
+            glossary,
+            exclusion,
+            characterization,
+            worldBuilding,
+            writingStyle,
+            translationExample
+        };
+    }, [glossary, exclusion, characterization, worldBuilding, writingStyle, translationExample]);
 
     useEffect(() => {
         loadData();
@@ -265,6 +285,37 @@ export const Rules: React.FC = () => {
         }
     };
 
+    const applyLocalConfigPatch = (patch: Partial<AppConfig>) => {
+        if (!config) return;
+        setConfig({ ...config, ...patch });
+    };
+
+    const buildSwitchPatch = (): Partial<AppConfig> => {
+        if (!config) return {};
+        switch (activeTab) {
+            case 'glossary':
+                return { prompt_dictionary_switch: config.prompt_dictionary_switch };
+            case 'exclusion':
+                return { exclusion_list_switch: config.exclusion_list_switch };
+            case 'characterization':
+                return { characterization_switch: config.characterization_switch };
+            case 'world':
+                return { world_building_switch: config.world_building_switch };
+            case 'style':
+                return { writing_style_switch: config.writing_style_switch };
+            case 'example':
+                return { translation_example_switch: config.translation_example_switch };
+            default:
+                return {};
+        }
+    };
+
+    const saveSwitchPatch = async (patch: Partial<AppConfig>) => {
+        if (!Object.keys(patch).length) return;
+        const currentConfig = await DataService.getConfig();
+        await DataService.saveConfig({ ...currentConfig, ...patch });
+    };
+
     const checkDrafts = async () => {
         try {
             const drafts = await Promise.all([
@@ -293,12 +344,30 @@ export const Rules: React.FC = () => {
                 DataService.getTranslationExampleDraft()
             ]);
             
-            if (gd && gd.length > 0) setGlossary(gd);
-            if (ed && ed.length > 0) setExclusion(ed);
-            if (cd && cd.length > 0) setCharacterization(cd);
-            if (wd) setWorldBuilding(wd);
-            if (sd) setWritingStyle(sd);
-            if (exd && exd.length > 0) setTranslationExample(exd);
+            if (gd && gd.length > 0) {
+                latestRulesRef.current = { ...latestRulesRef.current, glossary: gd };
+                setGlossary(gd);
+            }
+            if (ed && ed.length > 0) {
+                latestRulesRef.current = { ...latestRulesRef.current, exclusion: ed };
+                setExclusion(ed);
+            }
+            if (cd && cd.length > 0) {
+                latestRulesRef.current = { ...latestRulesRef.current, characterization: cd };
+                setCharacterization(cd);
+            }
+            if (wd) {
+                latestRulesRef.current = { ...latestRulesRef.current, worldBuilding: wd };
+                setWorldBuilding(wd);
+            }
+            if (sd) {
+                latestRulesRef.current = { ...latestRulesRef.current, writingStyle: sd };
+                setWritingStyle(sd);
+            }
+            if (exd && exd.length > 0) {
+                latestRulesRef.current = { ...latestRulesRef.current, translationExample: exd };
+                setTranslationExample(exd);
+            }
             
             alert(t('msg_draft_recovered'));
         } catch (error) {
@@ -309,37 +378,36 @@ export const Rules: React.FC = () => {
     const handleSave = async () => {
         setSaving(true);
         try {
-            let nextConfig = config ? { ...config } : null;
+            const switchPatch = buildSwitchPatch();
+            let dataPatch: Partial<AppConfig> = {};
             switch (activeTab) {
                 case 'glossary':
                     await DataService.saveGlossary(glossary);
-                    if (nextConfig) nextConfig = { ...nextConfig, prompt_dictionary_data: glossary };
+                    dataPatch = { prompt_dictionary_data: glossary };
                     break;
                 case 'exclusion':
                     await DataService.saveExclusion(exclusion);
-                    if (nextConfig) nextConfig = { ...nextConfig, exclusion_list_data: exclusion };
+                    dataPatch = { exclusion_list_data: exclusion };
                     break;
                 case 'characterization':
                     await DataService.saveCharacterization(characterization);
-                    if (nextConfig) nextConfig = { ...nextConfig, characterization_data: characterization };
+                    dataPatch = { characterization_data: characterization };
                     break;
                 case 'world':
                     await DataService.saveWorldBuilding(worldBuilding);
-                    if (nextConfig) nextConfig = { ...nextConfig, world_building_content: worldBuilding };
+                    dataPatch = { world_building_content: worldBuilding };
                     break;
                 case 'style':
                     await DataService.saveWritingStyle(writingStyle);
-                    if (nextConfig) nextConfig = { ...nextConfig, writing_style_content: writingStyle };
+                    dataPatch = { writing_style_content: writingStyle };
                     break;
                 case 'example':
                     await DataService.saveTranslationExample(translationExample);
-                    if (nextConfig) nextConfig = { ...nextConfig, translation_example_data: translationExample };
+                    dataPatch = { translation_example_data: translationExample };
                     break;
             }
-            if (nextConfig) {
-                await DataService.saveConfig(nextConfig);
-                setConfig(nextConfig);
-            }
+            await saveSwitchPatch(switchPatch);
+            applyLocalConfigPatch({ ...dataPatch, ...switchPatch });
             alert(t('msg_saved'));
         } catch (error) {
             console.error("Failed to save", error);
@@ -352,13 +420,14 @@ export const Rules: React.FC = () => {
     const triggerDraftSave = () => {
         if (draftTimerRef.current) clearTimeout(draftTimerRef.current);
         draftTimerRef.current = setTimeout(async () => {
+            const latest = latestRulesRef.current;
             switch (activeTab) {
-                case 'glossary': await DataService.saveGlossaryDraft(glossary); break;
-                case 'exclusion': await DataService.saveExclusionDraft(exclusion); break;
-                case 'characterization': await DataService.saveCharacterizationDraft(characterization); break;
-                case 'world': await DataService.saveWorldBuildingDraft(worldBuilding); break;
-                case 'style': await DataService.saveWritingStyleDraft(writingStyle); break;
-                case 'example': await DataService.saveTranslationExampleDraft(translationExample); break;
+                case 'glossary': await DataService.saveGlossaryDraft(latest.glossary); break;
+                case 'exclusion': await DataService.saveExclusionDraft(latest.exclusion); break;
+                case 'characterization': await DataService.saveCharacterizationDraft(latest.characterization); break;
+                case 'world': await DataService.saveWorldBuildingDraft(latest.worldBuilding); break;
+                case 'style': await DataService.saveWritingStyleDraft(latest.writingStyle); break;
+                case 'example': await DataService.saveTranslationExampleDraft(latest.translationExample); break;
             }
             setHasDraft(true);
         }, 2000); // 2s debounce
@@ -399,16 +468,33 @@ export const Rules: React.FC = () => {
             
             try {
                 if (activeTab === 'world' || activeTab === 'style') {
-                    if (activeTab === 'world') setWorldBuilding(content);
-                    else setWritingStyle(content);
+                    if (activeTab === 'world') {
+                        latestRulesRef.current = { ...latestRulesRef.current, worldBuilding: content };
+                        setWorldBuilding(content);
+                    } else {
+                        latestRulesRef.current = { ...latestRulesRef.current, writingStyle: content };
+                        setWritingStyle(content);
+                    }
                 } else {
                     const json = JSON.parse(content);
                     if (Array.isArray(json)) {
                         switch (activeTab) {
-                            case 'glossary': setGlossary(json); break;
-                            case 'exclusion': setExclusion(json); break;
-                            case 'characterization': setCharacterization(json); break;
-                            case 'example': setTranslationExample(json); break;
+                            case 'glossary':
+                                latestRulesRef.current = { ...latestRulesRef.current, glossary: json };
+                                setGlossary(json);
+                                break;
+                            case 'exclusion':
+                                latestRulesRef.current = { ...latestRulesRef.current, exclusion: json };
+                                setExclusion(json);
+                                break;
+                            case 'characterization':
+                                latestRulesRef.current = { ...latestRulesRef.current, characterization: json };
+                                setCharacterization(json);
+                                break;
+                            case 'example':
+                                latestRulesRef.current = { ...latestRulesRef.current, translationExample: json };
+                                setTranslationExample(json);
+                                break;
                         }
                     } else {
                         alert(t('msg_import_error_list'));
@@ -428,8 +514,8 @@ export const Rules: React.FC = () => {
     // --- Toggle Handlers ---
     const toggleSwitch = (field: keyof typeof config) => {
         if (!config) return;
-        // @ts-ignore
-        setConfig({ ...config, [field]: !config[field] });
+        const patch = { [field]: !config[field] } as Partial<AppConfig>;
+        setConfig({ ...config, ...patch });
     };
 
     const isLocal = config?.target_platform && ["sakura", "localllm", "murasaki"].includes(config.target_platform.toLowerCase());
@@ -497,10 +583,12 @@ export const Rules: React.FC = () => {
 
     // --- CRUD Helpers ---
     const addCharacterItem = () => {
-        setCharacterization([{ 
+        const next = [{
             original_name: '', translated_name: '', gender: '', age: '', 
             aliases: [], personality: '', speech_style: '', pronouns: '', speech_quirks: '', additional_info: ''
-        }, ...characterization]);
+        }, ...characterization];
+        latestRulesRef.current = { ...latestRulesRef.current, characterization: next };
+        setCharacterization(next);
         triggerDraftSave();
     };
 
@@ -514,21 +602,107 @@ export const Rules: React.FC = () => {
         .map(item => item.trim())
         .filter(Boolean);
 
+    const formatOptionalNumber = (value: any) => (
+        value === null || value === undefined ? '' : String(value)
+    );
+
+    const parseOptionalNumber = (value: string) => {
+        const trimmed = value.trim();
+        if (!trimmed) return undefined;
+        const numeric = Number(trimmed);
+        return Number.isFinite(numeric) ? numeric : trimmed;
+    };
+
+    const formatHistoryJson = (value: any) => {
+        if (!Array.isArray(value)) return '';
+        try {
+            return JSON.stringify(value, null, 2);
+        } catch {
+            return '';
+        }
+    };
+
+    const parseHistoryJson = (scope: string, value: string, onValid: (history: Record<string, any>[]) => void) => {
+        const trimmed = value.trim();
+        if (!trimmed) {
+            setHistoryErrors(prev => {
+                const next = { ...prev };
+                delete next[scope];
+                return next;
+            });
+            onValid([]);
+            return;
+        }
+
+        try {
+            const parsed = JSON.parse(trimmed);
+            if (!Array.isArray(parsed)) throw new Error('History must be a JSON array');
+            onValid(parsed.filter(item => item && typeof item === 'object'));
+            setHistoryErrors(prev => {
+                const next = { ...prev };
+                delete next[scope];
+                return next;
+            });
+        } catch (error: any) {
+            setHistoryErrors(prev => ({ ...prev, [scope]: error?.message || 'Invalid JSON' }));
+        }
+    };
+
+    const updateGlossaryItem = (originalIdx: number, field: keyof GlossaryItem, val: GlossaryItem[keyof GlossaryItem]) => {
+        const newItems = [...glossary];
+        newItems[originalIdx] = { ...newItems[originalIdx], [field]: val };
+        latestRulesRef.current = { ...latestRulesRef.current, glossary: newItems };
+        setGlossary(newItems);
+        triggerDraftSave();
+    };
+
     const updateCharacterItem = (originalIdx: number, field: keyof CharacterizationItem, val: CharacterizationItem[keyof CharacterizationItem]) => {
         const newItems = [...characterization];
         newItems[originalIdx] = { ...newItems[originalIdx], [field]: val };
+        latestRulesRef.current = { ...latestRulesRef.current, characterization: newItems };
         setCharacterization(newItems);
         triggerDraftSave();
     };
 
+    const removeGlossaryItem = (originalIdx: number) => {
+        const next = glossary.filter((_, i) => i !== originalIdx);
+        latestRulesRef.current = { ...latestRulesRef.current, glossary: next };
+        setGlossary(next);
+        triggerDraftSave();
+    };
+
+    const removeExclusionItem = (originalIdx: number) => {
+        const next = exclusion.filter((_, i) => i !== originalIdx);
+        latestRulesRef.current = { ...latestRulesRef.current, exclusion: next };
+        setExclusion(next);
+        triggerDraftSave();
+    };
+
+    const removeCharacterItem = (originalIdx: number) => {
+        const next = characterization.filter((_, i) => i !== originalIdx);
+        latestRulesRef.current = { ...latestRulesRef.current, characterization: next };
+        setCharacterization(next);
+        triggerDraftSave();
+    };
+
+    const removeExampleItem = (originalIdx: number) => {
+        const next = translationExample.filter((_, i) => i !== originalIdx);
+        latestRulesRef.current = { ...latestRulesRef.current, translationExample: next };
+        setTranslationExample(next);
+        triggerDraftSave();
+    };
+
     const addExampleItem = () => {
-        setTranslationExample([{ src: '', dst: '' }, ...translationExample]);
+        const next = [{ src: '', dst: '' }, ...translationExample];
+        latestRulesRef.current = { ...latestRulesRef.current, translationExample: next };
+        setTranslationExample(next);
         triggerDraftSave();
     };
 
     const updateExampleItem = (originalIdx: number, field: keyof TranslationExampleItem, val: string) => {
         const newItems = [...translationExample];
         newItems[originalIdx] = { ...newItems[originalIdx], [field]: val };
+        latestRulesRef.current = { ...latestRulesRef.current, translationExample: newItems };
         setTranslationExample(newItems);
         triggerDraftSave();
     };
@@ -717,7 +891,14 @@ export const Rules: React.FC = () => {
             </div>
             <textarea
                 value={value}
-                onChange={(e) => { setter(e.target.value); triggerDraftSave(); }}
+                onChange={(e) => {
+                    setter(e.target.value);
+                    latestRulesRef.current = {
+                        ...latestRulesRef.current,
+                        [activeTab === 'world' ? 'worldBuilding' : 'writingStyle']: e.target.value
+                    };
+                    triggerDraftSave();
+                }}
                 placeholder={placeholder}
                 className={`w-full h-96 border rounded-lg p-4 outline-none font-mono text-sm leading-relaxed transition-all bg-slate-950 ${
                     isLightCityTheme 
@@ -1026,7 +1207,12 @@ export const Rules: React.FC = () => {
                                             <span className={`text-sm font-semibold ${isLightCityTheme ? 'text-pink-700' : 'text-slate-300'}`}>{t('ui_rules_enable_glossary')}</span>
                                         </div>
                                     </div>
-                                    <button onClick={() => { setGlossary([{ src: '', dst: '', info: '' }, ...glossary]); triggerDraftSave(); }} 
+                                    <button onClick={() => {
+                                        const next = [{ src: '', dst: '', info: '' }, ...glossary];
+                                        latestRulesRef.current = { ...latestRulesRef.current, glossary: next };
+                                        setGlossary(next);
+                                        triggerDraftSave();
+                                    }}
                                         className="flex items-center gap-1 text-sm font-bold px-3 py-1.5 rounded transition-all hover:scale-105 active:scale-95"
                                         style={{ 
                                             backgroundColor: `${themeColor}20`, 
@@ -1040,13 +1226,32 @@ export const Rules: React.FC = () => {
                                 <div className="grid gap-3">
                                     {glossary.map((item, originalIdx) => {
                                         if (filter && !item.src?.toLowerCase().includes(filter.toLowerCase())) return null;
+                                        const historyScope = `glossary-${originalIdx}`;
                                         return (
                                             <div key={originalIdx} className={`grid grid-cols-12 gap-3 p-3 border rounded-lg transition-colors group ${isLightCityTheme ? 'bg-white/60 border-pink-100 hover:border-pink-300' : 'bg-slate-900 border-slate-800 hover:border-slate-600'}`}
                                                  style={!isLightCityTheme && activeTheme !== 'default' ? { borderColor: `${themeColor}20` } : {}}>
-                                                <div className="col-span-4"><input type="text" placeholder={t('ui_rules_source')} value={item.src} onChange={(e) => { const n = [...glossary]; n[originalIdx].src = e.target.value; setGlossary(n); triggerDraftSave(); }} className="w-full bg-slate-950 border border-slate-700 rounded px-3 py-2 outline-none transition-all text-green-300 focus:border-primary" /></div>
-                                                <div className="col-span-4"><input type="text" placeholder={t('ui_rules_target')} value={item.dst} onChange={(e) => { const n = [...glossary]; n[originalIdx].dst = e.target.value; setGlossary(n); triggerDraftSave(); }} className="w-full bg-slate-950 border border-slate-700 rounded px-3 py-2 outline-none transition-all text-blue-300 focus:border-primary" /></div>
-                                                <div className="col-span-3"><input type="text" placeholder={t('ui_rules_note')} value={item.info || ''} onChange={(e) => { const n = [...glossary]; n[originalIdx].info = e.target.value; setGlossary(n); triggerDraftSave(); }} className="w-full bg-slate-950 border border-slate-700 rounded px-3 py-2 outline-none text-sm transition-all text-slate-400 focus:border-primary" /></div>
-                                                <div className="col-span-1 flex justify-end"><button onClick={() => setGlossary(glossary.filter((_, i) => i !== originalIdx))} className={`p-2 transition-colors ${isLightCityTheme ? 'text-pink-300 hover:text-red-500' : 'text-slate-600 hover:text-red-400'}`}><Trash2 size={18} /></button></div>
+                                                <div className="col-span-12 md:col-span-3"><input type="text" placeholder={t('ui_rules_source')} value={item.src} onChange={(e) => updateGlossaryItem(originalIdx, 'src', e.target.value)} className="w-full bg-slate-950 border border-slate-700 rounded px-3 py-2 outline-none transition-all text-green-300 focus:border-primary" /></div>
+                                                <div className="col-span-12 md:col-span-3"><input type="text" placeholder={t('ui_rules_target')} value={item.dst} onChange={(e) => updateGlossaryItem(originalIdx, 'dst', e.target.value)} className="w-full bg-slate-950 border border-slate-700 rounded px-3 py-2 outline-none transition-all text-blue-300 focus:border-primary" /></div>
+                                                <div className="col-span-12 md:col-span-5"><input type="text" placeholder={t('ui_rules_note')} value={item.info || ''} onChange={(e) => updateGlossaryItem(originalIdx, 'info', e.target.value)} className="w-full bg-slate-950 border border-slate-700 rounded px-3 py-2 outline-none text-sm transition-all text-slate-400 focus:border-primary" /></div>
+                                                <div className="col-span-12 md:col-span-1 flex justify-end"><button onClick={() => removeGlossaryItem(originalIdx)} className={`p-2 transition-colors ${isLightCityTheme ? 'text-pink-300 hover:text-red-500' : 'text-slate-600 hover:text-red-400'}`}><Trash2 size={18} /></button></div>
+                                                <details className="col-span-12 rounded border border-slate-800 bg-slate-950/40 px-3 py-2">
+                                                    <summary className="cursor-pointer select-none text-xs font-semibold text-slate-400">{t('ui_rules_metadata') || 'Metadata'}</summary>
+                                                    <div className="mt-3 grid grid-cols-1 md:grid-cols-4 gap-3">
+                                                        <input type="text" placeholder="source" value={item.source || ''} onChange={(e) => updateGlossaryItem(originalIdx, 'source', e.target.value)} className="bg-slate-950 border border-slate-700 rounded px-3 py-2 text-xs text-slate-300 focus:border-primary outline-none" />
+                                                        <input type="text" placeholder="volume" value={formatOptionalNumber(item.volume)} onChange={(e) => updateGlossaryItem(originalIdx, 'volume', parseOptionalNumber(e.target.value))} className="bg-slate-950 border border-slate-700 rounded px-3 py-2 text-xs text-slate-300 focus:border-primary outline-none" />
+                                                        <input type="text" placeholder="updated_in" value={item.updated_in || ''} onChange={(e) => updateGlossaryItem(originalIdx, 'updated_in', e.target.value)} className="bg-slate-950 border border-slate-700 rounded px-3 py-2 text-xs text-slate-300 focus:border-primary outline-none" />
+                                                        <input type="text" placeholder="updated_volume" value={formatOptionalNumber(item.updated_volume)} onChange={(e) => updateGlossaryItem(originalIdx, 'updated_volume', parseOptionalNumber(e.target.value))} className="bg-slate-950 border border-slate-700 rounded px-3 py-2 text-xs text-slate-300 focus:border-primary outline-none" />
+                                                        <div className="md:col-span-4">
+                                                            <textarea
+                                                                placeholder="history JSON"
+                                                                defaultValue={formatHistoryJson(item.history)}
+                                                                onBlur={(e) => parseHistoryJson(historyScope, e.target.value, (history) => updateGlossaryItem(originalIdx, 'history', history))}
+                                                                className={`w-full h-28 bg-slate-950 border rounded px-3 py-2 text-xs font-mono text-slate-300 focus:border-primary outline-none resize-y ${historyErrors[historyScope] ? 'border-red-500' : 'border-slate-700'}`}
+                                                            />
+                                                            {historyErrors[historyScope] && <div className="mt-1 text-xs text-red-400">{historyErrors[historyScope]}</div>}
+                                                        </div>
+                                                    </div>
+                                                </details>
                                             </div>
                                         );
                                     })}
@@ -1070,7 +1275,12 @@ export const Rules: React.FC = () => {
                                             <span className={`text-sm font-semibold ${isLightCityTheme ? 'text-pink-700' : 'text-slate-300'}`}>{t('ui_rules_enable_exclusion')}</span>
                                         </div>
                                     </div>
-                                    <button onClick={() => { setExclusion([{ markers: '', regex: '', info: '' }, ...exclusion]); triggerDraftSave(); }} 
+                                    <button onClick={() => {
+                                        const next = [{ markers: '', regex: '', info: '' }, ...exclusion];
+                                        latestRulesRef.current = { ...latestRulesRef.current, exclusion: next };
+                                        setExclusion(next);
+                                        triggerDraftSave();
+                                    }}
                                         className="flex items-center gap-1 text-sm font-bold px-3 py-1.5 rounded transition-all hover:scale-105 active:scale-95"
                                         style={{ 
                                             backgroundColor: `${themeColor}20`, 
@@ -1089,7 +1299,7 @@ export const Rules: React.FC = () => {
                                                 <div className="col-span-4"><input type="text" placeholder={t('ui_rules_marker')} value={item.markers} onChange={(e) => { const n = [...exclusion]; n[originalIdx].markers = e.target.value; setExclusion(n); triggerDraftSave(); }} className="w-full bg-slate-950 border border-slate-700 rounded px-3 py-2 outline-none font-mono text-sm transition-all text-orange-300 focus:border-primary" /></div>
                                                 <div className="col-span-4"><input type="text" placeholder={t('ui_rules_regex')} value={item.regex || ''} onChange={(e) => { const n = [...exclusion]; n[originalIdx].regex = e.target.value; setExclusion(n); triggerDraftSave(); }} className="w-full bg-slate-950 border border-slate-700 rounded px-3 py-2 outline-none font-mono text-sm transition-all text-purple-300 focus:border-primary" /></div>
                                                 <div className="col-span-3"><input type="text" placeholder={t('ui_rules_note')} value={item.info || ''} onChange={(e) => { const n = [...exclusion]; n[originalIdx].info = e.target.value; setExclusion(n); triggerDraftSave(); }} className="w-full bg-slate-950 border border-slate-700 rounded px-3 py-2 outline-none text-sm transition-all text-slate-400 focus:border-primary" /></div>
-                                                <div className="col-span-1 flex justify-end"><button onClick={() => setExclusion(exclusion.filter((_, i) => i !== originalIdx))} className={`p-2 transition-colors ${isLightCityTheme ? 'text-pink-300 hover:text-red-500' : 'text-slate-600 hover:text-red-400'}`}><Trash2 size={18} /></button></div>
+                                                <div className="col-span-1 flex justify-end"><button onClick={() => removeExclusionItem(originalIdx)} className={`p-2 transition-colors ${isLightCityTheme ? 'text-pink-300 hover:text-red-500' : 'text-slate-600 hover:text-red-400'}`}><Trash2 size={18} /></button></div>
                                             </div>
                                         );
                                     })}
@@ -1125,6 +1335,7 @@ export const Rules: React.FC = () => {
                                 <div className="grid gap-4">
                                     {characterization.map((item, originalIdx) => {
                                         if (filter && !item.original_name?.includes(filter) && !item.translated_name?.includes(filter)) return null;
+                                        const historyScope = `character-${originalIdx}`;
                                         return (
                                             <div key={originalIdx} className={`p-4 border rounded-lg transition-all group space-y-3 ${isLightCityTheme ? 'bg-white/60 border-pink-100 hover:border-pink-300' : 'bg-slate-900 border-slate-800 hover:border-slate-600'}`}>
                                                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -1144,8 +1355,26 @@ export const Rules: React.FC = () => {
                                                 </div>
                                                 <div className="flex gap-3">
                                                     <input type="text" placeholder={t('ui_rules_character_info')} value={item.additional_info} onChange={(e) => updateCharacterItem(originalIdx, 'additional_info', e.target.value)} className="flex-1 bg-slate-950 border border-slate-700 rounded px-3 py-2 text-slate-400 focus:border-primary outline-none transition-all" />
-                                                    <button onClick={() => setCharacterization(characterization.filter((_, i) => i !== originalIdx))} className={`p-2 transition-colors rounded border ${isLightCityTheme ? 'text-pink-300 hover:text-red-500 bg-white/80 border-pink-100' : 'text-slate-600 hover:text-red-400 bg-slate-950 border-slate-800'}`}><Trash2 size={18} /></button>
+                                                    <button onClick={() => removeCharacterItem(originalIdx)} className={`p-2 transition-colors rounded border ${isLightCityTheme ? 'text-pink-300 hover:text-red-500 bg-white/80 border-pink-100' : 'text-slate-600 hover:text-red-400 bg-slate-950 border-slate-800'}`}><Trash2 size={18} /></button>
                                                 </div>
+                                                <details className="rounded border border-slate-800 bg-slate-950/40 px-3 py-2">
+                                                    <summary className="cursor-pointer select-none text-xs font-semibold text-slate-400">{t('ui_rules_metadata') || 'Metadata'}</summary>
+                                                    <div className="mt-3 grid grid-cols-1 md:grid-cols-4 gap-3">
+                                                        <input type="text" placeholder="source" value={item.source || ''} onChange={(e) => updateCharacterItem(originalIdx, 'source', e.target.value)} className="bg-slate-950 border border-slate-700 rounded px-3 py-2 text-xs text-slate-300 focus:border-primary outline-none" />
+                                                        <input type="text" placeholder="volume" value={formatOptionalNumber(item.volume)} onChange={(e) => updateCharacterItem(originalIdx, 'volume', parseOptionalNumber(e.target.value))} className="bg-slate-950 border border-slate-700 rounded px-3 py-2 text-xs text-slate-300 focus:border-primary outline-none" />
+                                                        <input type="text" placeholder="updated_in" value={item.updated_in || ''} onChange={(e) => updateCharacterItem(originalIdx, 'updated_in', e.target.value)} className="bg-slate-950 border border-slate-700 rounded px-3 py-2 text-xs text-slate-300 focus:border-primary outline-none" />
+                                                        <input type="text" placeholder="updated_volume" value={formatOptionalNumber(item.updated_volume)} onChange={(e) => updateCharacterItem(originalIdx, 'updated_volume', parseOptionalNumber(e.target.value))} className="bg-slate-950 border border-slate-700 rounded px-3 py-2 text-xs text-slate-300 focus:border-primary outline-none" />
+                                                        <div className="md:col-span-4">
+                                                            <textarea
+                                                                placeholder="history JSON"
+                                                                defaultValue={formatHistoryJson(item.history)}
+                                                                onBlur={(e) => parseHistoryJson(historyScope, e.target.value, (history) => updateCharacterItem(originalIdx, 'history', history))}
+                                                                className={`w-full h-28 bg-slate-950 border rounded px-3 py-2 text-xs font-mono text-slate-300 focus:border-primary outline-none resize-y ${historyErrors[historyScope] ? 'border-red-500' : 'border-slate-700'}`}
+                                                            />
+                                                            {historyErrors[historyScope] && <div className="mt-1 text-xs text-red-400">{historyErrors[historyScope]}</div>}
+                                                        </div>
+                                                    </div>
+                                                </details>
                                             </div>
                                         );
                                     })}
@@ -1192,7 +1421,7 @@ export const Rules: React.FC = () => {
                                                 <div className="col-span-5"><textarea placeholder={t('ui_rules_example_src')} value={item.src} onChange={(e) => updateExampleItem(originalIdx, 'src', e.target.value)} className="w-full h-24 bg-slate-950 border border-slate-700 rounded p-2 text-green-300 focus:border-primary outline-none text-sm resize-none transition-all" /></div>
                                                 <div className="col-span-1 flex items-center justify-center text-slate-600">→</div>
                                                 <div className="col-span-5"><textarea placeholder={t('ui_rules_example_dst')} value={item.dst} onChange={(e) => updateExampleItem(originalIdx, 'dst', e.target.value)} className="w-full h-24 bg-slate-950 border border-slate-700 rounded p-2 text-blue-300 focus:border-primary outline-none text-sm resize-none transition-all" /></div>
-                                                <div className="col-span-1 flex items-center justify-end"><button onClick={() => setTranslationExample(translationExample.filter((_, i) => i !== originalIdx))} className={`p-2 transition-colors rounded border ${isLightCityTheme ? 'text-pink-300 hover:text-red-500 bg-white/80 border-pink-100' : 'text-slate-600 hover:text-red-400 bg-slate-950 border-slate-800'}`}><Trash2 size={18} /></button></div>
+                                                <div className="col-span-1 flex items-center justify-end"><button onClick={() => removeExampleItem(originalIdx)} className={`p-2 transition-colors rounded border ${isLightCityTheme ? 'text-pink-300 hover:text-red-500 bg-white/80 border-pink-100' : 'text-slate-600 hover:text-red-400 bg-slate-950 border-slate-800'}`}><Trash2 size={18} /></button></div>
                                             </div>
                                         );
                                     })}
