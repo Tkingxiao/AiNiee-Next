@@ -425,49 +425,66 @@ class PromptBuilder(Base):
         return source_text_str
 
     # 构造术语表
+    def find_glossary_matches(glossary_data: list, full_text: str) -> list:
+        result = []
+        seen_keys = set()
+
+        for item in glossary_data:
+            if not isinstance(item, dict):
+                continue
+            src = item.get("src", "")
+            if not src:
+                continue
+
+            found_texts = set(match.group(0) for match in PromptBuilder._iter_glossary_term_matches(full_text, src))
+            for match_text in found_texts:
+                if not match_text:
+                    continue
+                key = (match_text, item.get("dst"))
+                if key in seen_keys:
+                    continue
+                new_entry = item.copy()
+                new_entry["src"] = match_text
+                result.append(new_entry)
+                seen_keys.add(key)
+
+        return result
+
+    def glossary_term_exists(text: str, term: str) -> bool:
+        return any(PromptBuilder._iter_glossary_term_matches(text, term))
+
+    def _iter_glossary_term_matches(text: str, term: str):
+        if not text or not term:
+            return iter(())
+        flags = re.IGNORECASE if PromptBuilder._should_ignore_glossary_case(term) else 0
+        pattern = PromptBuilder._build_glossary_term_pattern(term)
+        return re.finditer(pattern, text, flags)
+
+    def _should_ignore_glossary_case(term: str) -> bool:
+        return any(char.isascii() and char.isalpha() for char in term)
+
+    def _build_glossary_term_pattern(term: str) -> str:
+        escaped = re.escape(term)
+        if not any(char.isascii() and (char.isalnum() or char in "_+-#.") for char in term):
+            return escaped
+
+        prefix_chars = r"A-Za-z0-9_"
+        suffix_chars = r"A-Za-z0-9_"
+        if term[0].isascii() and not (term[0].isalnum() or term[0] == "_"):
+            prefix_chars += re.escape(term[0])
+        if term[-1].isascii() and not (term[-1].isalnum() or term[-1] == "_"):
+            suffix_chars += re.escape(term[-1])
+        prefix = rf"(?<![{prefix_chars}])"
+        suffix = rf"(?![{suffix_chars}])"
+        return f"{prefix}{escaped}{suffix}"
+
     def build_glossary_prompt(config: TaskConfig, input_dict: dict) -> str:
         if getattr(config, "dynamic_glossary_switch", False):
             apply_dynamic_glossary(config, getattr(config, "dynamic_glossary_volume", None))
 
         # 将输入字典中的所有值合并为一个字符串，方便正则全局匹配
         full_text = "\n".join(input_dict.values())
-
-        # 筛选并处理匹配的条目
-        result = []
-        seen_keys = set() # 用于去重 (匹配到的实际原文, 译文)
-
-        for v in config.prompt_dictionary_data:
-            src = v.get("src", "")
-            if not src:
-                continue
-
-            try:
-                # 编译正则表达式，忽略大小写以保持与原逻辑一致的宽松匹配
-                pattern = re.compile(src, re.IGNORECASE)
-
-                # 查找所有匹配项 (set去重，处理同一词在文中多次出现的情况)
-                found_texts = set(m.group() for m in pattern.finditer(full_text))
-
-                # 如果正则匹配到了内容 (例如正则 (A|B) 匹配到了 A 和 B，这里会循环两次)
-                for match_text in found_texts:
-                    if not match_text: continue
-
-                    # 使用 (实际匹配文本, 译文) 作为唯一键进行去重
-                    key = (match_text, v.get("dst"))
-                    if key not in seen_keys:
-                        # 复制元数据，并将 src 替换为实际匹配到的原文文本
-                        new_entry = v.copy()
-                        new_entry["src"] = match_text
-                        result.append(new_entry)
-                        seen_keys.add(key)
-
-            except re.error:
-                # 如果正则编译失败（非合法正则），回退到普通字符串包含判断
-                if src.lower() in full_text.lower():
-                    key = (src, v.get("dst"))
-                    if key not in seen_keys:
-                        result.append(v)
-                        seen_keys.add(key)
+        result = PromptBuilder.find_glossary_matches(config.prompt_dictionary_data, full_text)
 
         # 数据校验
         if len(result) == 0:
@@ -1183,4 +1200,3 @@ class PromptBuilder(Base):
 
 
         return messages, system, extra_log
-

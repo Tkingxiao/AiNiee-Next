@@ -5,6 +5,7 @@ import time
 
 from ModuleFolders.Infrastructure.Cache.CacheItem import TranslationStatus
 from ModuleFolders.Infrastructure.Cache.CacheProject import CacheProject
+from ModuleFolders.Domain.PromptBuilder.PromptBuilder import PromptBuilder
 from ..PluginBase import PluginBase
 
 class TranslationCheckPlugin(PluginBase):
@@ -358,8 +359,7 @@ class TranslationCheckPlugin(PluginBase):
                 dst_term = term.get("dst")
                 # 确保 src_term 和 dst_term 都存在且非空
                 if src_term and dst_term:
-                    # 简单的包含检查，可能需要更复杂的逻辑（如大小写、词形变化）
-                    if src_term in source_text:
+                    if PromptBuilder.glossary_term_exists(source_text, src_term):
                         if dst_term not in translated_text:
                             error_msg = f"📚[术语表错误] 原文含 '{src_term}'，译文未找到对应术语 '{dst_term}'"
                             errors.append(error_msg)
@@ -509,4 +509,3 @@ class TranslationCheckPlugin(PluginBase):
             error_msg = f"🔢[示例文本复读] 译文中出现示例文本复读问题，未能正确翻译（示例：{re.findall(pattern, translated_text)[0]}）"
             errors.append(error_msg)
         return errors
-

@@ -10,6 +10,7 @@ from ModuleFolders.Infrastructure.Cache.CacheItem import CacheItem, TranslationS
 from ModuleFolders.Infrastructure.Cache.CacheManager import CacheManager
 from ModuleFolders.Domain.FileReader import ReaderUtil
 from ModuleFolders.Service.TaskExecutor import TranslatorUtil
+from ModuleFolders.Domain.PromptBuilder.PromptBuilder import PromptBuilder
 
 # 定义结果码，便于UI判断
 class CheckResult:
@@ -238,7 +239,7 @@ class TranslationChecker(Base):
         exclusion_data = self.config.get("exclusion_list_data", []) if rules_config.get("exclusion") else []
         check_attr = "polished_text" if target_type == "polish" else "translated_text"
 
-        # 准备术语表数据 (预处理正则)
+        # 准备术语表数据
         term_data = []
         if rules_config.get("terminology"):
             raw_term_data = self.config.get("prompt_dictionary_data", [])
@@ -247,22 +248,10 @@ class TranslationChecker(Base):
                     src_term = term.get("src")
                     dst_term = term.get("dst")
                     if src_term and dst_term:
-                        try:
-                            # 尝试编译为正则
-                            pattern = re.compile(src_term, re.IGNORECASE)
-                            term_data.append({
-                                "type": "regex",
-                                "pattern": pattern,
-                                "src": src_term, # 保留原始字符串用于调试或显示
-                                "dst": dst_term
-                            })
-                        except re.error:
-                            # 编译失败则作为普通字符串处理，后续将使用忽略大小写包含检测
-                            term_data.append({
-                                "type": "string",
-                                "src": src_term,
-                                "dst": dst_term
-                            })
+                        term_data.append({
+                            "src": src_term,
+                            "dst": dst_term
+                        })
 
         for file_path, file_obj in self.cache_manager.project.files.items():
             file_name = os.path.basename(file_path)
@@ -346,16 +335,8 @@ class TranslationChecker(Base):
         """
         errs = []
         for term_item in prepared_data:
-            match_found = False
-
             # 检测原文中是否存在该术语
-            if term_item["type"] == "regex":
-                if term_item["pattern"].search(src):
-                    match_found = True
-            else:
-                # 字符串模式：使用忽略大小写包含，与PromptBuilder回退逻辑保持一致
-                if term_item["src"].lower() in src.lower():
-                    match_found = True
+            match_found = PromptBuilder.glossary_term_exists(src, term_item["src"])
 
             # 如果原文中存在术语，则检查译文中是否包含对应的译名
             if match_found:
