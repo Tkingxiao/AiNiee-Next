@@ -77,6 +77,7 @@ class TaskConfig(Base):
         self.character_recall_max_candidates = 2
         self.character_recall_min_strong_score = 80
         self.character_recall_min_candidate_score = 40
+        self.translation_memory_switch = False
         self.few_shot_and_example_switch = False
 
         # 故障转移配置

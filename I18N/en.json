@@ -476,6 +476,8 @@
     "feature_writing_style_switch": "Enable Writing Style",
     "feature_translation_example_switch": "Enable Translation Examples",
     "feature_few_shot_and_example_switch": "Enable Few-shot Examples",
+    "feature_translation_memory_switch": "Enable Repeated Source Translation Memory",
+    "feature_translation_memory_switch_desc": "When exact same source text has already been translated successfully, lazily inject that translation as a consistency reference without auto-overwriting output.",
     "feature_character_recall_switch": "Enable Local Character Recall",
     "feature_character_recall_switch_desc": "Locally uses nearby source lines to decide which character profiles to inject. These lines are not sent to the model.",
     "setting_character_recall_context_lines": "Character Recall Previous Lines",

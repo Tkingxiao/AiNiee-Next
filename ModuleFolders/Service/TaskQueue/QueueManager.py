@@ -13,7 +13,8 @@ class QueueTaskItem:
                  platform=None, api_url=None, api_key=None, model=None, 
                  threads=None, retry=None, timeout=None, rounds=None, 
                  pre_lines=None, lines_limit=None, tokens_limit=None, 
-                 think_depth=None, thinking_budget=None):
+                 think_depth=None, thinking_budget=None, workflow_steps=None,
+                 source=None, rule_id=None):
         self.task_type = task_type
         self.input_path = input_path
         self.output_path = output_path
@@ -39,8 +40,11 @@ class QueueTaskItem:
         self.tokens_limit = tokens_limit
         self.think_depth = think_depth
         self.thinking_budget = thinking_budget
+        self.workflow_steps = workflow_steps or []
+        self.source = source
+        self.rule_id = rule_id
         
-        self.status = "waiting" # waiting, translating, translated, polishing, completed, error, stopped
+        self.status = "waiting" # waiting, workflow, translating, translated, polishing, completed, error, stopped
         self.locked = False  # 是否被锁定（正在执行中不可修改）
 
         # 新增：准确的处理状态跟踪
@@ -553,6 +557,8 @@ class QueueManager(Base):
         """获取下一个未锁定的待执行任务"""
         for i in range(start_index, len(self.tasks)):
             task = self.tasks[i]
+            if self._task_has_workflow(task):
+                continue
             if not task.locked and task.status in ["waiting", "translated"]:
                 return i, task
         return None, None
@@ -638,6 +644,9 @@ class QueueManager(Base):
     def _process_queue(self, cli_menu):
         self.info("Starting task queue processing with full API overrides...")
 
+        # Phase 0: Custom automation workflows
+        self._process_workflow_tasks(cli_menu)
+
         # Phase 1: Translation
         while True:
             if Base.work_status == Base.STATUS.STOPING: break
@@ -647,6 +656,9 @@ class QueueManager(Base):
 
             # 清理过期的锁定状态
             self.cleanup_stale_locks()
+
+            # 优先处理运行期间新加入的自动化工作流任务
+            self._process_workflow_tasks(cli_menu)
 
             # 查找下一个需要翻译的任务
             index, task = self.get_next_unlocked_task()
@@ -681,9 +693,14 @@ class QueueManager(Base):
                 # 清理过期的锁定状态
                 self.cleanup_stale_locks()
 
+                # 优先处理运行期间新加入的自动化工作流任务
+                self._process_workflow_tasks(cli_menu)
+
                 # 查找下一个需要润色的任务
                 found_task = False
                 for i, task in enumerate(self.tasks):
+                    if self._task_has_workflow(task):
+                        continue
                     if (not task.locked and
                         task.status == "translated" and
                         task.task_type in [TaskType.POLISH, TaskType.TRANSLATE_AND_POLISH]):
@@ -703,7 +720,52 @@ class QueueManager(Base):
         self.is_running = False
         self.info("Task queue processing finished.")
 
+    def _task_has_workflow(self, task):
+        return bool(getattr(task, "workflow_steps", None))
+
+    def _get_next_workflow_task(self):
+        for i, task in enumerate(self.tasks):
+            if not task.locked and task.status == "waiting" and self._task_has_workflow(task):
+                return i, task
+        return None, None
+
+    def _process_workflow_tasks(self, cli_menu):
+        while True:
+            if Base.work_status == Base.STATUS.STOPING:
+                break
+
+            self.hot_reload_queue(quiet=True)
+            self.cleanup_stale_locks()
+
+            index, task = self._get_next_workflow_task()
+            if index is None:
+                break
+
+            self.mark_task_executing(index)
+            task.status = "workflow"
+            self.save_tasks()
+
+            if self._run_workflow_task(cli_menu, task):
+                self.mark_task_completed(index, "completed")
+            else:
+                self.mark_task_completed(index, "error")
+
+    def _run_workflow_task(self, cli_menu, task):
+        try:
+            from ModuleFolders.Infrastructure.Automation.WorkflowRunner import WorkflowRunner
+
+            task_config = task.to_dict()
+            WorkflowRunner(cli_menu).run(task_config)
+            return True
+        except Exception as e:
+            self.error(f"Workflow Task Error: {e}")
+            task.status = "error"
+            return False
+
     def _run_single_step(self, cli_menu, task, step_type, resume=False):
+        if self._task_has_workflow(task):
+            return True
+
         original_active_profile = cli_menu.active_profile_name
         original_rules_profile = cli_menu.active_rules_profile_name
         original_root_config = copy.deepcopy(getattr(cli_menu, "root_config", {}))

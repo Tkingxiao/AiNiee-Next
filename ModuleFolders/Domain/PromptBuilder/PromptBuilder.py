@@ -1,4 +1,5 @@
 import re
+from functools import lru_cache
 from types import SimpleNamespace
 
 from ModuleFolders.Base.Base import Base
@@ -428,12 +429,20 @@ class PromptBuilder(Base):
     def find_glossary_matches(glossary_data: list, full_text: str) -> list:
         result = []
         seen_keys = set()
+        full_text_lower = None
 
         for item in glossary_data:
             if not isinstance(item, dict):
                 continue
             src = item.get("src", "")
             if not src:
+                continue
+            if PromptBuilder._should_ignore_glossary_case(src):
+                if full_text_lower is None:
+                    full_text_lower = full_text.lower()
+                if src.lower() not in full_text_lower:
+                    continue
+            elif src not in full_text:
                 continue
 
             found_texts = set(match.group(0) for match in PromptBuilder._iter_glossary_term_matches(full_text, src))
@@ -451,14 +460,25 @@ class PromptBuilder(Base):
         return result
 
     def glossary_term_exists(text: str, term: str) -> bool:
+        if not text or not term:
+            return False
+        if PromptBuilder._should_ignore_glossary_case(term):
+            if term.lower() not in text.lower():
+                return False
+        elif term not in text:
+            return False
         return any(PromptBuilder._iter_glossary_term_matches(text, term))
 
     def _iter_glossary_term_matches(text: str, term: str):
         if not text or not term:
             return iter(())
+        return PromptBuilder._compile_glossary_term_pattern(term).finditer(text)
+
+    @staticmethod
+    @lru_cache(maxsize=4096)
+    def _compile_glossary_term_pattern(term: str):
         flags = re.IGNORECASE if PromptBuilder._should_ignore_glossary_case(term) else 0
-        pattern = PromptBuilder._build_glossary_term_pattern(term)
-        return re.finditer(pattern, text, flags)
+        return re.compile(PromptBuilder._build_glossary_term_pattern(term), flags)
 
     def _should_ignore_glossary_case(term: str) -> bool:
         return any(char.isascii() and char.isalpha() for char in term)
@@ -477,6 +497,47 @@ class PromptBuilder(Base):
         prefix = rf"(?<![{prefix_chars}])"
         suffix = rf"(?![{suffix_chars}])"
         return f"{prefix}{escaped}{suffix}"
+
+    def normalize_translation_memory_source(text: str, min_length: int = 8) -> str:
+        normalized = str(text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+        if len(normalized) < min_length:
+            return ""
+        return normalized
+
+    def build_translation_memory_prompt(config: TaskConfig, references: list[dict] | None) -> str:
+        if not references:
+            return ""
+
+        lines = []
+        for reference in references:
+            if not isinstance(reference, dict):
+                continue
+            src = str(reference.get("src") or "").strip()
+            dst = str(reference.get("dst") or "").strip()
+            if src and dst:
+                lines.append((src, dst))
+
+        if not lines:
+            return ""
+
+        if config.target_language in ("chinese_simplified", "chinese_traditional"):
+            profile = (
+                "\n###重复原文译文参考\n"
+                "以下原文在此前已经成功翻译过。当前批次遇到完全相同原文时，优先参考此前译文以保持一致；"
+                "如果当前上下文确实需要调整，可以做最小必要调整。不要把这些译文套用到其他不同原文。\n"
+            )
+            for src, dst in lines:
+                profile += f"原文：{src}\n此前译文：{dst}\n"
+            return profile
+
+        profile = (
+            "\n### Repeated Source Translation Memory\n"
+            "The following source text has already been translated successfully. When the current batch contains the exact same source text, "
+            "prefer the previous translation for consistency; make only minimal context-required adjustments. Do not apply these translations to different source text.\n"
+        )
+        for src, dst in lines:
+            profile += f"Source: {src}\nPrevious translation: {dst}\n"
+        return profile
 
     def build_glossary_prompt(config: TaskConfig, input_dict: dict) -> str:
         if getattr(config, "dynamic_glossary_switch", False):
@@ -1062,6 +1123,7 @@ class PromptBuilder(Base):
         consistency_context: dict | None = None,
         character_recall_previous_text_list: list[str] = None,
         character_recall_lookahead_text_list: list[str] = None,
+        translation_memory_references: list[dict] | None = None,
     ) -> tuple[list[dict], str, list[str]]:
         # 储存指令
         messages = []
@@ -1082,6 +1144,11 @@ class PromptBuilder(Base):
             else:
                 system += f"\n\n### Relevant Historical Context (for reference):\n{rag_context}\n"
             extra_log.append(f"RAG Context added:\n{rag_context}")
+
+        translation_memory = PromptBuilder.build_translation_memory_prompt(config, translation_memory_references)
+        if translation_memory:
+            system += translation_memory
+            extra_log.append(translation_memory)
 
         if getattr(config, "translation_consistency_enhancement", False):
             consistency_instruction = PromptBuilder.build_translation_consistency_instruction(config)

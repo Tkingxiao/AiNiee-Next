@@ -11,6 +11,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Any, Set
 from ModuleFolders.Base.Base import Base
+from ModuleFolders.Infrastructure.Automation.WorkflowRunner import (
+    describe_workflow_steps,
+    normalize_workflow_steps,
+)
 
 
 class WatchRule:
@@ -21,24 +25,44 @@ class WatchRule:
                  profile: str = "default", task_type: str = "translation",
                  auto_start: bool = True, debounce_seconds: int = 5,
                  recursive: bool = False, enabled: bool = True,
-                 move_to_done: bool = True, **kwargs):
+                 move_to_done: bool = True, workflow_steps: List[dict] = None,
+                 trigger_mode: str = "file", rules_profile: str = "",
+                 settle_existing: bool = False, **kwargs):
         self.id = rule_id
         self.watch_path = os.path.abspath(watch_path)
         self.output_path = output_path
         self.done_path = done_path
-        self.file_patterns = file_patterns or ["*.txt", "*.epub", "*.srt"]
+        self.file_patterns = self._normalize_patterns(file_patterns)
         self.profile = profile
+        self.rules_profile = rules_profile
         self.task_type = task_type
         self.auto_start = auto_start
         self.debounce_seconds = debounce_seconds
         self.recursive = recursive
         self.enabled = enabled
         self.move_to_done = move_to_done
+        self.workflow_steps = normalize_workflow_steps(workflow_steps, task_type, auto_start)
+        self.trigger_mode = trigger_mode if trigger_mode in {"file", "folder"} else "file"
+        self.settle_existing = settle_existing
         self.extra = kwargs
 
         # 运行状态
         self.files_processed = 0
         self.last_activity: Optional[datetime] = None
+
+    @staticmethod
+    def _normalize_patterns(file_patterns: List[str] = None) -> List[str]:
+        patterns = []
+        for pattern in file_patterns or ["*.txt", "*.epub", "*.srt"]:
+            pattern = str(pattern or "").strip()
+            if not pattern:
+                continue
+            if pattern.startswith("."):
+                pattern = f"*{pattern}"
+            elif "*" not in pattern and "?" not in pattern:
+                pattern = f"*.{pattern.lstrip('.')}"
+            patterns.append(pattern)
+        return patterns or ["*.txt", "*.epub", "*.srt"]
 
     def matches_pattern(self, filename: str) -> bool:
         """检查文件是否匹配模式"""
@@ -55,12 +79,16 @@ class WatchRule:
             "done_path": self.done_path,
             "file_patterns": self.file_patterns,
             "profile": self.profile,
+            "rules_profile": self.rules_profile,
             "task_type": self.task_type,
             "auto_start": self.auto_start,
             "debounce_seconds": self.debounce_seconds,
             "recursive": self.recursive,
             "enabled": self.enabled,
             "move_to_done": self.move_to_done,
+            "workflow_steps": self.workflow_steps,
+            "trigger_mode": self.trigger_mode,
+            "settle_existing": self.settle_existing,
             **self.extra
         }
 
@@ -74,12 +102,16 @@ class WatchRule:
             done_path=data.get("done_path", ""),
             file_patterns=data.get("file_patterns", ["*.txt", "*.epub", "*.srt"]),
             profile=data.get("profile", "default"),
+            rules_profile=data.get("rules_profile", ""),
             task_type=data.get("task_type", "translation"),
             auto_start=data.get("auto_start", True),
             debounce_seconds=data.get("debounce_seconds", 5),
             recursive=data.get("recursive", False),
             enabled=data.get("enabled", True),
-            move_to_done=data.get("move_to_done", True)
+            move_to_done=data.get("move_to_done", True),
+            workflow_steps=data.get("workflow_steps"),
+            trigger_mode=data.get("trigger_mode", "file"),
+            settle_existing=data.get("settle_existing", False),
         )
 
 
@@ -144,6 +176,7 @@ class WatchManager(Base):
         self.scan_interval = 10  # 扫描间隔（秒）
         self.max_concurrent = 2  # 最大并发任务数
         self.current_tasks = 0
+        self._active_targets: Set[str] = set()
 
         # 日志
         self.logs: List[dict] = []
@@ -203,6 +236,10 @@ class WatchManager(Base):
             rule = self.rules[rule_id]
             for key, value in kwargs.items():
                 if hasattr(rule, key):
+                    if key == "file_patterns":
+                        value = WatchRule._normalize_patterns(value)
+                    if key == "workflow_steps":
+                        value = normalize_workflow_steps(value, rule.task_type, rule.auto_start)
                     setattr(rule, key, value)
             return True
 
@@ -222,6 +259,7 @@ class WatchManager(Base):
         self.running = True
         self._stop_event.clear()
         self._load_processed_files()
+        self._prime_existing_files()
         self._thread = threading.Thread(target=self._watch_loop, daemon=True)
         self._thread.start()
         self._log("info", "Watch manager started")
@@ -283,10 +321,17 @@ class WatchManager(Base):
         """递归扫描目录"""
         result = []
         try:
+            excluded_dirs = {
+                os.path.abspath(path)
+                for path in (rule.output_path, rule.done_path)
+                if path
+            }
             for root, dirs, files in os.walk(directory):
                 # 排除输出目录和完成目录
-                dirs[:] = [d for d in dirs if
-                           os.path.join(root, d) not in [rule.output_path, rule.done_path]]
+                dirs[:] = [
+                    d for d in dirs
+                    if os.path.abspath(os.path.join(root, d)) not in excluded_dirs
+                ]
 
                 for filename in files:
                     if rule.matches_pattern(filename):
@@ -294,6 +339,18 @@ class WatchManager(Base):
         except OSError:
             pass
         return result
+
+    def _prime_existing_files(self):
+        """Record existing files so watch mode reacts to future changes by default."""
+        for rule in self.rules.values():
+            if rule.settle_existing:
+                continue
+            try:
+                files = self._scan_recursive(rule.watch_path, rule) if rule.recursive else self._scan_flat(rule.watch_path, rule)
+                for file_path in files:
+                    self.processed_files.add(self._get_file_key(file_path))
+            except Exception as e:
+                self._log("warning", f"Failed to prime existing files for {rule.watch_path}: {e}")
 
     def _process_file(self, file_path: str, rule: WatchRule):
         """处理检测到的文件"""
@@ -322,30 +379,33 @@ class WatchManager(Base):
         # 标记为处理中
         state.status = "processing"
         self.current_tasks += 1
+        target_path = rule.watch_path if rule.trigger_mode == "folder" else file_path
+        target_key = self._get_file_key(target_path)
+        if target_key in self._active_targets:
+            self.current_tasks -= 1
+            return
+        self._active_targets.add(target_key)
 
         # 创建任务
         task_config = {
-            "input_path": file_path,
-            "output_path": rule.output_path or self._generate_output_path(file_path),
+            "input_path": target_path,
+            "output_path": rule.output_path or self._generate_output_path(target_path),
             "profile": rule.profile,
+            "rules_profile": rule.rules_profile,
             "task_type": rule.task_type,
             "source": "watch",
             "rule_id": rule.id,
-            "auto_start": rule.auto_start
+            "auto_start": rule.auto_start,
+            "workflow_steps": rule.workflow_steps,
         }
 
-        self._log("info", f"New file detected: {os.path.basename(file_path)}")
+        self._log(
+            "info",
+            f"New file detected: {os.path.basename(file_path)} | workflow: {describe_workflow_steps(rule.workflow_steps)}",
+        )
 
-        # 执行或加入队列
-        if rule.auto_start and self.task_callback:
-            # 在新线程中执行
-            exec_thread = threading.Thread(
-                target=self._execute_task,
-                args=(file_path, rule, task_config),
-                daemon=True
-            )
-            exec_thread.start()
-        elif self.queue_callback:
+        # 默认交给队列系统管理；只有未配置队列回调时才直接执行。
+        if self.queue_callback:
             # 加入队列
             try:
                 self.queue_callback(task_config)
@@ -353,9 +413,24 @@ class WatchManager(Base):
             except Exception as e:
                 self._log("error", f"Failed to queue task: {e}")
                 state.status = "error"
+            finally:
                 self.current_tasks -= 1
+                self._active_targets.discard(target_key)
+        elif rule.auto_start and self.task_callback:
+            # 在新线程中执行
+            exec_thread = threading.Thread(
+                target=self._execute_task,
+                args=(file_path, rule, task_config, target_key),
+                daemon=True
+            )
+            exec_thread.start()
+        else:
+            self._log("warning", "No task or queue callback configured")
+            state.status = "error"
+            self.current_tasks -= 1
+            self._active_targets.discard(target_key)
 
-    def _execute_task(self, file_path: str, rule: WatchRule, task_config: dict):
+    def _execute_task(self, file_path: str, rule: WatchRule, task_config: dict, target_key: str):
         """执行任务"""
         state = self.file_states.get(file_path)
         try:
@@ -368,11 +443,19 @@ class WatchManager(Base):
                 state.status = "error"
         finally:
             self.current_tasks -= 1
+            self._active_targets.discard(target_key)
 
     def _mark_processed(self, file_path: str, rule: WatchRule, status: str):
         """标记文件已处理"""
         file_key = self._get_file_key(file_path)
         self.processed_files.add(file_key)
+        if rule.trigger_mode == "folder":
+            try:
+                files = self._scan_recursive(rule.watch_path, rule) if rule.recursive else self._scan_flat(rule.watch_path, rule)
+                for related_path in files:
+                    self.processed_files.add(self._get_file_key(related_path))
+            except Exception as e:
+                self._log("warning", f"Failed to mark related files: {e}")
 
         state = self.file_states.get(file_path)
         if state:

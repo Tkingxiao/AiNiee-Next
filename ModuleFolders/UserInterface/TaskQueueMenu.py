@@ -11,6 +11,7 @@ from rich.prompt import Prompt, IntPrompt
 from rich.table import Table
 
 from ModuleFolders.Base.Base import Base
+from ModuleFolders.Infrastructure.Automation.WorkflowRunner import describe_workflow_steps
 from ModuleFolders.Infrastructure.TaskConfig.TaskType import TaskType
 from ModuleFolders.UserInterface.UIHelpers import open_in_editor
 
@@ -76,12 +77,18 @@ class TaskQueueMenu:
         table.add_column(self.i18n.get("table_column_status"))
 
         for index, task in enumerate(queue_manager.tasks):
-            status_style = "green" if task.status == "completed" else "yellow" if task.status == "running" else "dim"
+            status_style = "green" if task.status == "completed" else "yellow" if task.status in {"running", "workflow"} else "dim"
             type_str = self._get_task_type_tag(task.task_type)
-            details = (
-                f"{task.profile or 'def'}/{task.rules_profile or 'def'} | "
-                f"{task.source_lang or 'auto'}->{task.target_lang or 'auto'}"
-            )
+            if getattr(task, "workflow_steps", None):
+                details = (
+                    f"{task.profile or 'def'}/{task.rules_profile or 'def'} | "
+                    f"{describe_workflow_steps(task.workflow_steps)}"
+                )
+            else:
+                details = (
+                    f"{task.profile or 'def'}/{task.rules_profile or 'def'} | "
+                    f"{task.source_lang or 'auto'}->{task.target_lang or 'auto'}"
+                )
             table.add_row(
                 str(index + 1),
                 f"[{type_str}] {os.path.basename(task.input_path)}",
@@ -462,6 +469,7 @@ class TaskQueueMenu:
     def _get_localized_status(self, status):
         status_map = {
             "waiting": self.i18n.get("task_status_waiting"),
+            "workflow": "Workflow",
             "translating": self.i18n.get("task_status_translating"),
             "translated": self.i18n.get("task_status_translated"),
             "polishing": self.i18n.get("task_status_polishing"),
@@ -473,6 +481,12 @@ class TaskQueueMenu:
         return status_map.get(status.lower(), status.upper())
 
     def _get_task_type_tag(self, task_type):
+        if str(task_type).lower() in {"translation", "translate"}:
+            return "T"
+        if str(task_type).lower() in {"polishing", "polish"}:
+            return "P"
+        if str(task_type).lower() in {"all_in_one", "translate_and_polish"}:
+            return "T+P"
         if task_type == TaskType.TRANSLATE_AND_POLISH:
             return "T+P"
         if task_type == TaskType.TRANSLATION:

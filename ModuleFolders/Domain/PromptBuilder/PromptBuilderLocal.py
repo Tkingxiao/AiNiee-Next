@@ -109,7 +109,7 @@ class PromptBuilderLocal(Base):
         return glossary_prompt
 
     # 生成信息结构 - LocalLLM
-    def generate_prompt_LocalLLM(config,  source_text_dict: dict, previous_text_list: list[str], source_lang, rag_context: str = "") -> tuple[list[dict], str, list[str]]:
+    def generate_prompt_LocalLLM(config,  source_text_dict: dict, previous_text_list: list[str], source_lang, rag_context: str = "", translation_memory_references: list[dict] | None = None) -> tuple[list[dict], str, list[str]]:
         # 储存指令
         messages = []
         # 储存额外日志
@@ -125,6 +125,11 @@ class PromptBuilderLocal(Base):
             else:
                 system += f"\n\n### Relevant Historical Context (for reference):\n{rag_context}\n"
             extra_log.append(f"RAG Context added:\n{rag_context}")
+
+        translation_memory = PromptBuilder.build_translation_memory_prompt(config, translation_memory_references)
+        if translation_memory:
+            system += translation_memory
+            extra_log.append(translation_memory)
 
         # 术语表
         if config.prompt_dictionary_switch == True:

@@ -3,11 +3,20 @@
 从 ainiee_cli.py 分离
 """
 import os
+import threading
+import time
 
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt, IntPrompt, Confirm
 from rich.table import Table
+
+from ModuleFolders.Infrastructure.Automation.WorkflowRunner import (
+    describe_workflow_steps,
+    normalize_task_type,
+    normalize_workflow_steps,
+    task_type_to_step_type,
+)
 
 console = Console()
 
@@ -39,11 +48,76 @@ class AutomationMenu:
         from ModuleFolders.Infrastructure.Automation import SchedulerManager, WatchManager
 
         if self.scheduler_manager is None:
-            self.scheduler_manager = SchedulerManager()
+            self.scheduler_manager = SchedulerManager(execute_callback=self._execute_scheduled_task)
             self.scheduler_manager.load_from_config(self.config)
+            self.scheduler_manager.set_callback(self._execute_scheduled_task)
         if self.watch_manager is None:
-            self.watch_manager = WatchManager()
+            self.watch_manager = WatchManager(
+                task_callback=self._execute_watch_task,
+                queue_callback=self._enqueue_watch_task,
+            )
             self.watch_manager.load_from_config(self.config)
+            self.watch_manager.set_callbacks(
+                task_callback=self._execute_watch_task,
+                queue_callback=self._enqueue_watch_task,
+            )
+
+    def _enqueue_watch_task(self, task_config):
+        """Add a watch-triggered workflow task to the central queue."""
+        from ModuleFolders.Service.TaskQueue.QueueManager import QueueManager, QueueTaskItem
+
+        queue_manager = QueueManager()
+        queue_manager.add_task(
+            QueueTaskItem(
+                normalize_task_type(task_config.get("task_type", "translation")),
+                task_config.get("input_path", ""),
+                output_path=task_config.get("output_path") or None,
+                profile=task_config.get("profile") or None,
+                rules_profile=task_config.get("rules_profile") or None,
+                workflow_steps=task_config.get("workflow_steps") or [],
+                source=task_config.get("source"),
+                rule_id=task_config.get("rule_id"),
+            )
+        )
+
+        if task_config.get("auto_start", True):
+            self._run_queue_if_needed()
+
+    def _run_queue_if_needed(self):
+        from ModuleFolders.Service.TaskQueue.QueueManager import QueueManager
+
+        queue_manager = QueueManager()
+        if not queue_manager.tasks or queue_manager.is_running:
+            return
+
+        self.host._is_queue_mode = True
+        self.host.start_queue_log_monitor()
+        queue_manager.start_queue(self.host)
+
+        def queue_cleanup():
+            try:
+                while queue_manager.is_running:
+                    time.sleep(0.5)
+            finally:
+                self.host.stop_queue_log_monitor()
+                self.host._is_queue_mode = False
+
+        threading.Thread(target=queue_cleanup, daemon=True).start()
+
+    def _execute_watch_task(self, task_config):
+        from ModuleFolders.Infrastructure.Automation.WorkflowRunner import WorkflowRunner
+
+        return WorkflowRunner(self.host).run(task_config)
+
+    def _execute_scheduled_task(self, task_config):
+        workflow_steps = task_config.get("workflow_steps") or []
+        if workflow_steps:
+            from ModuleFolders.Infrastructure.Automation.WorkflowRunner import WorkflowRunner
+
+            return WorkflowRunner(self.host).run(task_config)
+        if task_config.get("run_queue"):
+            return self._run_queue_if_needed()
+        return self._execute_watch_task(task_config)
 
     def show(self):
         """显示自动化菜单（入口方法）"""
@@ -162,7 +236,8 @@ class AutomationMenu:
             return
 
         input_path = Prompt.ask(self.i18n.get('scheduler_input_path'))
-        if not os.path.exists(input_path):
+        run_queue = input_path.strip().lower() in {"queue", "__queue__", "队列"}
+        if not run_queue and not os.path.exists(input_path):
             console.print(f"[red]{self.i18n.get('msg_path_not_exist')}[/red]")
             return
 
@@ -182,13 +257,21 @@ class AutomationMenu:
         profile_choice = IntPrompt.ask(self.i18n.get('prompt_select'), choices=[str(i+1) for i in range(len(profiles))], default=1, show_choices=False)
         profile = profiles[profile_choice - 1]
 
+        workflow_steps = []
+        if run_queue:
+            workflow_steps = [{"type": "run_queue"}]
+        elif Confirm.ask("为这个定时任务配置自定义工作流?", default=False):
+            workflow_steps, _ = self._prompt_workflow_steps(default_task_type=task_type)
+
         task = ScheduledTask(
             task_id=task_id,
             name=name,
             schedule=schedule,
             input_path=input_path,
             profile=profile,
-            task_type=task_type
+            task_type=task_type,
+            workflow_steps=workflow_steps,
+            run_queue=run_queue,
         )
 
         if self.scheduler_manager.add_task(task):
@@ -218,8 +301,9 @@ class AutomationMenu:
         console.print(f"1. {self.i18n.get('label_enabled')}: {'ON' if task.enabled else 'OFF'}")
         console.print(f"2. {self.i18n.get('scheduler_cron_expr')}: {task.schedule}")
         console.print(f"3. {self.i18n.get('scheduler_input_path')}: {task.input_path}")
+        console.print(f"4. {self.i18n.get('watch_mode')}: {describe_workflow_steps(task.workflow_steps) if task.workflow_steps else '-'}")
 
-        edit_choice = IntPrompt.ask(self.i18n.get('prompt_select'), choices=["0", "1", "2", "3"], default=0, show_choices=False)
+        edit_choice = IntPrompt.ask(self.i18n.get('prompt_select'), choices=["0", "1", "2", "3", "4"], default=0, show_choices=False)
 
         if edit_choice == 1:
             self.scheduler_manager.update_task(task.id, enabled=not task.enabled)
@@ -233,10 +317,19 @@ class AutomationMenu:
                 console.print(f"[red]{self.i18n.get('msg_invalid_cron')}[/red]")
         elif edit_choice == 3:
             new_path = Prompt.ask(self.i18n.get('scheduler_input_path'), default=task.input_path)
-            if os.path.exists(new_path):
-                self.scheduler_manager.update_task(task.id, input_path=new_path)
+            run_queue = new_path.strip().lower() in {"queue", "__queue__", "队列"}
+            if run_queue or os.path.exists(new_path):
+                workflow_steps = [{"type": "run_queue"}] if run_queue else task.workflow_steps
+                self.scheduler_manager.update_task(task.id, input_path=new_path, run_queue=run_queue, workflow_steps=workflow_steps)
             else:
                 console.print(f"[red]{self.i18n.get('msg_path_not_exist')}[/red]")
+        elif edit_choice == 4:
+            workflow_steps, _ = self._prompt_workflow_steps(
+                default_task_type=task.task_type,
+                current_steps=task.workflow_steps,
+                current_auto_start=True,
+            )
+            self.scheduler_manager.update_task(task.id, workflow_steps=workflow_steps, run_queue=False)
 
         if edit_choice > 0:
             console.print(f"[green]{self.i18n.get('scheduler_task_updated')}[/green]")
@@ -300,7 +393,7 @@ class AutomationMenu:
                     patterns = ", ".join(rule.file_patterns[:3])
                     if len(rule.file_patterns) > 3:
                         patterns += "..."
-                    mode = self.i18n.get('watch_mode_instant') if rule.auto_start else self.i18n.get('watch_mode_collect')
+                    mode = describe_workflow_steps(rule.workflow_steps)
                     status_str = "[green]●[/]" if rule.enabled else "[dim]○[/]"
                     rule_table.add_row(rule.id, os.path.basename(rule.watch_path), patterns, mode, status_str)
                 console.print(rule_table)
@@ -348,13 +441,6 @@ class AutomationMenu:
         patterns_str = Prompt.ask(f"{self.i18n.get('watch_patterns')} ({self.i18n.get('watch_patterns_hint')})", default="*.epub, *.txt, *.srt")
         file_patterns = [p.strip() for p in patterns_str.split(",")]
 
-        # 选择监控模式
-        console.print(f"\n{self.i18n.get('watch_mode')}:")
-        console.print(f"  [cyan]1.[/] {self.i18n.get('watch_mode_instant')} - {self.i18n.get('watch_mode_instant_desc')}")
-        console.print(f"  [cyan]2.[/] {self.i18n.get('watch_mode_collect')} - {self.i18n.get('watch_mode_collect_desc')}")
-        mode_choice = IntPrompt.ask(self.i18n.get('prompt_select'), choices=["1", "2"], default=1, show_choices=False)
-        auto_start = mode_choice == 1
-
         # 选择任务类型
         task_types = ["translation", "polishing", "all_in_one"]
         console.print(f"\n{self.i18n.get('watch_task_type')}:")
@@ -362,6 +448,9 @@ class AutomationMenu:
             console.print(f"  [cyan]{i+1}.[/] {self.i18n.get(f'task_type_{t}')}")
         type_choice = IntPrompt.ask(self.i18n.get('prompt_select'), choices=["1", "2", "3"], default=1, show_choices=False)
         task_type = task_types[type_choice - 1]
+
+        # 选择监控模式
+        workflow_steps, auto_start = self._prompt_workflow_steps(default_task_type=task_type)
 
         # 选择配置
         profiles = self.host._get_profiles_list(self.host.profiles_dir)
@@ -371,19 +460,43 @@ class AutomationMenu:
         profile_choice = IntPrompt.ask(self.i18n.get('prompt_select'), choices=[str(i+1) for i in range(len(profiles))], default=1, show_choices=False)
         profile = profiles[profile_choice - 1]
 
+        # 选择规则配置
+        rules_profiles = self.host._get_profiles_list(self.host.rules_profiles_dir)
+        rules_profile = ""
+        if rules_profiles:
+            console.print(f"\n{self.i18n.get('label_rules_profile') or 'Rules Profile'}:")
+            for i, p in enumerate(rules_profiles):
+                console.print(f"  [cyan]{i+1}.[/] {p}")
+            rules_choice = IntPrompt.ask(
+                self.i18n.get('prompt_select'),
+                choices=[str(i+1) for i in range(len(rules_profiles))],
+                default=1,
+                show_choices=False,
+            )
+            rules_profile = rules_profiles[rules_choice - 1]
+
+        output_path = Prompt.ask(self.i18n.get('watch_output_path'), default="")
+        done_path = Prompt.ask(self.i18n.get('watch_done_path'), default="")
+
         # 其他选项
         debounce = IntPrompt.ask(f"{self.i18n.get('watch_debounce')} ({self.i18n.get('watch_debounce_hint')})", default=5)
         recursive = Confirm.ask(self.i18n.get('watch_recursive'), default=False)
+        trigger_mode = "folder" if Confirm.ask("检测到更新后处理整个监控文件夹?", default=False) else "file"
 
         rule = WatchRule(
             rule_id=rule_id,
             watch_path=watch_path,
+            output_path=output_path,
+            done_path=done_path,
             file_patterns=file_patterns,
             profile=profile,
+            rules_profile=rules_profile,
             task_type=task_type,
             auto_start=auto_start,
             debounce_seconds=debounce,
-            recursive=recursive
+            recursive=recursive,
+            workflow_steps=workflow_steps,
+            trigger_mode=trigger_mode,
         )
 
         if self.watch_manager.add_rule(rule):
@@ -411,20 +524,22 @@ class AutomationMenu:
         # 编辑选项
         console.print(f"\n[bold]{rule.id}[/bold]")
         console.print(f"1. {self.i18n.get('label_enabled')}: {'ON' if rule.enabled else 'OFF'}")
-        console.print(f"2. {self.i18n.get('watch_mode')}: {self.i18n.get('watch_mode_instant') if rule.auto_start else self.i18n.get('watch_mode_collect')}")
+        console.print(f"2. {self.i18n.get('watch_mode')}: {describe_workflow_steps(rule.workflow_steps)}")
         console.print(f"3. {self.i18n.get('watch_patterns')}: {', '.join(rule.file_patterns)}")
         console.print(f"4. {self.i18n.get('watch_debounce')}: {rule.debounce_seconds}s")
+        console.print(f"5. {self.i18n.get('watch_output_path')}: {rule.output_path or '-'}")
 
-        edit_choice = IntPrompt.ask(self.i18n.get('prompt_select'), choices=["0", "1", "2", "3", "4"], default=0, show_choices=False)
+        edit_choice = IntPrompt.ask(self.i18n.get('prompt_select'), choices=["0", "1", "2", "3", "4", "5"], default=0, show_choices=False)
 
         if edit_choice == 1:
             self.watch_manager.update_rule(rule.id, enabled=not rule.enabled)
         elif edit_choice == 2:
-            console.print(f"\n{self.i18n.get('watch_mode')}:")
-            console.print(f"  [cyan]1.[/] {self.i18n.get('watch_mode_instant')} - {self.i18n.get('watch_mode_instant_desc')}")
-            console.print(f"  [cyan]2.[/] {self.i18n.get('watch_mode_collect')} - {self.i18n.get('watch_mode_collect_desc')}")
-            mode_choice = IntPrompt.ask(self.i18n.get('prompt_select'), choices=["1", "2"], default=1 if rule.auto_start else 2, show_choices=False)
-            self.watch_manager.update_rule(rule.id, auto_start=mode_choice == 1)
+            workflow_steps, auto_start = self._prompt_workflow_steps(
+                default_task_type=rule.task_type,
+                current_steps=rule.workflow_steps,
+                current_auto_start=rule.auto_start,
+            )
+            self.watch_manager.update_rule(rule.id, workflow_steps=workflow_steps, auto_start=auto_start)
         elif edit_choice == 3:
             patterns_str = Prompt.ask(self.i18n.get('watch_patterns'), default=", ".join(rule.file_patterns))
             file_patterns = [p.strip() for p in patterns_str.split(",")]
@@ -432,6 +547,9 @@ class AutomationMenu:
         elif edit_choice == 4:
             debounce = IntPrompt.ask(self.i18n.get('watch_debounce'), default=rule.debounce_seconds)
             self.watch_manager.update_rule(rule.id, debounce_seconds=debounce)
+        elif edit_choice == 5:
+            output_path = Prompt.ask(self.i18n.get('watch_output_path'), default=rule.output_path or "")
+            self.watch_manager.update_rule(rule.id, output_path=output_path)
 
         if edit_choice > 0:
             console.print(f"[green]{self.i18n.get('watch_rule_updated')}[/green]")
@@ -508,3 +626,91 @@ class AutomationMenu:
             console.print(log_table)
 
         Prompt.ask(f"\n{self.i18n.get('msg_press_enter')}")
+
+    def _prompt_workflow_steps(self, default_task_type="translation", current_steps=None, current_auto_start=True):
+        """Prompt a queue-managed workflow preset."""
+        console.print(f"\n{self.i18n.get('watch_mode')}:")
+        table = Table(show_header=False, box=None)
+        table.add_row("[cyan]1.[/]", "加入队列后自动执行: AI术语表 -> 翻译")
+        table.add_row("[cyan]2.[/]", "加入队列后自动执行: AI术语表 -> 翻译 -> 润色")
+        table.add_row("[cyan]3.[/]", "加入队列后自动执行: 翻译")
+        table.add_row("[cyan]4.[/]", "仅加入队列，不自动启动")
+        table.add_row("[cyan]5.[/]", "自定义步骤")
+        console.print(table)
+
+        choice = IntPrompt.ask(self.i18n.get('prompt_select'), choices=["1", "2", "3", "4", "5"], default=1, show_choices=False)
+        auto_start = choice != 4
+        task_step = task_type_to_step_type(default_task_type)
+
+        if choice == 1:
+            steps = [
+                self._prompt_glossary_step_defaults(),
+                {"type": task_step if task_step != "polish" else "translate"},
+            ]
+        elif choice == 2:
+            steps = [
+                self._prompt_glossary_step_defaults(),
+                {"type": "all_in_one"},
+            ]
+        elif choice == 3:
+            steps = [{"type": task_step}]
+        elif choice == 4:
+            steps = [{"type": task_step}]
+        else:
+            steps, auto_start = self._prompt_custom_workflow_steps(current_steps, current_auto_start)
+
+        return normalize_workflow_steps(steps, default_task_type, auto_start), auto_start
+
+    def _prompt_glossary_step_defaults(self):
+        return {
+            "type": "extract_glossary",
+            "analysis_mode": "full",
+            "analysis_percent": IntPrompt.ask("术语表分析比例 (1-100)", default=100),
+            "min_frequency": IntPrompt.ask("术语表最低词频", default=2),
+            "translate_during_analysis": True,
+            "new": True,
+            "replace": True,
+            "save_mode": "import",
+        }
+
+    def _prompt_custom_workflow_steps(self, current_steps=None, current_auto_start=True):
+        steps = list(current_steps or [])
+        auto_start = current_auto_start
+        while True:
+            console.print("\n[bold]Workflow[/bold]")
+            if steps:
+                for idx, step in enumerate(steps, 1):
+                    console.print(f"  [cyan]{idx}.[/] {step.get('type')}")
+            else:
+                console.print("  [dim]No steps[/dim]")
+            console.print(f"  [cyan]A.[/] Add step")
+            console.print(f"  [cyan]R.[/] Remove last step")
+            console.print(f"  [cyan]S.[/] Auto-start queue: {'ON' if auto_start else 'OFF'}")
+            console.print(f"  [dim]0. Done[/dim]")
+            choice = Prompt.ask(self.i18n.get('prompt_select'), choices=["0", "A", "a", "R", "r", "S", "s"], default="0", show_choices=False)
+            if choice == "0":
+                break
+            if choice.upper() == "S":
+                auto_start = not auto_start
+            elif choice.upper() == "R":
+                if steps:
+                    steps.pop()
+            elif choice.upper() == "A":
+                steps.append(self._prompt_workflow_step())
+        return steps, auto_start
+
+    def _prompt_workflow_step(self):
+        table = Table(show_header=False, box=None)
+        table.add_row("[cyan]1.[/]", "AI术语表提取")
+        table.add_row("[cyan]2.[/]", "翻译")
+        table.add_row("[cyan]3.[/]", "润色")
+        table.add_row("[cyan]4.[/]", "翻译+润色")
+        console.print(table)
+        choice = IntPrompt.ask(self.i18n.get('prompt_select'), choices=["1", "2", "3", "4"], default=1, show_choices=False)
+        if choice == 1:
+            return self._prompt_glossary_step_defaults()
+        if choice == 2:
+            return {"type": "translate"}
+        if choice == 3:
+            return {"type": "polish", "resume": True}
+        return {"type": "all_in_one"}

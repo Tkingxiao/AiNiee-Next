@@ -62,6 +62,8 @@ class TranslatorTask(Base):
         self.consistency_state_updater = None
         self.consistency_context = {}
         self._pending_consistency_update = None
+        self.translation_memory_provider = None
+        self.translation_memory_references = []
 
 
     # 设置缓存数据
@@ -85,6 +87,9 @@ class TranslatorTask(Base):
 
     def set_consistency_state_updater(self, updater) -> None:
         self.consistency_state_updater = updater
+
+    def set_translation_memory_provider(self, provider) -> None:
+        self.translation_memory_provider = provider
 
     # 消息构建预处理
     def prepare(self, target_platform: str) -> None:
@@ -115,6 +120,14 @@ class TranslatorTask(Base):
         # 触发插件事件 - 文本正规化
         self.plugin_manager.broadcast_event("normalize_text", self.config, self.source_text_dict)
 
+        if callable(self.translation_memory_provider):
+            try:
+                self.translation_memory_references = self.translation_memory_provider(self.source_text_dict) or []
+            except Exception:
+                self.translation_memory_references = []
+        else:
+            self.translation_memory_references = []
+
         # 触发插件事件 - RAG 上下文构建
         rag_context_data = {
             "source_text_dict": self.source_text_dict,
@@ -139,9 +152,10 @@ class TranslatorTask(Base):
             self.messages, self.system_prompt, self.extra_log = PromptBuilderSakura.generate_prompt_sakura(
                 prompt_config,
                 self.source_text_dict,
-                self.previous_text_list, 
-                self.source_lang, 
-                self.rag_context
+                self.previous_text_list,
+                self.source_lang,
+                self.rag_context,
+                self.translation_memory_references,
             )
         elif target_platform == "LocalLLM":
             self.messages, self.system_prompt, self.extra_log = PromptBuilderLocal.generate_prompt_LocalLLM(
@@ -149,7 +163,8 @@ class TranslatorTask(Base):
                 self.source_text_dict,
                 self.previous_text_list,
                 self.source_lang,
-                self.rag_context
+                self.rag_context,
+                self.translation_memory_references,
             )
         else:
             self.messages, self.system_prompt, self.extra_log = PromptBuilder.generate_prompt(
@@ -162,6 +177,7 @@ class TranslatorTask(Base):
                 self.consistency_context,
                 self.character_recall_previous_text_list,
                 self.character_recall_lookahead_text_list,
+                self.translation_memory_references,
             )
 
         # 预估 Token 消费

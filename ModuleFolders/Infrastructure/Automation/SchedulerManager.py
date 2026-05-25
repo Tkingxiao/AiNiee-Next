@@ -8,6 +8,7 @@ import time
 from datetime import datetime, timedelta
 from typing import Callable, Dict, List, Optional, Any
 from ModuleFolders.Base.Base import Base
+from ModuleFolders.Infrastructure.Automation.WorkflowRunner import normalize_workflow_steps
 
 
 class CronParser:
@@ -37,28 +38,38 @@ class CronParser:
         result = set()
 
         for part in field.split(","):
+            part = part.strip()
+            if not part:
+                raise ValueError("Empty cron field")
             if part == "*":
                 result.update(range(min_val, max_val + 1))
             elif part.startswith("*/"):
                 step = int(part[2:])
+                if step <= 0:
+                    raise ValueError("Cron step must be greater than zero")
                 result.update(range(min_val, max_val + 1, step))
             elif "-" in part:
                 start, end = map(int, part.split("-"))
+                if start > end:
+                    raise ValueError("Cron range start must be <= end")
                 result.update(range(start, end + 1))
             else:
                 result.add(int(part))
 
+        if not result or min(result) < min_val or max(result) > max_val:
+            raise ValueError(f"Cron field out of range: {field}")
         return result
 
     @staticmethod
     def matches(cron_dict: dict, dt: datetime) -> bool:
         """检查时间是否匹配 cron 规则"""
+        cron_weekday = (dt.weekday() + 1) % 7
         return (
             dt.minute in cron_dict["minute"] and
             dt.hour in cron_dict["hour"] and
             dt.day in cron_dict["day"] and
             dt.month in cron_dict["month"] and
-            dt.weekday() in cron_dict["weekday"]  # Python: 0=周一, 需要转换
+            cron_weekday in cron_dict["weekday"]
         )
 
 
@@ -68,15 +79,19 @@ class ScheduledTask:
     def __init__(self, task_id: str, name: str, schedule: str,
                  input_path: str, profile: str = "default",
                  task_type: str = "translation", enabled: bool = True,
-                 output_path: str = "", **kwargs):
+                 output_path: str = "", workflow_steps: List[dict] = None,
+                 run_queue: bool = False, rules_profile: str = "", **kwargs):
         self.id = task_id
         self.name = name
         self.schedule = schedule
         self.input_path = input_path
         self.output_path = output_path
         self.profile = profile
+        self.rules_profile = rules_profile
         self.task_type = task_type
         self.enabled = enabled
+        self.workflow_steps = normalize_workflow_steps(workflow_steps, task_type, True) if workflow_steps else []
+        self.run_queue = run_queue
         self.extra = kwargs
 
         # 解析 cron 表达式
@@ -140,8 +155,11 @@ class ScheduledTask:
             "input_path": self.input_path,
             "output_path": self.output_path,
             "profile": self.profile,
+            "rules_profile": self.rules_profile,
             "task_type": self.task_type,
             "enabled": self.enabled,
+            "workflow_steps": self.workflow_steps,
+            "run_queue": self.run_queue,
             **self.extra
         }
 
@@ -155,8 +173,11 @@ class ScheduledTask:
             input_path=data.get("input_path", ""),
             output_path=data.get("output_path", ""),
             profile=data.get("profile", "default"),
+            rules_profile=data.get("rules_profile", ""),
             task_type=data.get("task_type", "translation"),
-            enabled=data.get("enabled", True)
+            enabled=data.get("enabled", True),
+            workflow_steps=data.get("workflow_steps"),
+            run_queue=data.get("run_queue", False),
         )
 
 
@@ -269,16 +290,20 @@ class SchedulerManager(Base):
         self._log("info", f"Executing task: {task.name}")
 
         try:
-            if self.execute_callback:
-                task_config = {
-                    "input_path": task.input_path,
-                    "output_path": task.output_path,
-                    "profile": task.profile,
-                    "task_type": task.task_type,
-                    "task_id": task.id,
-                    "task_name": task.name
-                }
+            task_config = {
+                "input_path": task.input_path,
+                "output_path": task.output_path,
+                "profile": task.profile,
+                "rules_profile": task.rules_profile,
+                "task_type": task.task_type,
+                "task_id": task.id,
+                "task_name": task.name,
+                "workflow_steps": task.workflow_steps,
+                "run_queue": task.run_queue,
+            }
+            task.mark_run("running")
 
+            if self.execute_callback:
                 # 在新线程中执行，避免阻塞调度器
                 exec_thread = threading.Thread(
                     target=self._run_task_thread,
@@ -288,20 +313,20 @@ class SchedulerManager(Base):
                 exec_thread.start()
             else:
                 self._log("warning", "No execute callback configured")
-                task.mark_run("skipped")
+                task.last_status = "skipped"
 
         except Exception as e:
             self._log("error", f"Task execution failed: {task.name} - {e}")
-            task.mark_run("error")
+            task.last_status = "error"
 
     def _run_task_thread(self, task: ScheduledTask, task_config: dict):
         """在线程中执行任务"""
         try:
             self.execute_callback(task_config)
-            task.mark_run("success")
+            task.last_status = "success"
             self._log("info", f"Task completed: {task.name}")
         except Exception as e:
-            task.mark_run("error")
+            task.last_status = "error"
             self._log("error", f"Task failed: {task.name} - {e}")
 
     def _log(self, level: str, message: str):

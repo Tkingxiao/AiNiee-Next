@@ -76,7 +76,7 @@ class PromptBuilderSakura(Base):
         return dict_lines_str
 
     # 生成信息结构 - Sakura
-    def generate_prompt_sakura(config,  source_text_dict: dict, previous_text_list: list[str], source_lang, rag_context: str = "") -> tuple[list[dict], str, list[str]]:
+    def generate_prompt_sakura(config,  source_text_dict: dict, previous_text_list: list[str], source_lang, rag_context: str = "", translation_memory_references: list[dict] | None = None) -> tuple[list[dict], str, list[str]]:
         # 储存指令
         messages = []
         # 储存额外日志
@@ -108,6 +108,11 @@ class PromptBuilderSakura(Base):
         if rag_context:
             user_prompt = f"### 相关历史上下文（供参考）：\n{rag_context}\n\n" + user_prompt
             extra_log.append(f"RAG Context added:\n{rag_context}")
+
+        translation_memory = PromptBuilder.build_translation_memory_prompt(config, translation_memory_references)
+        if translation_memory:
+            user_prompt = translation_memory + "\n" + user_prompt
+            extra_log.append(translation_memory)
 
         # 构建指令列表
         messages.append(

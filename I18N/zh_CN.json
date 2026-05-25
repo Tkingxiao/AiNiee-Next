@@ -533,6 +533,8 @@
     "feature_writing_style_switch": "启用写作风格",
     "feature_translation_example_switch": "启用翻译示例",
     "feature_few_shot_and_example_switch": "启用少样本示例",
+    "feature_translation_memory_switch": "启用重复句翻译记忆",
+    "feature_translation_memory_switch_desc": "遇到此前已成功翻译过的完全相同原文时，懒加载注入其译文作为一致性参考，不会自动覆盖译文。",
     "feature_character_recall_switch": "启用本地角色召回",
     "feature_character_recall_switch_desc": "使用当前片段附近的原文行在本地判断应注入哪些角色设定，不会额外发送这些行给模型。",
     "setting_character_recall_context_lines": "角色召回上文行数",

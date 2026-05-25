@@ -2,6 +2,7 @@ import time
 import os
 import threading
 import concurrent.futures
+from collections import defaultdict
 
 import opencc
 
@@ -67,6 +68,8 @@ class TaskExecutor(Base):
             "story_summary": "",
             "character_info": "",
         }
+        self.translation_memory_index = {}
+        self._translation_memory_lock = threading.RLock()
         
         # Concurrency Control for Mission Control
         self._concurrency_lock = threading.Lock()
@@ -244,6 +247,66 @@ class TaskExecutor(Base):
             if character_info:
                 self.translation_consistency_state["character_info"] = character_info
 
+    def reset_translation_memory_index(self) -> None:
+        with self._translation_memory_lock:
+            self.translation_memory_index = {}
+
+    def build_translation_memory_index(self) -> None:
+        if not getattr(self.config, "translation_memory_switch", False):
+            self.reset_translation_memory_index()
+            return
+
+        index = defaultdict(list)
+        for item in self.cache_manager.project.items_iter():
+            key = PromptBuilder.normalize_translation_memory_source(item.source_text)
+            if key:
+                index[key].append(item)
+
+        self.translation_memory_index = {
+            key: items
+            for key, items in index.items()
+            if len(items) > 1
+        }
+
+    def get_translation_memory_references(self, source_text_dict: dict) -> list[dict]:
+        if not getattr(self.config, "translation_memory_switch", False):
+            return []
+
+        with self._translation_memory_lock:
+            index = self.translation_memory_index
+            if not index:
+                return []
+
+            references = []
+            seen_keys = set()
+            for source in source_text_dict.values():
+                key = PromptBuilder.normalize_translation_memory_source(source)
+                if not key or key in seen_keys:
+                    continue
+                seen_keys.add(key)
+
+                translations = {}
+                for item in index.get(key, ()):
+                    if item.translation_status == TranslationStatus.POLISHED:
+                        translated_text = str(item.polished_text or item.translated_text or "").strip()
+                    elif item.translation_status == TranslationStatus.TRANSLATED:
+                        translated_text = str(item.translated_text or "").strip()
+                    else:
+                        continue
+                    if translated_text:
+                        translations[translated_text] = item.source_text
+
+                if len(translations) != 1:
+                    continue
+
+                translated_text, original_source = next(iter(translations.items()))
+                references.append({
+                    "src": original_source,
+                    "dst": translated_text,
+                })
+
+            return references
+
     def _execute_tasks_async(self, tasks_list):
         """异步执行模式：使用 aiohttp 处理高并发请求"""
         import asyncio
@@ -282,6 +345,9 @@ class TaskExecutor(Base):
                 with executor_self._skip_lock:
                     if hasattr(task, 'file_path_full') and task.file_path_full in executor_self.skipped_files:
                         return None
+
+                if not getattr(task, "_prepared", False):
+                    task.prepare(executor_self.config.target_platform)
 
                 # 打印任务开始日志
                 task_id = getattr(task, 'task_id', '???')
@@ -657,6 +723,7 @@ class TaskExecutor(Base):
             # 触发插件事件
             self.plugin_manager.broadcast_event("text_filter", self.config, self.cache_manager.project)
             self.plugin_manager.broadcast_event("preproces_text", self.config, self.cache_manager.project)
+            self.build_translation_memory_index()
 
             # Language/text filters mark rows as EXCLUDED. From here on, the progress bar
             # tracks only rows that can actually be translated, while keeping raw counts for UI hints.
@@ -758,7 +825,12 @@ class TaskExecutor(Base):
                     if getattr(self.config, "translation_consistency_enhancement", False):
                         task.set_consistency_context_provider(self.get_translation_consistency_state_snapshot)
                         task.set_consistency_state_updater(self.update_translation_consistency_state)
-                    else:
+                    if getattr(self.config, "translation_memory_switch", False):
+                        task.set_translation_memory_provider(self.get_translation_memory_references)
+                    if (
+                        not getattr(self.config, "translation_consistency_enhancement", False)
+                        and not getattr(self.config, "translation_memory_switch", False)
+                    ):
                         task.prepare(self.config.target_platform)  # 预先构建消息列表
                     tasks_list.append(task)
                 self.info(f"已经生成全部翻译任务 ...")

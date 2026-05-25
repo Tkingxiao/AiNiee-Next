@@ -33,6 +33,7 @@ DEFAULT_CONFIG = {
     "character_recall_max_candidates": 2,
     "character_recall_min_strong_score": 80,
     "character_recall_min_candidate_score": 40,
+    "translation_memory_switch": False,
     "translation_example_switch": False,
     "translation_example_data": [],
     "few_shot_and_example_switch": False,

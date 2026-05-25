@@ -445,6 +445,16 @@ register_config(ConfigItem(
 ))
 
 register_config(ConfigItem(
+    key="translation_memory_switch",
+    default=False,
+    level=ConfigLevel.USER,
+    config_type=ConfigType.BOOL,
+    i18n_key="feature_translation_memory_switch",
+    i18n_desc_key="feature_translation_memory_switch_desc",
+    category="prompt_feature"
+))
+
+register_config(ConfigItem(
     key="character_recall_switch",
     default=True,
     level=ConfigLevel.USER,
