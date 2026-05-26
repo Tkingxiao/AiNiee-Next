@@ -13,7 +13,7 @@ from rich.text import Text
 PROGRESS_FILE_ENV = "AINIEE_AUTOMATION_PROGRESS_FILE"
 RUN_ID_ENV = "AINIEE_AUTOMATION_RUN_ID"
 TASK_CONFIG_ENV = "AINIEE_AUTOMATION_TASK_CONFIG"
-TERMINAL_STATUSES = {"completed", "error", "stopped", "interrupted"}
+TERMINAL_STATUSES = {"completed", "partial", "error", "stopped", "interrupted"}
 
 
 def get_project_root() -> str:
@@ -103,7 +103,14 @@ class AutomationProgressReporter:
 
     def update(self, **fields: Any) -> None:
         with self._lock:
-            self.state.update({key: value for key, value in fields.items() if value is not None})
+            updates = {key: value for key, value in fields.items() if value is not None}
+            current_status = self.state.get("status")
+            incoming_status = updates.get("status")
+            if current_status in TERMINAL_STATUSES and incoming_status not in TERMINAL_STATUSES:
+                updates.pop("status", None)
+                updates.pop("phase", None)
+                updates.pop("message", None)
+            self.state.update(updates)
             self.state["updated_at"] = _now_iso()
             self._normalize_percent()
             self.flush()
@@ -123,7 +130,18 @@ class AutomationProgressReporter:
     def update_progress(self, data: dict) -> None:
         if not isinstance(data, dict):
             return
-        fields = dict(data)
+        fields = {
+            key: value
+            for key, value in dict(data).items()
+            if value is not None
+        }
+        for key in ("line", "completed", "total_line", "total"):
+            if key in fields:
+                try:
+                    if int(fields[key]) <= 0:
+                        fields.pop(key)
+                except (TypeError, ValueError):
+                    fields.pop(key)
         fields.setdefault("phase", "task")
         fields.setdefault("status", "running")
         if fields.get("file_path_full") and not fields.get("input_path"):
@@ -153,10 +171,14 @@ class AutomationProgressReporter:
 
     def finish(self, status: str, message: str = "") -> None:
         with self._lock:
+            if status == "completed" and self._has_missing_items():
+                status = "partial"
+                current, total = self._progress_counts()
+                message = message or f"Translation items missing: {current}/{total}"
             self.state.update({
                 "event": "state",
                 "status": status,
-                "phase": "finished" if status == "completed" else "error",
+                "phase": "finished" if status in {"completed", "partial"} else "error",
                 "message": message or status,
                 "percent": 100 if status == "completed" else self.state.get("percent", 0),
                 "finished_at": _now_iso(),
@@ -166,6 +188,18 @@ class AutomationProgressReporter:
             if status == "completed":
                 self.state["percent"] = 100
             self.flush(force=True)
+
+    def _progress_counts(self) -> tuple[int, int]:
+        total = self.state.get("total_line") or self.state.get("total") or 0
+        current = self.state.get("line") or self.state.get("completed") or 0
+        try:
+            return int(current or 0), int(total or 0)
+        except (TypeError, ValueError):
+            return 0, 0
+
+    def _has_missing_items(self) -> bool:
+        current, total = self._progress_counts()
+        return total > 0 and current < total
 
     def _normalize_percent(self) -> None:
         total = self.state.get("total_line") or self.state.get("total") or 0

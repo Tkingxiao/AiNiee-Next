@@ -77,7 +77,7 @@ class TaskQueueMenu:
         table.add_column(self.i18n.get("table_column_status"))
 
         for index, task in enumerate(queue_manager.tasks):
-            status_style = "green" if task.status == "completed" else "yellow" if task.status in {"running", "workflow"} else "dim"
+            status_style = "green" if task.status == "completed" else "yellow" if task.status in {"running", "workflow", "partial"} else "dim"
             type_str = self._get_task_type_tag(task.task_type)
             if getattr(task, "workflow_steps", None):
                 details = (
@@ -474,6 +474,7 @@ class TaskQueueMenu:
             "translated": self.i18n.get("task_status_translated"),
             "polishing": self.i18n.get("task_status_polishing"),
             "completed": self.i18n.get("task_status_completed"),
+            "partial": self.i18n.get("task_status_partial"),
             "running": self.i18n.get("task_status_running"),
             "error": self.i18n.get("task_status_error"),
             "stopped": self.i18n.get("task_status_stopped"),

@@ -788,58 +788,146 @@ class CLIMenu:
 
         while True:
             self._maybe_start_background_prewarm()
+            if self.config.get("main_menu_layout", "flat") == "flat":
+                if self._show_flat_main_menu():
+                    continue
+                return
+            if self._show_grouped_main_menu():
+                continue
+            return
+
+    def _menu_label(self, menu_key: str) -> str:
+        label = i18n.get(f"menu_{menu_key}")
+        if menu_key == "start_web_server" and label == f"menu_{menu_key}":
+            return "Start Web Server"
+        if menu_key == "start_mcp_server" and label == f"menu_{menu_key}":
+            return "Start MCP Server"
+        if menu_key == "task_queue" and label == f"menu_{menu_key}":
+            return i18n.get("menu_task_queue")
+        if menu_key == "automation" and label == f"menu_{menu_key}":
+            return i18n.get("menu_automation")
+        if menu_key == "start_all_in_one" and label == f"menu_{menu_key}":
+            return i18n.get("menu_start_all_in_one")
+        if menu_key == "start_manga_translation" and label == f"menu_{menu_key}":
+            return "漫画翻译 (MangaCore)"
+        if menu_key == "manga_runtime_manager" and label == f"menu_{menu_key}":
+            return "MangaCore Runtime 管理"
+        return label
+
+    def _main_menu_actions(self):
+        return {
+            "start_translation": lambda: self.run_task(TaskType.TRANSLATION),
+            "start_manga_translation": self.run_manga_translation,
+            "start_polishing": lambda: self.run_task(TaskType.POLISH),
+            "start_all_in_one": self.run_all_in_one,
+            "export_only": self.run_export_only,
+            "editor": self.editor_menu_handler.show,
+            "settings": self.settings_menu,
+            "api_settings": self.api_manager.api_settings_menu,
+            "glossary": self.glossary_menu.prompt_menu,
+            "plugin_settings": self.plugin_settings_menu,
+            "task_queue": self.task_queue_menu,
+            "automation": self.automation_menu.show,
+            "profiles": self.profiles_menu,
+            "qa": self.qa_menu,
+            "update": self.update_manager.start_update,
+            "update_web": lambda: self.update_manager.setup_web_server(manual=True),
+            "start_web_server": self.start_web_server,
+            "start_mcp_server": self.start_mcp_server,
+            "manga_runtime_manager": self.manga_runtime_menu_handler.show,
+        }
+
+    def _log_main_menu_action(self, label: str):
+        self.operation_logger.log(f"主菜单 -> {label}", "MENU")
+
+    def _show_flat_main_menu(self) -> bool:
+        self.display_banner()
+        table = Table(show_header=False, box=None)
+        menus = ["start_translation", "start_manga_translation", "start_polishing", "start_all_in_one", "export_only", "editor", "settings", "api_settings", "glossary", "plugin_settings", "task_queue", "automation", "profiles", "qa", "update", "update_web", "start_web_server", "start_mcp_server", "manga_runtime_manager"]
+        colors = ["green", "cyan", "green", "bold green", "magenta", "bold cyan", "blue", "blue", "yellow", "cyan", "bold blue", "bold yellow", "cyan", "yellow", "dim", "bold magenta", "magenta", "bold magenta", "cyan"]
+        actions = self._main_menu_actions()
+
+        for i, (menu_key, color) in enumerate(zip(menus, colors), 1):
+            table.add_row(f"[{color}]{i}.[/]", self._menu_label(menu_key))
+
+        table.add_row("[red]0.[/]", i18n.get("menu_exit"))
+        console.print(table)
+        choice = IntPrompt.ask(f"\n{i18n.get('prompt_select')}", choices=[str(i) for i in range(len(menus) + 1)], show_choices=False)
+        console.print("\n")
+        if choice == 0:
+            sys.exit()
+        menu_key = menus[choice - 1]
+        self._log_main_menu_action(self._menu_label(menu_key))
+        actions[menu_key]()
+        return True
+
+    def _show_grouped_main_menu(self) -> bool:
+        self.display_banner()
+        groups = [
+            ("main_menu_group_tasks", "green", [
+                ("start_translation", "green"),
+                ("start_manga_translation", "cyan"),
+                ("start_polishing", "green"),
+                ("start_all_in_one", "bold green"),
+            ]),
+            ("main_menu_group_automation", "bold yellow", [
+                ("automation", "bold yellow"),
+                ("task_queue", "bold blue"),
+            ]),
+            ("main_menu_group_edit_export", "magenta", [
+                ("editor", "bold cyan"),
+                ("export_only", "magenta"),
+            ]),
+            ("main_menu_group_config", "blue", [
+                ("settings", "blue"),
+                ("api_settings", "blue"),
+                ("profiles", "cyan"),
+                ("manga_runtime_manager", "cyan"),
+            ]),
+            ("main_menu_group_glossary", "yellow", [
+                ("glossary", "yellow"),
+            ]),
+            ("main_menu_group_services", "bold magenta", [
+                ("plugin_settings", "cyan"),
+                ("start_web_server", "magenta"),
+                ("start_mcp_server", "bold magenta"),
+            ]),
+            ("main_menu_group_maintenance", "dim", [
+                ("qa", "yellow"),
+                ("update", "dim"),
+                ("update_web", "bold magenta"),
+            ]),
+        ]
+        table = Table(show_header=False, box=None)
+        for i, (group_key, color, _) in enumerate(groups, 1):
+            table.add_row(f"[{color}]{i}.[/]", i18n.get(group_key))
+        table.add_row("[red]0.[/]", i18n.get("menu_exit"))
+        console.print(table)
+        choice = IntPrompt.ask(f"\n{i18n.get('prompt_select')}", choices=[str(i) for i in range(len(groups) + 1)], show_choices=False)
+        console.print("\n")
+        if choice == 0:
+            sys.exit()
+        group_key, _, items = groups[choice - 1]
+        return self._show_grouped_main_submenu(group_key, items)
+
+    def _show_grouped_main_submenu(self, group_key: str, items: list[tuple[str, str]]) -> bool:
+        actions = self._main_menu_actions()
+        while True:
             self.display_banner()
             table = Table(show_header=False, box=None)
-            menus = ["start_translation", "start_manga_translation", "start_polishing", "start_all_in_one", "export_only", "editor", "settings", "api_settings", "glossary", "plugin_settings", "task_queue", "profiles", "qa", "update", "update_web", "start_web_server", "start_mcp_server", "manga_runtime_manager"]
-            colors = ["green", "cyan", "green", "bold green", "magenta", "bold cyan", "blue", "blue", "yellow", "cyan", "bold blue", "cyan", "yellow", "dim", "bold magenta", "magenta", "bold magenta", "cyan"]
-            
-            for i, (m, c) in enumerate(zip(menus, colors)): 
-                label = i18n.get(f"menu_{m}")
-                if m == "start_web_server" and label == f"menu_{m}":
-                    label = "Start Web Server" # Fallback if not in json
-                if m == "start_mcp_server" and label == f"menu_{m}":
-                    label = "Start MCP Server"
-                if m == "task_queue" and label == f"menu_{m}":
-                    label = i18n.get("menu_task_queue")
-                if m == "start_all_in_one" and label == f"menu_{m}":
-                    label = i18n.get("menu_start_all_in_one")
-                if m == "start_manga_translation" and label == f"menu_{m}":
-                    label = "漫画翻译 (MangaCore)"
-                if m == "manga_runtime_manager" and label == f"menu_{m}":
-                    label = "MangaCore Runtime 管理"
-                table.add_row(f"[{c}]{i+1}.[/]", label)
-                
-            table.add_row("[red]0.[/]", i18n.get("menu_exit")); console.print(table)
-            choice = IntPrompt.ask(f"\n{i18n.get('prompt_select')}", choices=[str(i) for i in range(len(menus) + 1)], show_choices=False)
+            console.print(Panel(f"[bold]{i18n.get(group_key)}[/bold]"))
+            for i, (menu_key, color) in enumerate(items, 1):
+                table.add_row(f"[{color}]{i}.[/]", self._menu_label(menu_key))
+            table.add_row("[dim]0.[/]", i18n.get("menu_back"))
+            console.print(table)
+            choice = IntPrompt.ask(f"\n{i18n.get('prompt_select')}", choices=[str(i) for i in range(len(items) + 1)], show_choices=False)
             console.print("\n")
-
-            # 记录用户操作
-            menu_names = ["退出", "开始翻译", "漫画翻译", "开始润色", "翻译&润色", "仅导出", "编辑器", "项目设置", "API设置", "提示词", "插件设置", "任务队列", "配置管理", "帮助QA", "更新", "更新Web", "Web服务器", "MCP服务器", "漫画Runtime管理"]
-            if choice < len(menu_names):
-                self.operation_logger.log(f"主菜单 -> {menu_names[choice]}", "MENU")
-
-            actions = [
-                sys.exit,
-                lambda: self.run_task(TaskType.TRANSLATION),
-                self.run_manga_translation,
-                lambda: self.run_task(TaskType.POLISH),
-                self.run_all_in_one,
-                self.run_export_only,
-                self.editor_menu_handler.show,
-                self.settings_menu,
-                self.api_manager.api_settings_menu,
-                self.glossary_menu.prompt_menu,
-                self.plugin_settings_menu,
-                self.task_queue_menu,
-                self.profiles_menu,
-                self.qa_menu,
-                self.update_manager.start_update,
-                lambda: self.update_manager.setup_web_server(manual=True),
-                self.start_web_server,
-                self.start_mcp_server,
-                self.manga_runtime_menu_handler.show,
-            ]
-            actions[choice]()
+            if choice == 0:
+                return True
+            menu_key = items[choice - 1][0]
+            self._log_main_menu_action(f"{i18n.get(group_key)} -> {self._menu_label(menu_key)}")
+            actions[menu_key]()
+            return True
 
     def profiles_menu(self):
         self.profile_menu_handler.show()
@@ -1429,8 +1517,30 @@ class CLIMenu:
         self._show_diagnostic_hint = False  # 重置诊断提示
         self._enter_diagnostic_on_exit = False  # 是否在退出后进入诊断菜单
 
-        def on_complete(e, d): 
-            self.ui.log(f"[bold green]✓ {i18n.get('msg_task_completed')}[/bold green]")
+        def _task_completion_counts():
+            try:
+                line = int(last_task_data.get("line") or 0)
+                total_line = int(last_task_data.get("total_line") or 0)
+            except (TypeError, ValueError):
+                return 0, 0
+            return line, total_line
+
+        def _task_has_missing_items():
+            line, total_line = _task_completion_counts()
+            return total_line > 0 and line < total_line
+
+        def _task_missing_items_message():
+            line, total_line = _task_completion_counts()
+            return i18n.get("msg_task_missing_items").format(line, total_line)
+
+        def on_complete(e, d):
+            if _task_has_missing_items():
+                self.ui.log(f"[bold yellow]⚠ {i18n.get('msg_task_completed_partial')}[/bold yellow]")
+                self.ui.log(f"[yellow]{_task_missing_items_message()}[/yellow]")
+                if hasattr(self.ui, "finish") and automation_progress:
+                    self.ui.finish("partial", _task_missing_items_message())
+            else:
+                self.ui.log(f"[bold green]✓ {i18n.get('msg_task_completed')}[/bold green]")
             success.set(); finished.set()
         
         def on_stop(e, d):
@@ -1457,7 +1567,7 @@ class CLIMenu:
         def track_last_data(e, d):
             nonlocal last_task_data
             if d and isinstance(d, dict):
-                last_task_data = d
+                last_task_data.update(d)
         EventManager.get_singleton().subscribe(Base.EVENT.TASK_UPDATE, track_last_data)
 
         # Wrapper to run task logic (so we can use it with or without Live)
@@ -1829,16 +1939,21 @@ class CLIMenu:
                 
                 # Summary Report
                 lines = last_task_data.get("line", 0); tokens = last_task_data.get("token", 0); duration = last_task_data.get("time", 1)
+                total_lines = last_task_data.get("total_line", lines)
                 if not web_mode and not automation_progress:
                     report_table = Table(show_header=False, box=None, padding=(0, 2))
-                    report_table.add_row(f"[cyan]{i18n.get('label_report_total_lines')}:[/]", f"[bold]{lines}[/]")
+                    report_table.add_row(f"[cyan]{i18n.get('label_report_total_lines')}:[/]", f"[bold]{lines}/{total_lines}[/]")
+                    if _task_has_missing_items():
+                        report_table.add_row(f"[yellow]{i18n.get('label_report_missing_items')}:[/]", f"[yellow]{_task_missing_items_message()}[/]")
                     report_table.add_row(f"[cyan]{i18n.get('label_report_total_tokens')}:[/]", f"[bold]{tokens}[/]")
                     report_table.add_row(f"[cyan]{i18n.get('label_report_total_time')}:[/]", f"[bold]{duration:.1f}s[/]")
                     console.print("\n"); console.print(Panel(report_table, title=f"[bold green]✓ {i18n.get('msg_task_report_title')}[/bold green]", expand=False))
                     if self.config.get("enable_github_promotion", True):
                         console.print(f"[bold green]{i18n.get('msg_github_promotion')}[/bold green]")
                 else:
-                    print(f"[STATS] RPM: 0.00 | TPM: 0.00k | Progress: {lines}/{lines} | Tokens: {tokens}") # Final Stat
+                    print(f"[STATS] RPM: 0.00 | TPM: 0.00k | Progress: {lines}/{total_lines} | Tokens: {tokens}") # Final Stat
+                    if _task_has_missing_items():
+                        print(_task_missing_items_message())
                     if self.config.get("enable_github_promotion", True):
                         print(i18n.get("msg_github_promotion"))
 

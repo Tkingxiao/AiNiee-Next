@@ -15,7 +15,8 @@ class QueueTaskItem:
                  pre_lines=None, lines_limit=None, tokens_limit=None, 
                  think_depth=None, thinking_budget=None, workflow_steps=None,
                  source=None, rule_id=None, automation_run_id=None,
-                 automation_progress_file=None, automation_worker_pid=None):
+                 automation_progress_file=None, automation_worker_pid=None,
+                 trigger_file_path=None, trigger_file_name=None, trigger_detected_at=None):
         self.task_type = task_type
         self.input_path = input_path
         self.output_path = output_path
@@ -47,8 +48,11 @@ class QueueTaskItem:
         self.automation_run_id = automation_run_id
         self.automation_progress_file = automation_progress_file
         self.automation_worker_pid = automation_worker_pid
+        self.trigger_file_path = trigger_file_path
+        self.trigger_file_name = trigger_file_name
+        self.trigger_detected_at = trigger_detected_at
         
-        self.status = "waiting" # waiting, workflow, translating, translated, polishing, completed, error, stopped
+        self.status = "waiting" # waiting, workflow, translating, translated, polishing, completed, partial, error, stopped
         self.locked = False  # 是否被锁定（正在执行中不可修改）
 
         # 新增：准确的处理状态跟踪
@@ -599,6 +603,22 @@ class QueueManager(Base):
             return True
         return False
 
+    def mark_automation_interrupted(self, run_id: str, final_status: str = "stopped") -> bool:
+        if not run_id:
+            return False
+        updated = False
+        for task in self.tasks:
+            if getattr(task, "automation_run_id", None) == run_id:
+                task.status = final_status
+                task.locked = False
+                task.is_processing = False
+                task.process_start_time = None
+                task.last_activity_time = None
+                updated = True
+        if updated:
+            self.save_tasks()
+        return updated
+
     def find_task_by_file_path(self, file_path):
         """根据文件路径查找任务"""
         if not file_path:
@@ -749,10 +769,11 @@ class QueueManager(Base):
             task.status = "workflow"
             self.save_tasks()
 
-            if self._run_workflow_task(cli_menu, task):
-                self.mark_task_completed(index, "completed")
+            workflow_status = self._run_workflow_task(cli_menu, task)
+            if workflow_status in {"completed", "partial"}:
+                self.mark_task_completed(index, workflow_status)
             else:
-                self.mark_task_completed(index, "error")
+                self.mark_task_completed(index, "stopped" if workflow_status == "interrupted" else "error")
 
     def _run_workflow_task(self, cli_menu, task):
         try:
@@ -771,15 +792,21 @@ class QueueManager(Base):
             process = AutomationProcessRunner.get_process(task.automation_run_id)
             while process and process.poll() is None:
                 if Base.work_status == Base.STATUS.STOPING:
-                    process.terminate()
-                    return False
+                    AutomationProcessRunner.terminate(task.automation_run_id, "Automation workflow interrupted by user")
+                    return "interrupted"
                 self.update_task_activity(self.current_task_index)
                 time.sleep(0.5)
-            return bool(process and process.returncode == 0)
+            from ModuleFolders.Infrastructure.Automation.AutomationProgress import read_progress_file
+
+            state = read_progress_file(task.automation_progress_file)
+            status = state.get("status")
+            if status in {"completed", "partial", "interrupted"}:
+                return status
+            return "completed" if process and process.returncode == 0 else "error"
         except Exception as e:
             self.error(f"Workflow Task Error: {e}")
             task.status = "error"
-            return False
+            return "error"
 
     def _run_single_step(self, cli_menu, task, step_type, resume=False):
         if self._task_has_workflow(task):

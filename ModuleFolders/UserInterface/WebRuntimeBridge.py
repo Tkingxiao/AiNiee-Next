@@ -202,6 +202,7 @@ class WebRuntimeBridge:
                     "translated": self.i18n.get("task_status_translated"),
                     "polishing": self.i18n.get("task_status_polishing"),
                     "completed": self.i18n.get("task_status_completed"),
+                    "partial": self.i18n.get("task_status_partial"),
                     "running": self.i18n.get("task_status_running"),
                     "error": self.i18n.get("task_status_error"),
                     "stopped": self.i18n.get("task_status_stopped"),

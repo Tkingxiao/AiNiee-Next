@@ -3,10 +3,13 @@
 支持 cron 表达式和简单时间规则
 """
 import os
+import re
 import threading
 import time
+from collections import Counter
 from datetime import datetime, timedelta
 from typing import Callable, Dict, List, Optional, Any
+import rapidjson as json
 from ModuleFolders.Base.Base import Base
 from ModuleFolders.Infrastructure.Automation.WorkflowRunner import normalize_workflow_steps
 
@@ -73,6 +76,109 @@ class CronParser:
         )
 
 
+class ScheduleParser:
+    """Parse cron expressions and user-friendly time expressions."""
+
+    DATE_RE = re.compile(r"^(?:(?P<year>\d{4})[/-])?(?P<month>\d{1,2})[/-](?P<day>\d{1,2})$")
+    TIME_RE = re.compile(r"^(?P<hour>\d{1,2}):(?P<minute>\d{2})$")
+
+    @staticmethod
+    def parse(expression: str, *, allow_empty: bool = False) -> dict:
+        text = str(expression or "").strip()
+        if not text:
+            if allow_empty:
+                return {"type": "none"}
+            raise ValueError("Schedule expression is required")
+
+        parts = text.split()
+        if len(parts) == 5:
+            return {"type": "cron", "cron": CronParser.parse(text), "source": text}
+
+        dates = []
+        times = []
+        for token in ScheduleParser._split_simple_tokens(text):
+            date_match = ScheduleParser.DATE_RE.match(token)
+            if date_match:
+                year = date_match.group("year")
+                month = int(date_match.group("month"))
+                day = int(date_match.group("day"))
+                if month < 1 or month > 12 or day < 1 or day > 31:
+                    raise ValueError(f"Date out of range: {token}")
+                dates.append({
+                    "year": int(year) if year else None,
+                    "month": month,
+                    "day": day,
+                })
+                continue
+
+            time_match = ScheduleParser.TIME_RE.match(token)
+            if time_match:
+                hour = int(time_match.group("hour"))
+                minute = int(time_match.group("minute"))
+                if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+                    raise ValueError(f"Time out of range: {token}")
+                times.append((hour, minute))
+                continue
+
+            raise ValueError(f"Invalid schedule token: {token}")
+
+        if not dates and not times:
+            raise ValueError("Schedule expression is required")
+        if not times:
+            times.append((0, 0))
+
+        return {
+            "type": "simple",
+            "dates": dates,
+            "times": sorted(set(times)),
+            "source": text,
+        }
+
+    @staticmethod
+    def _split_simple_tokens(text: str) -> List[str]:
+        normalized = (
+            text.replace("，", ",")
+            .replace("、", ",")
+            .replace("@", " ")
+            .replace("T", " ")
+        )
+        return [part for part in re.split(r"[\s,]+", normalized) if part]
+
+    @staticmethod
+    def matches(schedule_rule: dict, dt: datetime) -> bool:
+        rule_type = schedule_rule.get("type")
+        if rule_type == "cron":
+            return CronParser.matches(schedule_rule["cron"], dt)
+        if rule_type == "simple":
+            if (dt.hour, dt.minute) not in schedule_rule.get("times", []):
+                return False
+            dates = schedule_rule.get("dates") or []
+            if not dates:
+                return True
+            for date_rule in dates:
+                if (
+                    date_rule.get("month") == dt.month
+                    and date_rule.get("day") == dt.day
+                    and (date_rule.get("year") in (None, dt.year))
+                ):
+                    return True
+        return False
+
+    @staticmethod
+    def next_run(schedule_rule: dict, from_time: datetime = None) -> Optional[datetime]:
+        if schedule_rule.get("type") == "none":
+            return None
+
+        now = from_time or datetime.now()
+        check_time = now.replace(second=0, microsecond=0) + timedelta(minutes=1)
+        max_minutes = 7 * 24 * 60 if schedule_rule.get("type") == "cron" else 370 * 24 * 60
+        for _ in range(max_minutes):
+            if ScheduleParser.matches(schedule_rule, check_time):
+                return check_time
+            check_time += timedelta(minutes=1)
+        return None
+
+
 class ScheduledTask:
     """定时任务"""
 
@@ -84,6 +190,12 @@ class ScheduledTask:
         self.id = task_id
         self.name = name
         self.schedule = schedule
+        self.trigger_type = kwargs.pop("trigger_type", "scheduled") or "scheduled"
+        self.event_type = kwargs.pop("event_type", "")
+        if self.trigger_type == "queue_added":
+            self.event_type = "queue_added"
+        elif self.trigger_type == "queue_pending":
+            self.event_type = "queue_pending"
         self.input_path = input_path
         self.output_path = output_path
         self.profile = profile
@@ -94,43 +206,44 @@ class ScheduledTask:
         self.run_queue = run_queue
         self.extra = kwargs
 
-        # 解析 cron 表达式
-        self.cron_dict = CronParser.parse(schedule)
+        # 解析时间表达式，兼容 cron 与用户友好的时间写法。
+        self.schedule_rule = ScheduleParser.parse(
+            schedule,
+            allow_empty=self.trigger_type in {"queue_added", "queue_pending"},
+        )
+        if self.trigger_type == "scheduled" and self.schedule_rule.get("type") == "none":
+            raise ValueError("Scheduled trigger requires a schedule expression")
+        self.cron_dict = self.schedule_rule
 
         # 运行状态
         self.last_run: Optional[datetime] = None
         self.next_run: Optional[datetime] = None
         self.run_count = 0
         self.last_status = ""
+        self.pending_event = False
+        self.pending_event_count = 0
 
         self._calculate_next_run()
 
     def _calculate_next_run(self):
         """计算下次运行时间"""
-        now = datetime.now()
-        # 从下一分钟开始检查
-        check_time = now.replace(second=0, microsecond=0) + timedelta(minutes=1)
-
-        # 最多检查未来 7 天
-        for _ in range(7 * 24 * 60):
-            # 转换 weekday: Python 0=周一, cron 0=周日
-            cron_weekday = (check_time.weekday() + 1) % 7
-
-            if (check_time.minute in self.cron_dict["minute"] and
-                check_time.hour in self.cron_dict["hour"] and
-                check_time.day in self.cron_dict["day"] and
-                check_time.month in self.cron_dict["month"] and
-                cron_weekday in self.cron_dict["weekday"]):
-                self.next_run = check_time
-                return
-
-            check_time += timedelta(minutes=1)
-
-        self.next_run = None
+        self.next_run = ScheduleParser.next_run(self.schedule_rule)
 
     def should_run(self, current_time: datetime) -> bool:
         """检查是否应该运行"""
-        if not self.enabled or not self.next_run:
+        if not self.enabled:
+            return False
+
+        if self.trigger_type in {"queue_added", "queue_pending"}:
+            if not self.pending_event:
+                return False
+            if self.schedule_rule.get("type") == "none":
+                return True
+            if not self.next_run:
+                self._calculate_next_run()
+            return bool(self.next_run and current_time >= self.next_run)
+
+        if not self.next_run:
             return False
 
         # 检查是否到达运行时间（允许 1 分钟误差）
@@ -139,11 +252,25 @@ class ScheduledTask:
 
         return False
 
+    def notify_queue_added(self, count: int = 1):
+        """标记队列新增事件，供自定义触发规则使用。"""
+        if self.pending_event and self.schedule_rule.get("type") == "none":
+            return
+        self.pending_event = True
+        self.pending_event_count += max(1, int(count or 1))
+        if self.schedule_rule.get("type") == "none":
+            self.next_run = datetime.now() - timedelta(seconds=1)
+        else:
+            self._calculate_next_run()
+
     def mark_run(self, status: str = "success"):
         """标记已运行"""
         self.last_run = datetime.now()
         self.last_status = status
         self.run_count += 1
+        if self.trigger_type in {"queue_added", "queue_pending"}:
+            self.pending_event = False
+            self.pending_event_count = 0
         self._calculate_next_run()
 
     def to_dict(self) -> dict:
@@ -152,6 +279,8 @@ class ScheduledTask:
             "id": self.id,
             "name": self.name,
             "schedule": self.schedule,
+            "trigger_type": self.trigger_type,
+            "event_type": self.event_type,
             "input_path": self.input_path,
             "output_path": self.output_path,
             "profile": self.profile,
@@ -170,6 +299,8 @@ class ScheduledTask:
             task_id=data.get("id", ""),
             name=data.get("name", ""),
             schedule=data.get("schedule", "0 0 * * *"),
+            trigger_type=data.get("trigger_type", "scheduled"),
+            event_type=data.get("event_type", ""),
             input_path=data.get("input_path", ""),
             output_path=data.get("output_path", ""),
             profile=data.get("profile", "default"),
@@ -192,10 +323,18 @@ class SchedulerManager(Base):
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
+        self._queue_signature = None
+        self.event_triggers_active = False
 
         # 日志
         self.logs: List[dict] = []
         self.max_logs = 100
+
+    def set_event_triggers_active(self, active: bool):
+        """Enable event-based triggers for the automation status preview."""
+        self.event_triggers_active = bool(active)
+        if not active:
+            self._queue_signature = None
 
     def set_callback(self, callback: Callable[[dict], Any]):
         """设置执行回调"""
@@ -226,13 +365,30 @@ class SchedulerManager(Base):
                 return False
 
             task = self.tasks[task_id]
+            new_schedule = kwargs.get("schedule", task.schedule)
+            new_trigger_type = kwargs.get("trigger_type", task.trigger_type)
+            if {"schedule", "trigger_type", "event_type"} & set(kwargs):
+                new_schedule_rule = ScheduleParser.parse(
+                    new_schedule,
+                    allow_empty=new_trigger_type in {"queue_added", "queue_pending"},
+                )
+                if new_trigger_type == "scheduled" and new_schedule_rule.get("type") == "none":
+                    raise ValueError("Scheduled trigger requires a schedule expression")
+            else:
+                new_schedule_rule = None
+
             for key, value in kwargs.items():
                 if hasattr(task, key):
                     setattr(task, key, value)
+            if task.trigger_type in {"queue_added", "queue_pending"}:
+                task.event_type = task.trigger_type
+            elif "trigger_type" in kwargs:
+                task.event_type = ""
 
             # 如果更新了 schedule，重新解析
-            if "schedule" in kwargs:
-                task.cron_dict = CronParser.parse(kwargs["schedule"])
+            if {"schedule", "trigger_type", "event_type"} & set(kwargs):
+                task.schedule_rule = new_schedule_rule
+                task.cron_dict = task.schedule_rule
                 task._calculate_next_run()
 
             return True
@@ -274,12 +430,12 @@ class SchedulerManager(Base):
                 now = datetime.now()
 
                 with self._lock:
+                    self._poll_queue_triggers(now)
                     for task in self.tasks.values():
                         if task.should_run(now):
                             self._execute_task(task)
 
-                # 每 30 秒检查一次
-                self._stop_event.wait(30)
+                self._stop_event.wait(2 if self.event_triggers_active and self._has_queue_triggers() else 30)
 
             except Exception as e:
                 self._log("error", f"Scheduler error: {e}")
@@ -300,6 +456,8 @@ class SchedulerManager(Base):
                 "task_name": task.name,
                 "workflow_steps": task.workflow_steps,
                 "run_queue": task.run_queue,
+                "trigger_type": task.trigger_type,
+                "event_type": task.event_type,
             }
             task.mark_run("running")
 
@@ -328,6 +486,93 @@ class SchedulerManager(Base):
         except Exception as e:
             task.last_status = "error"
             self._log("error", f"Task failed: {task.name} - {e}")
+
+    def _has_queue_triggers(self) -> bool:
+        return any(
+            task.enabled and task.trigger_type in {"queue_added", "queue_pending"}
+            for task in self.tasks.values()
+        )
+
+    def _poll_queue_triggers(self, now: datetime):
+        if not self.event_triggers_active:
+            self._queue_signature = None
+            return
+        if not self._has_queue_triggers():
+            self._queue_signature = None
+            return
+
+        signature = self._read_queue_signature()
+        pending_count = len(signature)
+        if self._queue_signature is None:
+            self._queue_signature = signature
+            self._arm_queue_pending_triggers(pending_count)
+            return
+
+        old_counter = Counter(self._queue_signature)
+        new_counter = Counter(signature)
+        added_count = sum((new_counter - old_counter).values())
+        self._queue_signature = signature
+        self._arm_queue_pending_triggers(pending_count)
+        self._arm_queue_added_triggers(added_count)
+
+    def _arm_queue_added_triggers(self, added_count: int):
+        if added_count <= 0:
+            return
+        for task in self.tasks.values():
+            if task.enabled and task.trigger_type == "queue_added":
+                task.notify_queue_added(added_count)
+                when = task.next_run.strftime("%Y-%m-%d %H:%M") if task.next_run else "now"
+                self._log("info", f"Queue-added trigger armed: {task.name} ({added_count} new task(s), next: {when})")
+
+    def _arm_queue_pending_triggers(self, pending_count: int):
+        if pending_count <= 0:
+            return
+        if self._queue_is_running():
+            return
+        for task in self.tasks.values():
+            if task.enabled and task.trigger_type == "queue_pending" and not task.pending_event:
+                task.notify_queue_added(pending_count)
+                when = task.next_run.strftime("%Y-%m-%d %H:%M") if task.next_run else "now"
+                self._log("info", f"Queue-pending trigger armed: {task.name} ({pending_count} pending task(s), next: {when})")
+
+    @staticmethod
+    def _queue_is_running() -> bool:
+        try:
+            from ModuleFolders.Service.TaskQueue.QueueManager import QueueManager
+
+            return bool(QueueManager().is_running)
+        except Exception:
+            return False
+
+    def _read_queue_signature(self) -> tuple:
+        queue_file = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "..", "..", "Resource", "queue_tasks.json")
+        )
+        if not os.path.exists(queue_file):
+            return tuple()
+        try:
+            with open(queue_file, "r", encoding="utf-8") as file:
+                data = json.load(file)
+        except Exception as exc:
+            self._log("warning", f"Failed to read queue file for trigger check: {exc}")
+            return self._queue_signature or tuple()
+
+        signature = []
+        for item in data if isinstance(data, list) else []:
+            if not isinstance(item, dict):
+                continue
+            status = item.get("status", "waiting")
+            if status not in {"waiting", "translated"}:
+                continue
+            signature.append((
+                str(item.get("task_type", "")),
+                str(item.get("input_path", "")),
+                str(item.get("output_path", "")),
+                str(item.get("profile", "")),
+                str(item.get("rules_profile", "")),
+                str(item.get("trigger_detected_at", "")),
+            ))
+        return tuple(signature)
 
     def _log(self, level: str, message: str):
         """记录日志"""

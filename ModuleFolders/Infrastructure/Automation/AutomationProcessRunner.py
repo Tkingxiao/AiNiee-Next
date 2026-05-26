@@ -22,6 +22,7 @@ from ModuleFolders.Infrastructure.Automation.WorkflowRunner import describe_work
 class AutomationProcessRunner:
     _lock = threading.RLock()
     _processes: Dict[str, subprocess.Popen] = {}
+    _progress_files: Dict[str, str] = {}
 
     @classmethod
     def start(cls, task_config: dict, project_root: str = None) -> dict:
@@ -46,7 +47,11 @@ class AutomationProcessRunner:
                 "phase": "queued",
                 "message": "Automation task queued",
                 "input_path": prepared_config.get("input_path", ""),
-                "file_name": os.path.basename(os.path.normpath(prepared_config.get("input_path", ""))),
+                "file_name": (
+                    prepared_config.get("trigger_file_name")
+                    or os.path.basename(os.path.normpath(prepared_config.get("trigger_file_path") or ""))
+                    or os.path.basename(os.path.normpath(prepared_config.get("input_path", "")))
+                ),
                 "rule_id": prepared_config.get("rule_id", ""),
                 "workflow": prepared_config.get("workflow_description", ""),
             },
@@ -77,6 +82,7 @@ class AutomationProcessRunner:
 
         with cls._lock:
             cls._processes[run_id] = process
+            cls._progress_files[run_id] = progress_file
 
         threading.Thread(
             target=cls._watch_process,
@@ -109,6 +115,7 @@ class AutomationProcessRunner:
 
         with cls._lock:
             cls._processes.pop(run_id, None)
+            cls._progress_files.pop(run_id, None)
 
     @classmethod
     def get_process(cls, run_id: str):
@@ -119,3 +126,31 @@ class AutomationProcessRunner:
     def snapshot_processes(cls) -> dict:
         with cls._lock:
             return dict(cls._processes)
+
+    @classmethod
+    def terminate(cls, run_id: str, message: str = "Automation task interrupted") -> bool:
+        with cls._lock:
+            process = cls._processes.get(run_id)
+            progress_file = cls._progress_files.get(run_id) or progress_file_for_run(run_id)
+        if not process:
+            return False
+
+        if process.poll() is None:
+            process.terminate()
+        reporter = AutomationProgressReporter(
+            progress_file,
+            run_id,
+            emit_initial=False,
+        )
+        reporter.finish("interrupted", message)
+        return True
+
+    @classmethod
+    def terminate_all(cls, message: str = "Automation status view exited; background tasks interrupted") -> int:
+        with cls._lock:
+            run_ids = list(cls._processes.keys())
+        count = 0
+        for run_id in run_ids:
+            if cls.terminate(run_id, message):
+                count += 1
+        return count

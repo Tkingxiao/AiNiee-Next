@@ -174,7 +174,7 @@ class WatchManager(Base):
         self.file_observations: Dict[str, Dict[str, Any]] = {}
 
         # 配置
-        self.scan_interval = 10  # 扫描间隔（秒）
+        self.scan_interval = 1  # 扫描间隔（秒）
         self.max_concurrent = 2  # 最大并发任务数
         self.current_tasks = 0
         self._active_targets: Set[str] = set()
@@ -381,26 +381,51 @@ class WatchManager(Base):
                     "workflow": describe_workflow_steps(getattr(task, "workflow_steps", []) or []),
                     "locked": getattr(task, "locked", False),
                     "is_processing": getattr(task, "is_processing", False),
+                    "trigger_file_path": getattr(task, "trigger_file_path", None),
+                    "trigger_file_name": getattr(task, "trigger_file_name", None),
+                    "trigger_detected_at": getattr(task, "trigger_detected_at", None),
                 }
                 lookup["by_path"][input_path] = info
                 if rule_id:
                     lookup["by_rule_path"][(rule_id, input_path)] = info
+                trigger_path = os.path.abspath(getattr(task, "trigger_file_path", "") or "")
+                if trigger_path:
+                    lookup["by_path"][trigger_path] = info
+                    if rule_id:
+                        lookup["by_rule_path"][(rule_id, trigger_path)] = info
         except Exception:
             pass
         return lookup
 
     def _find_queue_task_for_file(self, file_path: str, rule: WatchRule, queue_lookup: dict) -> Optional[dict]:
+        file_path = os.path.abspath(file_path)
+        direct_task = (
+            queue_lookup.get("by_rule_path", {}).get((rule.id, file_path))
+            or queue_lookup.get("by_path", {}).get(file_path)
+        )
+        if direct_task:
+            return direct_task
+
         target_path = rule.watch_path if rule.trigger_mode == "folder" else file_path
         target_path = os.path.abspath(target_path)
-        return (
+        target_task = (
             queue_lookup.get("by_rule_path", {}).get((rule.id, target_path))
             or queue_lookup.get("by_path", {}).get(target_path)
         )
+        trigger_file_path = target_task.get("trigger_file_path") if target_task else None
+        if trigger_file_path and os.path.abspath(trigger_file_path) != file_path:
+            return None
+        return target_task
 
     @staticmethod
     def _format_snapshot_time(value) -> str:
         if isinstance(value, datetime):
             return value.strftime("%m-%d %H:%M:%S")
+        if isinstance(value, str) and value:
+            try:
+                return datetime.fromisoformat(value).strftime("%m-%d %H:%M:%S")
+            except ValueError:
+                return value
         if isinstance(value, (int, float)) and value:
             return datetime.fromtimestamp(value).strftime("%m-%d %H:%M:%S")
         return "-"
@@ -451,7 +476,7 @@ class WatchManager(Base):
         else:
             status = "ready"
 
-        detected_at = state.first_seen if state else observation.get("detected_at")
+        detected_at = queue_task.get("trigger_detected_at") if queue_task and queue_task.get("trigger_detected_at") else state.first_seen if state else observation.get("detected_at")
         workflow = queue_task.get("workflow") if queue_task and queue_task.get("workflow") else observation.get("workflow", "")
         entered_workflow = bool(queue_task) or self._status_enters_workflow(status)
 
@@ -660,6 +685,9 @@ class WatchManager(Base):
             "rule_id": rule.id,
             "auto_start": rule.auto_start,
             "workflow_steps": rule.workflow_steps,
+            "trigger_file_path": file_path,
+            "trigger_file_name": os.path.basename(file_path),
+            "trigger_detected_at": datetime.now().isoformat(timespec="seconds"),
         }
 
         self._log(
@@ -807,7 +835,7 @@ class WatchManager(Base):
         """从配置加载规则"""
         watch_config = config.get("watch_mode", {})
 
-        self.scan_interval = watch_config.get("scan_interval", 10)
+        self.scan_interval = watch_config.get("scan_interval", 1)
         self.max_concurrent = watch_config.get("max_concurrent", 2)
 
         rules_data = watch_config.get("rules", [])

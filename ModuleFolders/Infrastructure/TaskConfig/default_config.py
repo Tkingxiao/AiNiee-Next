@@ -37,6 +37,7 @@ DEFAULT_CONFIG = {
     "translation_example_switch": False,
     "translation_example_data": [],
     "few_shot_and_example_switch": False,
+    "main_menu_layout": "flat",
     "enable_api_failover": False,
     "backup_apis": [],
     "api_failover_threshold": 3,

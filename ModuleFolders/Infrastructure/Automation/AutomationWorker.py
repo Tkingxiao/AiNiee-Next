@@ -9,6 +9,8 @@ from ModuleFolders.Base.Base import Base, TUIHandler
 from ModuleFolders.Base.EventManager import EventManager
 from ModuleFolders.Infrastructure.Automation.AutomationProgress import (
     AutomationProgressUI,
+    TERMINAL_STATUSES,
+    read_progress_file,
     reporter_from_env,
 )
 
@@ -24,7 +26,11 @@ def run_worker(task_config_path: str) -> int:
         {
             "rule_id": task_config.get("rule_id", ""),
             "input_path": task_config.get("input_path", ""),
-            "file_name": os.path.basename(os.path.normpath(task_config.get("input_path", ""))),
+            "file_name": (
+                task_config.get("trigger_file_name")
+                or os.path.basename(os.path.normpath(task_config.get("trigger_file_path") or ""))
+                or os.path.basename(os.path.normpath(task_config.get("input_path", "")))
+            ),
             "workflow": task_config.get("workflow_description", ""),
             "status": "starting",
             "phase": "worker",
@@ -51,7 +57,9 @@ def run_worker(task_config_path: str) -> int:
         WorkflowRunner(cli, progress_reporter=reporter).run(task_config)
 
         if ui:
-            ui.finish("completed", "Workflow completed")
+            state = read_progress_file(reporter.progress_file) if reporter else {}
+            if state.get("status") not in TERMINAL_STATUSES:
+                ui.finish("completed", "Workflow completed")
         return 0
     except Exception as exc:
         if reporter:

@@ -78,6 +78,9 @@ class AutomationMenu:
             workflow_steps=task_config.get("workflow_steps") or [],
             source=task_config.get("source"),
             rule_id=task_config.get("rule_id"),
+            trigger_file_path=task_config.get("trigger_file_path"),
+            trigger_file_name=task_config.get("trigger_file_name"),
+            trigger_detected_at=task_config.get("trigger_detected_at"),
         )
         queue_manager.add_task(task_item)
 
@@ -86,7 +89,11 @@ class AutomationMenu:
             for item in queue_manager.tasks[:-1]
             if getattr(item, "status", "waiting") in {"waiting", "workflow", "translating", "translated", "polishing"}
         )
-        file_name = os.path.basename(task_config.get("input_path", ""))
+        file_name = (
+            task_config.get("trigger_file_name")
+            or os.path.basename(task_config.get("trigger_file_path", ""))
+            or os.path.basename(task_config.get("input_path", ""))
+        )
         self.watch_manager._log(
             "info",
             self.i18n.get("automation_watch_file_queued").format(file_name, ahead_count, file_name),
@@ -138,7 +145,8 @@ class AutomationMenu:
         while True:
             self.host.display_banner()
             console.print(Panel(f"[bold]{self.i18n.get('menu_automation')}[/bold]"))
-            console.print(f"[dim]{self.i18n.get('automation_cooperation_hint')}[/dim]\n")
+            console.print(f"[dim]{self.i18n.get('automation_cooperation_hint')}[/dim]")
+            console.print(f"[yellow]{self.i18n.get('automation_preview_required_tip')}[/yellow]\n")
 
             # 获取状态
             sched_status = self.scheduler_manager.get_status()
@@ -175,7 +183,8 @@ class AutomationMenu:
         while True:
             self.host.display_banner()
             console.print(Panel(f"[bold]{self.i18n.get('scheduler_title')}[/bold]"))
-            console.print(f"[dim]{self.i18n.get('scheduler_usage_hint')}[/dim]\n")
+            console.print(f"[dim]{self.i18n.get('scheduler_usage_hint')}[/dim]")
+            console.print(f"[yellow]{self.i18n.get('automation_preview_required_tip')}[/yellow]\n")
 
             status = self.scheduler_manager.get_status()
 
@@ -194,14 +203,15 @@ class AutomationMenu:
                 task_table = Table(box=None)
                 task_table.add_column("ID", style="cyan")
                 task_table.add_column(self.i18n.get('scheduler_task_name'))
-                task_table.add_column(self.i18n.get('scheduler_cron_expr'))
+                task_table.add_column(self.i18n.get('scheduler_trigger_type'))
+                task_table.add_column(self.i18n.get('scheduler_schedule_expr'))
                 task_table.add_column(self.i18n.get('scheduler_next_run'))
                 task_table.add_column(self.i18n.get('label_status'))
 
                 for task in tasks:
                     next_run = task.next_run.strftime("%m-%d %H:%M") if task.next_run else "-"
                     status_str = "[green]●[/]" if task.enabled else "[dim]○[/]"
-                    task_table.add_row(task.id, task.name, task.schedule, next_run, status_str)
+                    task_table.add_row(task.id, task.name, self._format_scheduler_trigger_type(task.trigger_type), task.schedule or "-", next_run, status_str)
                 console.print(task_table)
             else:
                 console.print(f"\n[dim]{self.i18n.get('scheduler_no_tasks')}[/dim]")
@@ -237,18 +247,25 @@ class AutomationMenu:
             return
 
         name = Prompt.ask(self.i18n.get('scheduler_task_name'))
-        schedule = Prompt.ask(self.i18n.get('scheduler_cron_expr'), default="0 2 * * *")
+        trigger_type = self._prompt_scheduler_trigger_type()
+        schedule_default = "02:00" if trigger_type == "scheduled" else ""
+        self._print_scheduler_schedule_hint(trigger_type)
+        schedule = Prompt.ask(self.i18n.get('scheduler_schedule_expr'), default=schedule_default)
 
-        # 验证 cron 表达式
+        # 验证时间表达式
         try:
-            from ModuleFolders.Infrastructure.Automation.SchedulerManager import CronParser
-            CronParser.parse(schedule)
+            from ModuleFolders.Infrastructure.Automation.SchedulerManager import ScheduleParser
+            ScheduleParser.parse(schedule, allow_empty=trigger_type in {"queue_added", "queue_pending"})
         except ValueError:
-            console.print(f"[red]{self.i18n.get('msg_invalid_cron')}[/red]")
+            console.print(f"[red]{self.i18n.get('msg_invalid_schedule')}[/red]")
             return
 
-        input_path = Prompt.ask(self.i18n.get('scheduler_input_path'))
-        run_queue = input_path.strip().lower() in {"queue", "__queue__", "队列"}
+        if trigger_type in {"queue_added", "queue_pending"}:
+            console.print(f"[yellow]{self.i18n.get('scheduler_preview_required_warning')}[/yellow]")
+
+        input_default = "queue" if trigger_type in {"queue_added", "queue_pending"} else ""
+        input_path = Prompt.ask(self.i18n.get('scheduler_input_path'), default=input_default)
+        run_queue = trigger_type in {"queue_added", "queue_pending"} or input_path.strip().lower() in {"queue", "__queue__", "队列"}
         if not run_queue and not os.path.exists(input_path):
             console.print(f"[red]{self.i18n.get('msg_path_not_exist')}[/red]")
             return
@@ -279,6 +296,7 @@ class AutomationMenu:
             task_id=task_id,
             name=name,
             schedule=schedule,
+            trigger_type=trigger_type,
             input_path=input_path,
             profile=profile,
             task_type=task_type,
@@ -311,42 +329,92 @@ class AutomationMenu:
         # 编辑选项
         console.print(f"\n[bold]{task.name}[/bold]")
         console.print(f"1. {self.i18n.get('label_enabled')}: {'ON' if task.enabled else 'OFF'}")
-        console.print(f"2. {self.i18n.get('scheduler_cron_expr')}: {task.schedule}")
-        console.print(f"3. {self.i18n.get('scheduler_input_path')}: {task.input_path}")
-        console.print(f"4. {self.i18n.get('watch_mode')}: {describe_workflow_steps(task.workflow_steps) if task.workflow_steps else '-'}")
+        console.print(f"2. {self.i18n.get('scheduler_trigger_type')}: {self._format_scheduler_trigger_type(task.trigger_type)}")
+        console.print(f"3. {self.i18n.get('scheduler_schedule_expr')}: {task.schedule or '-'}")
+        console.print(f"4. {self.i18n.get('scheduler_input_path')}: {task.input_path}")
+        console.print(f"5. {self.i18n.get('watch_mode')}: {describe_workflow_steps(task.workflow_steps) if task.workflow_steps else '-'}")
 
-        edit_choice = IntPrompt.ask(self.i18n.get('prompt_select'), choices=["0", "1", "2", "3", "4"], default=0, show_choices=False)
+        edit_choice = IntPrompt.ask(self.i18n.get('prompt_select'), choices=["0", "1", "2", "3", "4", "5"], default=0, show_choices=False)
 
+        updated = False
         if edit_choice == 1:
             self.scheduler_manager.update_task(task.id, enabled=not task.enabled)
+            updated = True
         elif edit_choice == 2:
-            new_schedule = Prompt.ask(self.i18n.get('scheduler_cron_expr'), default=task.schedule)
+            trigger_type = self._prompt_scheduler_trigger_type(default=task.trigger_type)
+            schedule = task.schedule or ("02:00" if trigger_type == "scheduled" else "")
+            self._print_scheduler_schedule_hint(trigger_type)
             try:
-                from ModuleFolders.Infrastructure.Automation.SchedulerManager import CronParser
-                CronParser.parse(new_schedule)
-                self.scheduler_manager.update_task(task.id, schedule=new_schedule)
+                from ModuleFolders.Infrastructure.Automation.SchedulerManager import ScheduleParser
+                ScheduleParser.parse(schedule, allow_empty=trigger_type in {"queue_added", "queue_pending"})
             except ValueError:
-                console.print(f"[red]{self.i18n.get('msg_invalid_cron')}[/red]")
+                console.print(f"[red]{self.i18n.get('msg_invalid_schedule')}[/red]")
+                return
+            if trigger_type in {"queue_added", "queue_pending"}:
+                console.print(f"[yellow]{self.i18n.get('scheduler_preview_required_warning')}[/yellow]")
+            self.scheduler_manager.update_task(
+                task.id,
+                trigger_type=trigger_type,
+                event_type=trigger_type if trigger_type in {"queue_added", "queue_pending"} else "",
+                schedule=schedule,
+                run_queue=trigger_type in {"queue_added", "queue_pending"} or task.run_queue,
+                input_path="queue" if trigger_type in {"queue_added", "queue_pending"} and not task.input_path else task.input_path,
+            )
+            updated = True
         elif edit_choice == 3:
+            self._print_scheduler_schedule_hint(task.trigger_type)
+            new_schedule = Prompt.ask(self.i18n.get('scheduler_schedule_expr'), default=task.schedule)
+            try:
+                from ModuleFolders.Infrastructure.Automation.SchedulerManager import ScheduleParser
+                ScheduleParser.parse(new_schedule, allow_empty=task.trigger_type in {"queue_added", "queue_pending"})
+                self.scheduler_manager.update_task(task.id, schedule=new_schedule)
+                updated = True
+            except ValueError:
+                console.print(f"[red]{self.i18n.get('msg_invalid_schedule')}[/red]")
+        elif edit_choice == 4:
             new_path = Prompt.ask(self.i18n.get('scheduler_input_path'), default=task.input_path)
-            run_queue = new_path.strip().lower() in {"queue", "__queue__", "队列"}
+            run_queue = task.trigger_type in {"queue_added", "queue_pending"} or new_path.strip().lower() in {"queue", "__queue__", "队列"}
             if run_queue or os.path.exists(new_path):
                 workflow_steps = [{"type": "run_queue"}] if run_queue else task.workflow_steps
                 self.scheduler_manager.update_task(task.id, input_path=new_path, run_queue=run_queue, workflow_steps=workflow_steps)
+                updated = True
             else:
                 console.print(f"[red]{self.i18n.get('msg_path_not_exist')}[/red]")
-        elif edit_choice == 4:
+        elif edit_choice == 5:
             workflow_steps, _ = self._prompt_workflow_steps(
                 default_task_type=task.task_type,
                 current_steps=task.workflow_steps,
                 current_auto_start=True,
             )
             self.scheduler_manager.update_task(task.id, workflow_steps=workflow_steps, run_queue=False)
+            updated = True
 
-        if edit_choice > 0:
+        if updated:
             console.print(f"[green]{self.i18n.get('scheduler_task_updated')}[/green]")
             self.scheduler_manager.save_to_config(self.config)
             self.host.save_config()
+
+    def _prompt_scheduler_trigger_type(self, default="scheduled") -> str:
+        trigger_types = ["scheduled", "queue_added", "queue_pending"]
+        default_index = trigger_types.index(default) + 1 if default in trigger_types else 1
+        console.print(f"\n{self.i18n.get('scheduler_trigger_type')}:")
+        for i, trigger_type in enumerate(trigger_types, 1):
+            console.print(f"  [cyan]{i}.[/] {self._format_scheduler_trigger_type(trigger_type)}")
+        choice = IntPrompt.ask(
+            self.i18n.get('prompt_select'),
+            choices=[str(i) for i in range(1, len(trigger_types) + 1)],
+            default=default_index,
+            show_choices=False,
+        )
+        return trigger_types[choice - 1]
+
+    def _format_scheduler_trigger_type(self, trigger_type: str) -> str:
+        return self.i18n.get(f"scheduler_trigger_{trigger_type}")
+
+    def _print_scheduler_schedule_hint(self, trigger_type: str):
+        hint_key = "scheduler_schedule_hint_event" if trigger_type in {"queue_added", "queue_pending"} else "scheduler_schedule_hint_scheduled"
+        console.print(f"[yellow]{self.i18n.get(hint_key)}[/yellow]")
+        console.print(f"[dim]{self.i18n.get('scheduler_schedule_hint')}[/dim]")
 
     def remove_scheduled_task(self):
         """删除定时任务"""
@@ -378,6 +446,7 @@ class AutomationMenu:
             self.host.display_banner()
             console.print(Panel(f"[bold]{self.i18n.get('watch_title')}[/bold]"))
             console.print(f"[dim]{self.i18n.get('watch_usage_hint')}[/dim]\n")
+            console.print(f"[yellow]{self.i18n.get('automation_preview_required_tip')}[/yellow]\n")
 
             status = self.watch_manager.get_status()
 
@@ -506,6 +575,7 @@ class AutomationMenu:
             "translated": ("cyan", "watch_status_translated"),
             "polishing": ("yellow", "watch_status_polishing"),
             "completed": ("green", "watch_status_completed"),
+            "partial": ("yellow", "watch_status_partial"),
             "done": ("green", "watch_status_done"),
             "processed": ("green", "watch_status_processed"),
             "primed": ("dim", "watch_status_primed"),
@@ -690,6 +760,15 @@ class AutomationMenu:
     def automation_status_view(self):
         """自动化状态总览"""
         console.print(f"[dim]{self.i18n.get('automation_status_live_hint')}[/dim]")
+        scheduler_was_running = self.scheduler_manager.running
+        watch_was_running = self.watch_manager.running
+        self.scheduler_manager.set_event_triggers_active(True)
+        if not scheduler_was_running:
+            self.scheduler_manager.start()
+        if not watch_was_running:
+            self.watch_manager.start()
+        input_listener, listener_started = self._start_status_input_listener()
+        interrupted = None
         try:
             with Live(
                 self._build_automation_status_renderable(),
@@ -698,10 +777,63 @@ class AutomationMenu:
                 transient=False,
             ) as live:
                 while True:
+                    key = self._read_status_view_key(input_listener)
+                    if key in {"q", "0"}:
+                        interrupted = self._interrupt_automation_workers()
+                        break
                     live.update(self._build_automation_status_renderable())
                     time.sleep(0.25)
         except KeyboardInterrupt:
-            console.print(f"\n[dim]{self.i18n.get('automation_status_live_stopped')}[/dim]")
+            interrupted = self._interrupt_automation_workers()
+        finally:
+            self.scheduler_manager.set_event_triggers_active(False)
+            if not scheduler_was_running:
+                self.scheduler_manager.stop()
+            if not watch_was_running:
+                self.watch_manager.stop()
+            self._stop_status_input_listener(input_listener, listener_started)
+
+        if interrupted is not None:
+            console.print(
+                f"\n[dim]{self.i18n.get('automation_status_live_stopped')}[/dim] "
+                f"[yellow]{self.i18n.get('automation_workers_interrupted').format(interrupted)}[/yellow]"
+            )
+
+    def _start_status_input_listener(self):
+        input_listener = getattr(self.host, "input_listener", None)
+        if input_listener is None or getattr(input_listener, "disabled", False):
+            return None, False
+        already_running = bool(getattr(input_listener, "running", False))
+        input_listener.start()
+        input_listener.clear()
+        return input_listener, not already_running
+
+    @staticmethod
+    def _read_status_view_key(input_listener):
+        if input_listener is None:
+            return None
+        key = input_listener.get_key()
+        return str(key).lower() if key is not None else None
+
+    @staticmethod
+    def _stop_status_input_listener(input_listener, listener_started: bool):
+        if input_listener is None:
+            return
+        input_listener.clear()
+        if listener_started:
+            input_listener.stop()
+
+    def _interrupt_automation_workers(self) -> int:
+        from ModuleFolders.Infrastructure.Automation.AutomationProcessRunner import AutomationProcessRunner
+        from ModuleFolders.Service.TaskQueue.QueueManager import QueueManager
+
+        process_lookup = AutomationProcessRunner.snapshot_processes()
+        count = AutomationProcessRunner.terminate_all(self.i18n.get("automation_interrupted_by_user"))
+        if process_lookup:
+            queue_manager = QueueManager()
+            for run_id in process_lookup:
+                queue_manager.mark_automation_interrupted(run_id, "stopped")
+        return count
 
     def _build_automation_status_renderable(self):
         from ModuleFolders.Infrastructure.Automation.AutomationProcessRunner import AutomationProcessRunner
@@ -754,10 +886,12 @@ class AutomationMenu:
             detail_table.add_row(self.i18n.get("automation_progress_rule"), str(state.get("rule_id") or "-"))
             detail_table.add_row(self.i18n.get("automation_progress_step"), f"{state.get('step_index', 0)}/{state.get('step_total', 0)} {state.get('step_name') or state.get('phase') or '-'}")
             detail_table.add_row(self.i18n.get("automation_progress_message"), str(state.get("message") or "-")[:120])
-            progress_group.append(Panel(Group(progress, detail_table), title=run_id, border_style="green" if status == "completed" else "red" if status in {"error", "interrupted"} else "cyan"))
+            progress_group.append(Panel(Group(progress, detail_table), title=run_id, border_style="green" if status == "completed" else "yellow" if status == "partial" else "red" if status in {"error", "interrupted"} else "cyan"))
 
         if not progress_group:
             progress_group.append(Panel(f"[dim]{self.i18n.get('automation_no_progress')}[/dim]", border_style="dim"))
+
+        watch_file_panel = self._build_watch_file_status_panel()
 
         logs = self.watch_manager.get_logs(8)
         log_table = Table(box=None)
@@ -771,9 +905,51 @@ class AutomationMenu:
         return Group(
             Panel(summary_table, title=self.i18n.get('automation_status_title'), border_style="blue"),
             *progress_group,
+            watch_file_panel,
             Panel(log_table, title=self.i18n.get("automation_recent_events"), border_style="magenta"),
             f"[dim]{self.i18n.get('automation_status_live_hint')}[/dim]",
         )
+
+    def _build_watch_file_status_panel(self):
+        snapshots = self.watch_manager.get_file_status_snapshot(limit_per_rule=8, include_unmatched=True)
+        table = Table(box=None)
+        table.add_column(self.i18n.get("watch_file_status_rule"), style="cyan", no_wrap=True)
+        table.add_column(self.i18n.get("watch_file_status_file"))
+        table.add_column(self.i18n.get("watch_file_status_match"), no_wrap=True)
+        table.add_column(self.i18n.get("watch_file_status_detected_at"), style="dim", no_wrap=True)
+        table.add_column(self.i18n.get("watch_file_status_status"), no_wrap=True)
+        table.add_column(self.i18n.get("watch_file_status_entered_workflow"), no_wrap=True)
+
+        has_rows = False
+        for snapshot in snapshots:
+            for item in snapshot.get("files", []):
+                has_rows = True
+                table.add_row(
+                    item["rule_id"],
+                    item["file"],
+                    self._format_watch_match(item["matched"]),
+                    item["detected_at"],
+                    self._format_watch_file_status(item["status"]),
+                    f"[green]{self.i18n.get('watch_entered_yes')}[/]" if item["entered_workflow"] else f"[dim]{self.i18n.get('watch_entered_no')}[/]",
+                )
+            if snapshot.get("omitted"):
+                has_rows = True
+                table.add_row(
+                    snapshot["rule_id"],
+                    f"[dim]{self.i18n.get('watch_file_status_omitted').format(snapshot['omitted'])}[/]",
+                    "-",
+                    "-",
+                    f"[dim]{self.i18n.get('watch_status_folded')}[/]",
+                    "-",
+                )
+
+        if not has_rows:
+            return Panel(
+                f"[dim]{self.i18n.get('watch_file_status_empty')}[/dim]",
+                title=self.i18n.get("watch_file_status_title"),
+                border_style="cyan",
+            )
+        return Panel(table, title=self.i18n.get("watch_file_status_title"), border_style="cyan")
 
     def view_automation_logs(self, logs: list):
         """查看自动化日志"""
@@ -848,14 +1024,17 @@ class AutomationMenu:
             console.print(f"\n[bold]{self.i18n.get('workflow_title')}[/bold]")
             if steps:
                 for idx, step in enumerate(steps, 1):
-                    console.print(f"  [cyan]{idx}.[/] {step.get('type')}")
+                    console.print(f"  [cyan]{idx}.[/] {self._format_workflow_step(step)}")
             else:
                 console.print(f"  [dim]{self.i18n.get('workflow_no_steps')}[/dim]")
             console.print(f"  [cyan]A.[/] {self.i18n.get('workflow_add_step')}")
             console.print(f"  [cyan]R.[/] {self.i18n.get('workflow_remove_last')}")
+            console.print(f"  [cyan]D.[/] {self.i18n.get('workflow_remove_step')}")
+            console.print(f"  [cyan]U.[/] {self.i18n.get('workflow_move_step_up')}")
+            console.print(f"  [cyan]N.[/] {self.i18n.get('workflow_move_step_down')}")
             console.print(f"  [cyan]S.[/] {self.i18n.get('workflow_auto_start')}: {'ON' if auto_start else 'OFF'}")
             console.print(f"  [dim]0. {self.i18n.get('workflow_done')}[/dim]")
-            choice = Prompt.ask(self.i18n.get('prompt_select'), choices=["0", "A", "a", "R", "r", "S", "s"], default="0", show_choices=False)
+            choice = Prompt.ask(self.i18n.get('prompt_select'), choices=["0", "A", "a", "R", "r", "D", "d", "U", "u", "N", "n", "S", "s"], default="0", show_choices=False)
             if choice == "0":
                 break
             if choice.upper() == "S":
@@ -863,9 +1042,54 @@ class AutomationMenu:
             elif choice.upper() == "R":
                 if steps:
                     steps.pop()
+            elif choice.upper() == "D":
+                self._remove_workflow_step(steps)
+            elif choice.upper() == "U":
+                self._move_workflow_step(steps, -1)
+            elif choice.upper() == "N":
+                self._move_workflow_step(steps, 1)
             elif choice.upper() == "A":
                 steps.append(self._prompt_workflow_step())
         return steps, auto_start
+
+    def _format_workflow_step(self, step: dict) -> str:
+        step_type = str(step.get("type") or "?")
+        label = self.i18n.get(f"workflow_step_{step_type}") if step_type in {"extract_glossary", "translate", "polish", "all_in_one"} else step_type
+        details = []
+        if step_type == "extract_glossary":
+            details.append(f"{self.i18n.get('workflow_glossary_analysis_percent')}: {step.get('analysis_percent', 100)}")
+            details.append(f"{self.i18n.get('workflow_glossary_min_frequency')}: {step.get('min_frequency', 2)}")
+        if step_type == "polish":
+            details.append(f"resume={bool(step.get('resume', True))}")
+        if step.get("output_path") or step.get("output_root"):
+            details.append(str(step.get("output_path") or step.get("output_root")))
+        if not details:
+            return label
+        return f"{label} [dim]({', '.join(details)})[/dim]"
+
+    def _prompt_workflow_step_index(self, steps: list) -> int:
+        if not steps:
+            console.print(f"[dim]{self.i18n.get('workflow_no_steps')}[/dim]")
+            return -1
+        index = IntPrompt.ask(
+            self.i18n.get("workflow_step_index"),
+            choices=[str(i) for i in range(1, len(steps) + 1)] + ["0"],
+            default=0,
+            show_choices=False,
+        )
+        return index - 1 if index > 0 else -1
+
+    def _remove_workflow_step(self, steps: list):
+        index = self._prompt_workflow_step_index(steps)
+        if index >= 0:
+            steps.pop(index)
+
+    def _move_workflow_step(self, steps: list, direction: int):
+        index = self._prompt_workflow_step_index(steps)
+        target = index + direction
+        if index < 0 or target < 0 or target >= len(steps):
+            return
+        steps[index], steps[target] = steps[target], steps[index]
 
     def _prompt_workflow_step(self):
         table = Table(show_header=False, box=None)

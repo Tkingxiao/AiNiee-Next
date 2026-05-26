@@ -166,6 +166,17 @@ register_config(ConfigItem(
     category="project_general"
 ))
 
+register_config(ConfigItem(
+    key="main_menu_layout",
+    default="flat",
+    level=ConfigLevel.USER,
+    config_type=ConfigType.CHOICE,
+    i18n_key="setting_main_menu_layout",
+    i18n_desc_key="setting_main_menu_layout_desc",
+    choices=["grouped", "flat"],
+    category="project_general"
+))
+
 # --- 翻译核心配置 (USER) ---
 register_config(ConfigItem(
     key="lines_limit",
