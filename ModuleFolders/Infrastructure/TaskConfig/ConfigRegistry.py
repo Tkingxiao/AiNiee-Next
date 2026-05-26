@@ -297,6 +297,17 @@ register_config(ConfigItem(
     category="output"
 ))
 
+register_config(ConfigItem(
+    key="epub_language_update_mode",
+    default="auto",
+    level=ConfigLevel.USER,
+    config_type=ConfigType.CHOICE,
+    i18n_key="setting_epub_language_update_mode",
+    i18n_desc_key="setting_epub_language_update_mode_desc",
+    choices=["auto", "disabled", "zh_CN", "zh_CNTW", "ja", "en", "ko", "ru", "es"],
+    category="output"
+))
+
 # --- 功能开关 (USER) ---
 register_config(ConfigItem(
     key="auto_set_output_path",

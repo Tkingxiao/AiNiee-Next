@@ -6,8 +6,10 @@ import os
 import threading
 import time
 
-from rich.console import Console
+from rich.console import Console, Group
+from rich.live import Live
 from rich.panel import Panel
+from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
 from rich.prompt import Prompt, IntPrompt, Confirm
 from rich.table import Table
 
@@ -67,17 +69,27 @@ class AutomationMenu:
         from ModuleFolders.Service.TaskQueue.QueueManager import QueueManager, QueueTaskItem
 
         queue_manager = QueueManager()
-        queue_manager.add_task(
-            QueueTaskItem(
-                normalize_task_type(task_config.get("task_type", "translation")),
-                task_config.get("input_path", ""),
-                output_path=task_config.get("output_path") or None,
-                profile=task_config.get("profile") or None,
-                rules_profile=task_config.get("rules_profile") or None,
-                workflow_steps=task_config.get("workflow_steps") or [],
-                source=task_config.get("source"),
-                rule_id=task_config.get("rule_id"),
-            )
+        task_item = QueueTaskItem(
+            normalize_task_type(task_config.get("task_type", "translation")),
+            task_config.get("input_path", ""),
+            output_path=task_config.get("output_path") or None,
+            profile=task_config.get("profile") or None,
+            rules_profile=task_config.get("rules_profile") or None,
+            workflow_steps=task_config.get("workflow_steps") or [],
+            source=task_config.get("source"),
+            rule_id=task_config.get("rule_id"),
+        )
+        queue_manager.add_task(task_item)
+
+        ahead_count = sum(
+            1
+            for item in queue_manager.tasks[:-1]
+            if getattr(item, "status", "waiting") in {"waiting", "workflow", "translating", "translated", "polishing"}
+        )
+        file_name = os.path.basename(task_config.get("input_path", ""))
+        self.watch_manager._log(
+            "info",
+            self.i18n.get("automation_watch_file_queued").format(file_name, ahead_count, file_name),
         )
 
         if task_config.get("auto_start", True):
@@ -260,7 +272,7 @@ class AutomationMenu:
         workflow_steps = []
         if run_queue:
             workflow_steps = [{"type": "run_queue"}]
-        elif Confirm.ask("为这个定时任务配置自定义工作流?", default=False):
+        elif Confirm.ask(self.i18n.get("scheduler_configure_workflow"), default=False):
             workflow_steps, _ = self._prompt_workflow_steps(default_task_type=task_type)
 
         task = ScheduledTask(
@@ -397,6 +409,7 @@ class AutomationMenu:
                     status_str = "[green]●[/]" if rule.enabled else "[dim]○[/]"
                     rule_table.add_row(rule.id, os.path.basename(rule.watch_path), patterns, mode, status_str)
                 console.print(rule_table)
+                self._render_watch_file_status()
             else:
                 console.print(f"\n[dim]{self.i18n.get('watch_no_rules')}[/dim]")
 
@@ -421,6 +434,102 @@ class AutomationMenu:
             elif choice == 6:
                 self.watch_manager.clear_processed_history()
                 console.print(f"[green]{self.i18n.get('watch_history_cleared')}[/green]")
+
+    def _render_watch_file_status(self):
+        snapshots = self.watch_manager.get_file_status_snapshot(limit_per_rule=15, include_unmatched=True)
+        if not snapshots:
+            return
+
+        has_files = any(snapshot["files"] for snapshot in snapshots)
+        console.print(f"\n[bold]{self.i18n.get('watch_file_status_title')}:[/bold]")
+        if not has_files:
+            console.print(f"[dim]{self.i18n.get('watch_file_status_empty')}[/dim]")
+            return
+
+        status_table = Table(box=None)
+        status_table.add_column(self.i18n.get("watch_file_status_rule"), style="cyan", no_wrap=True)
+        status_table.add_column(self.i18n.get("watch_file_status_file"))
+        status_table.add_column(self.i18n.get("watch_file_status_match"), no_wrap=True)
+        status_table.add_column(self.i18n.get("watch_file_status_detected_at"), style="dim", no_wrap=True)
+        status_table.add_column(self.i18n.get("watch_file_status_mtime"), style="dim", no_wrap=True)
+        status_table.add_column(self.i18n.get("watch_file_status_size"), justify="right", no_wrap=True)
+        status_table.add_column(self.i18n.get("watch_file_status_status"), no_wrap=True)
+        status_table.add_column(self.i18n.get("watch_file_status_entered_workflow"), no_wrap=True)
+        status_table.add_column(self.i18n.get("watch_file_status_workflow"))
+
+        for snapshot in snapshots:
+            for item in snapshot["files"]:
+                status_table.add_row(
+                    item["rule_id"],
+                    item["file"],
+                    self._format_watch_match(item["matched"]),
+                    item["detected_at"],
+                    item["mtime"],
+                    self._format_file_size(item.get("size", 0)),
+                    self._format_watch_file_status(item["status"]),
+                    f"[green]{self.i18n.get('watch_entered_yes')}[/]" if item["entered_workflow"] else f"[dim]{self.i18n.get('watch_entered_no')}[/]",
+                    item.get("workflow") or "-",
+                )
+            if snapshot.get("omitted"):
+                status_table.add_row(
+                    snapshot["rule_id"],
+                    f"[dim]{self.i18n.get('watch_file_status_omitted').format(snapshot['omitted'])}[/]",
+                    "-",
+                    "-",
+                    "-",
+                    "-",
+                    f"[dim]{self.i18n.get('watch_status_folded')}[/]",
+                    "-",
+                    "-",
+                )
+
+        console.print(status_table)
+
+    def _format_watch_match(self, matched: bool) -> str:
+        return f"[green]{self.i18n.get('watch_match_yes')}[/]" if matched else f"[dim]{self.i18n.get('watch_match_no')}[/]"
+
+    def _format_watch_file_status(self, status: str) -> str:
+        labels = {
+            "ignored": ("dim", "watch_status_ignored"),
+            "watch_stopped": ("dim", "watch_status_watch_stopped"),
+            "rule_disabled": ("dim", "watch_status_rule_disabled"),
+            "ready": ("cyan", "watch_status_ready"),
+            "pending": ("yellow", "watch_status_pending"),
+            "waiting_stable": ("yellow", "watch_status_waiting_stable"),
+            "waiting_capacity": ("yellow", "watch_status_waiting_capacity"),
+            "waiting_target": ("yellow", "watch_status_waiting_target"),
+            "processing": ("yellow", "watch_status_processing"),
+            "waiting": ("yellow", "watch_status_waiting"),
+            "queued": ("green", "watch_status_queued"),
+            "workflow": ("yellow", "watch_status_workflow"),
+            "translating": ("yellow", "watch_status_translating"),
+            "translated": ("cyan", "watch_status_translated"),
+            "polishing": ("yellow", "watch_status_polishing"),
+            "completed": ("green", "watch_status_completed"),
+            "done": ("green", "watch_status_done"),
+            "processed": ("green", "watch_status_processed"),
+            "primed": ("dim", "watch_status_primed"),
+            "error": ("red", "watch_status_error"),
+            "stopped": ("red", "watch_status_stopped"),
+        }
+        style, label_key = labels.get(status, ("white", status or "-"))
+        label = self.i18n.get(label_key) if label_key.startswith("watch_status_") else label_key
+        return f"[{style}]{label}[/]"
+
+    @staticmethod
+    def _format_file_size(size: int) -> str:
+        try:
+            size = int(size or 0)
+        except (TypeError, ValueError):
+            size = 0
+        units = ["B", "KB", "MB", "GB"]
+        value = float(size)
+        for unit in units:
+            if value < 1024 or unit == units[-1]:
+                if unit == "B":
+                    return f"{int(value)} {unit}"
+                return f"{value:.1f} {unit}"
+            value /= 1024
 
     def add_watch_rule(self):
         """添加监控规则"""
@@ -481,7 +590,7 @@ class AutomationMenu:
         # 其他选项
         debounce = IntPrompt.ask(f"{self.i18n.get('watch_debounce')} ({self.i18n.get('watch_debounce_hint')})", default=5)
         recursive = Confirm.ask(self.i18n.get('watch_recursive'), default=False)
-        trigger_mode = "folder" if Confirm.ask("检测到更新后处理整个监控文件夹?", default=False) else "file"
+        trigger_mode = "folder" if Confirm.ask(self.i18n.get("watch_trigger_whole_folder"), default=False) else "file"
 
         rule = WatchRule(
             rule_id=rule_id,
@@ -580,44 +689,103 @@ class AutomationMenu:
 
     def automation_status_view(self):
         """自动化状态总览"""
-        self.host.display_banner()
-        console.print(Panel(f"[bold]{self.i18n.get('automation_status_title')}[/bold]"))
+        console.print(f"[dim]{self.i18n.get('automation_status_live_hint')}[/dim]")
+        try:
+            with Live(
+                self._build_automation_status_renderable(),
+                console=console,
+                refresh_per_second=4,
+                transient=False,
+            ) as live:
+                while True:
+                    live.update(self._build_automation_status_renderable())
+                    time.sleep(0.25)
+        except KeyboardInterrupt:
+            console.print(f"\n[dim]{self.i18n.get('automation_status_live_stopped')}[/dim]")
+
+    def _build_automation_status_renderable(self):
+        from ModuleFolders.Infrastructure.Automation.AutomationProcessRunner import AutomationProcessRunner
+        from ModuleFolders.Infrastructure.Automation.AutomationProgress import AutomationProgressStore, TERMINAL_STATUSES
 
         sched_status = self.scheduler_manager.get_status()
         watch_status = self.watch_manager.get_status()
+        process_lookup = AutomationProcessRunner.snapshot_processes()
+        progress_states = AutomationProgressStore(getattr(self.host, "PROJECT_ROOT", None)).list_states(limit=8)
 
-        # 调度器状态
-        console.print(f"\n[bold]{self.i18n.get('automation_scheduler_status')}[/bold]")
-        sched_table = Table(show_header=False, box=None)
-        sched_table.add_row(self.i18n.get('label_status'), f"[{'green' if sched_status['running'] else 'red'}]{self.i18n.get('automation_running') if sched_status['running'] else self.i18n.get('automation_stopped')}[/]")
-        sched_table.add_row(self.i18n.get('automation_task_count'), f"{sched_status['enabled_count']}/{sched_status['task_count']}")
+        summary_table = Table(show_header=False, box=None)
+        summary_table.add_row(
+            self.i18n.get('automation_trigger_status'),
+            f"[{'green' if sched_status['running'] else 'red'}]{self.i18n.get('automation_running') if sched_status['running'] else self.i18n.get('automation_stopped')}[/] "
+            f"{sched_status['enabled_count']}/{sched_status['task_count']}",
+        )
+        summary_table.add_row(
+            self.i18n.get('automation_watch_status'),
+            f"[{'green' if watch_status['running'] else 'red'}]{self.i18n.get('automation_running') if watch_status['running'] else self.i18n.get('automation_stopped')}[/] "
+            f"{watch_status['enabled_count']}/{watch_status['rule_count']}",
+        )
+        summary_table.add_row(self.i18n.get('watch_pending_files'), str(watch_status['pending_files']))
+        summary_table.add_row(self.i18n.get('automation_total_processed'), str(watch_status['total_processed']))
         if sched_status.get('next_task'):
             next_task = sched_status['next_task']
-            sched_table.add_row(self.i18n.get('automation_next_task'), f"{next_task['name']} @ {next_task['next_run']}")
-        console.print(sched_table)
+            summary_table.add_row(self.i18n.get('automation_next_task'), f"{next_task['name']} @ {next_task['next_run']}")
 
-        # 监控状态
-        console.print(f"\n[bold]{self.i18n.get('automation_watch_status')}[/bold]")
-        watch_table = Table(show_header=False, box=None)
-        watch_table.add_row(self.i18n.get('label_status'), f"[{'green' if watch_status['running'] else 'red'}]{self.i18n.get('automation_running') if watch_status['running'] else self.i18n.get('automation_stopped')}[/]")
-        watch_table.add_row(self.i18n.get('automation_task_count'), f"{watch_status['enabled_count']}/{watch_status['rule_count']}")
-        watch_table.add_row(self.i18n.get('watch_pending_files'), str(watch_status['pending_files']))
-        watch_table.add_row(self.i18n.get('automation_total_processed'), str(watch_status['total_processed']))
-        console.print(watch_table)
+        progress_group = []
+        for state in progress_states:
+            run_id = state.get("run_id") or state.get("task_id") or "-"
+            status = state.get("status", "-")
+            process = process_lookup.get(run_id)
+            if process and process.poll() is not None and status not in TERMINAL_STATUSES:
+                status = "interrupted"
+            percent = int(state.get("percent") or 0)
+            progress = Progress(
+                TextColumn("[bold]{task.description}"),
+                BarColumn(),
+                TextColumn("{task.percentage:>3.0f}%"),
+                TimeElapsedColumn(),
+                expand=True,
+            )
+            task_id = progress.add_task(
+                f"{state.get('file_name') or os.path.basename(str(state.get('input_path') or '')) or run_id} [{status}]",
+                total=100,
+                completed=max(0, min(100, percent)),
+            )
+            progress.update(task_id, completed=max(0, min(100, percent)))
+            detail_table = Table(show_header=False, box=None)
+            detail_table.add_row(self.i18n.get("automation_progress_rule"), str(state.get("rule_id") or "-"))
+            detail_table.add_row(self.i18n.get("automation_progress_step"), f"{state.get('step_index', 0)}/{state.get('step_total', 0)} {state.get('step_name') or state.get('phase') or '-'}")
+            detail_table.add_row(self.i18n.get("automation_progress_message"), str(state.get("message") or "-")[:120])
+            progress_group.append(Panel(Group(progress, detail_table), title=run_id, border_style="green" if status == "completed" else "red" if status in {"error", "interrupted"} else "cyan"))
 
-        Prompt.ask(f"\n{self.i18n.get('msg_press_enter')}")
+        if not progress_group:
+            progress_group.append(Panel(f"[dim]{self.i18n.get('automation_no_progress')}[/dim]", border_style="dim"))
+
+        logs = self.watch_manager.get_logs(8)
+        log_table = Table(box=None)
+        log_table.add_column(self.i18n.get("automation_log_time"), style="dim")
+        log_table.add_column(self.i18n.get("automation_log_level"))
+        log_table.add_column(self.i18n.get("automation_log_message"))
+        for log in logs:
+            level_style = {"info": "green", "warning": "yellow", "error": "red"}.get(log["level"], "white")
+            log_table.add_row(log["time"], f"[{level_style}]{log['level'].upper()}[/]", log["message"])
+
+        return Group(
+            Panel(summary_table, title=self.i18n.get('automation_status_title'), border_style="blue"),
+            *progress_group,
+            Panel(log_table, title=self.i18n.get("automation_recent_events"), border_style="magenta"),
+            f"[dim]{self.i18n.get('automation_status_live_hint')}[/dim]",
+        )
 
     def view_automation_logs(self, logs: list):
         """查看自动化日志"""
         self.host.display_banner()
 
         if not logs:
-            console.print("[dim]No logs available.[/dim]")
+            console.print(f"[dim]{self.i18n.get('automation_no_logs')}[/dim]")
         else:
             log_table = Table(box=None)
-            log_table.add_column("Time", style="dim")
-            log_table.add_column("Level")
-            log_table.add_column("Message")
+            log_table.add_column(self.i18n.get("automation_log_time"), style="dim")
+            log_table.add_column(self.i18n.get("automation_log_level"))
+            log_table.add_column(self.i18n.get("automation_log_message"))
 
             for log in logs[-20:]:
                 level_style = {"info": "green", "warning": "yellow", "error": "red"}.get(log['level'], "white")
@@ -631,11 +799,11 @@ class AutomationMenu:
         """Prompt a queue-managed workflow preset."""
         console.print(f"\n{self.i18n.get('watch_mode')}:")
         table = Table(show_header=False, box=None)
-        table.add_row("[cyan]1.[/]", "加入队列后自动执行: AI术语表 -> 翻译")
-        table.add_row("[cyan]2.[/]", "加入队列后自动执行: AI术语表 -> 翻译 -> 润色")
-        table.add_row("[cyan]3.[/]", "加入队列后自动执行: 翻译")
-        table.add_row("[cyan]4.[/]", "仅加入队列，不自动启动")
-        table.add_row("[cyan]5.[/]", "自定义步骤")
+        table.add_row("[cyan]1.[/]", self.i18n.get("workflow_preset_glossary_translate"))
+        table.add_row("[cyan]2.[/]", self.i18n.get("workflow_preset_glossary_all_in_one"))
+        table.add_row("[cyan]3.[/]", self.i18n.get("workflow_preset_translate"))
+        table.add_row("[cyan]4.[/]", self.i18n.get("workflow_preset_queue_only"))
+        table.add_row("[cyan]5.[/]", self.i18n.get("workflow_preset_custom"))
         console.print(table)
 
         choice = IntPrompt.ask(self.i18n.get('prompt_select'), choices=["1", "2", "3", "4", "5"], default=1, show_choices=False)
@@ -665,8 +833,8 @@ class AutomationMenu:
         return {
             "type": "extract_glossary",
             "analysis_mode": "full",
-            "analysis_percent": IntPrompt.ask("术语表分析比例 (1-100)", default=100),
-            "min_frequency": IntPrompt.ask("术语表最低词频", default=2),
+            "analysis_percent": IntPrompt.ask(self.i18n.get("workflow_glossary_analysis_percent"), default=100),
+            "min_frequency": IntPrompt.ask(self.i18n.get("workflow_glossary_min_frequency"), default=2),
             "translate_during_analysis": True,
             "new": True,
             "replace": True,
@@ -677,16 +845,16 @@ class AutomationMenu:
         steps = list(current_steps or [])
         auto_start = current_auto_start
         while True:
-            console.print("\n[bold]Workflow[/bold]")
+            console.print(f"\n[bold]{self.i18n.get('workflow_title')}[/bold]")
             if steps:
                 for idx, step in enumerate(steps, 1):
                     console.print(f"  [cyan]{idx}.[/] {step.get('type')}")
             else:
-                console.print("  [dim]No steps[/dim]")
-            console.print(f"  [cyan]A.[/] Add step")
-            console.print(f"  [cyan]R.[/] Remove last step")
-            console.print(f"  [cyan]S.[/] Auto-start queue: {'ON' if auto_start else 'OFF'}")
-            console.print(f"  [dim]0. Done[/dim]")
+                console.print(f"  [dim]{self.i18n.get('workflow_no_steps')}[/dim]")
+            console.print(f"  [cyan]A.[/] {self.i18n.get('workflow_add_step')}")
+            console.print(f"  [cyan]R.[/] {self.i18n.get('workflow_remove_last')}")
+            console.print(f"  [cyan]S.[/] {self.i18n.get('workflow_auto_start')}: {'ON' if auto_start else 'OFF'}")
+            console.print(f"  [dim]0. {self.i18n.get('workflow_done')}[/dim]")
             choice = Prompt.ask(self.i18n.get('prompt_select'), choices=["0", "A", "a", "R", "r", "S", "s"], default="0", show_choices=False)
             if choice == "0":
                 break
@@ -701,10 +869,10 @@ class AutomationMenu:
 
     def _prompt_workflow_step(self):
         table = Table(show_header=False, box=None)
-        table.add_row("[cyan]1.[/]", "AI术语表提取")
-        table.add_row("[cyan]2.[/]", "翻译")
-        table.add_row("[cyan]3.[/]", "润色")
-        table.add_row("[cyan]4.[/]", "翻译+润色")
+        table.add_row("[cyan]1.[/]", self.i18n.get("workflow_step_extract_glossary"))
+        table.add_row("[cyan]2.[/]", self.i18n.get("workflow_step_translate"))
+        table.add_row("[cyan]3.[/]", self.i18n.get("workflow_step_polish"))
+        table.add_row("[cyan]4.[/]", self.i18n.get("workflow_step_all_in_one"))
         console.print(table)
         choice = IntPrompt.ask(self.i18n.get('prompt_select'), choices=["1", "2", "3", "4"], default=1, show_choices=False)
         if choice == 1:

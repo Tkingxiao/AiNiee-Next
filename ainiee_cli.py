@@ -1031,7 +1031,7 @@ class CLIMenu:
                 return True
         return bool(self.config.get("world_building_history") or self.config.get("writing_style_history"))
 
-    def run_task(self, task_mode, target_path=None, continue_status=False, non_interactive=False, web_mode=False, from_queue=False, skip_prompt_validation=False, save_runtime_config=True, skip_preflight=False):
+    def run_task(self, task_mode, target_path=None, continue_status=False, non_interactive=False, web_mode=False, from_queue=False, skip_prompt_validation=False, save_runtime_config=True, skip_preflight=False, automation_progress=False):
         # 如果是非交互模式，直接跳过菜单
         if target_path is None:
             last_path = self.config.get("label_input_path")
@@ -1286,7 +1286,19 @@ class CLIMenu:
         self.ui_console = Console(file=original_stdout)
 
         # Start Logic
-        if web_mode:
+        if automation_progress:
+            from ModuleFolders.Infrastructure.Automation.AutomationProgress import AutomationProgressUI, reporter_from_env
+
+            reporter = reporter_from_env(
+                {
+                    "input_path": target_path,
+                    "file_name": os.path.basename(os.path.normpath(target_path)),
+                    "status": "starting",
+                    "phase": "task",
+                }
+            )
+            self.ui = AutomationProgressUI(reporter) if reporter else WebLogger(stream=original_stdout, show_detailed=False)
+        elif web_mode:
             self.ui = WebLogger(stream=original_stdout, show_detailed=self.config.get("show_detailed_logs", False))
         else:
             from ModuleFolders.UserInterface.TaskUI import TaskUI
@@ -1302,7 +1314,7 @@ class CLIMenu:
         # 确保 TaskExecutor 的配置与 CLIMenu 的配置同步
         self.task_executor.config.load_config_from_dict(self.config)
         
-        if self.input_listener.disabled and not web_mode:
+        if self.input_listener.disabled and not web_mode and not automation_progress:
             self.ui.log("[bold yellow]Warning: Keyboard listener failed to initialize (no TTY found). Hotkeys will be disabled.[/bold yellow]")
 
         is_batch_folder_mode = os.path.isdir(target_path)
@@ -1331,7 +1343,7 @@ class CLIMenu:
                 log_path = os.path.join(log_dir, log_name)
                 
                 # 如果是断点续传且日志已存在，先读取历史日志到 TUI
-                if continue_status and os.path.exists(log_path) and not web_mode:
+                if continue_status and os.path.exists(log_path) and not web_mode and not automation_progress:
                     try:
                         from rich.text import Text
 
@@ -1400,7 +1412,7 @@ class CLIMenu:
         sys.stdout = sys.stderr = LogStream(self.ui, log_file, self)
 
         # 启动键盘监听
-        if not web_mode:
+        if not web_mode and not automation_progress:
             self.input_listener.start()
             self.input_listener.clear()
 
@@ -1597,7 +1609,7 @@ class CLIMenu:
                         time.sleep(2)
                         break
 
-                    if not web_mode:
+                    if not web_mode and not automation_progress:
                         key = self.input_listener.get_key()
                         if key:
                             if key == 'q':
@@ -1731,7 +1743,9 @@ class CLIMenu:
 
         tui_error_pause_shown = False
         try:
-            if web_mode:
+            if automation_progress:
+                is_middleware_converted = run_task_logic()
+            elif web_mode:
                 is_middleware_converted = run_task_logic()
             else:
                 # 提前启动 Live，确保加载过程可见
@@ -1768,7 +1782,7 @@ class CLIMenu:
             self._is_critical_failure = True
 
         finally:
-            if not web_mode:
+            if not web_mode and not automation_progress:
                 self.input_listener.stop()
             if log_file: log_file.close()
             
@@ -1797,7 +1811,7 @@ class CLIMenu:
                 else:
                     # 只有发生了崩溃异常，或触发了 critical_error 熔断，且任务最终未完成时才弹出
                     crash_msg = self._last_crash_msg or "Task was terminated due to exceeding critical error threshold."
-                    if not non_interactive:
+                    if not non_interactive and not automation_progress:
                         self.handle_crash(crash_msg)
                     else:
                         console.print(f"[bold red]Task failed fatally. Check logs.[/bold red]")
@@ -1815,7 +1829,7 @@ class CLIMenu:
                 
                 # Summary Report
                 lines = last_task_data.get("line", 0); tokens = last_task_data.get("token", 0); duration = last_task_data.get("time", 1)
-                if not web_mode:
+                if not web_mode and not automation_progress:
                     report_table = Table(show_header=False, box=None, padding=(0, 2))
                     report_table.add_row(f"[cyan]{i18n.get('label_report_total_lines')}:[/]", f"[bold]{lines}[/]")
                     report_table.add_row(f"[cyan]{i18n.get('label_report_total_tokens')}:[/]", f"[bold]{tokens}[/]")
@@ -1871,10 +1885,10 @@ class CLIMenu:
                     opath,
                     opath,
                     merge_name,
-                    allow_non_series_prompt=(not non_interactive and not web_mode),
+                    allow_non_series_prompt=(not non_interactive and not web_mode and not automation_progress),
                 )
             
-            if not web_mode and not non_interactive and not from_queue:
+            if not web_mode and not automation_progress and not non_interactive and not from_queue:
                 Prompt.ask(f"\n{i18n.get('msg_task_ended')}")
             
             # --- Post-Task Logic (Reverse Conversion) ---
@@ -1926,7 +1940,7 @@ class CLIMenu:
 
             # --- Post-Task: Auto AI Proofread ---
             if task_success and task_mode == TaskType.TRANSLATION and self.config.get("enable_auto_proofread", False):
-                if not web_mode:
+                if not web_mode and not automation_progress:
                     console.print(f"\n[cyan]自动AI校对已开启，正在执行校对...[/cyan]")
                     try:
                         self._execute_proofread(opath)
@@ -1946,7 +1960,7 @@ class CLIMenu:
                     except:
                         print("\a")
             
-            if not non_interactive and not web_mode and not from_queue:
+            if not non_interactive and not web_mode and not automation_progress and not from_queue:
                 Prompt.ask(f"\n{i18n.get('msg_task_ended')}")
 
         return success.is_set()

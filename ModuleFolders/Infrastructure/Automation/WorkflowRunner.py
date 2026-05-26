@@ -113,8 +113,9 @@ def is_queue_only_workflow(steps: Iterable[dict]) -> bool:
 class WorkflowRunner:
     """Execute configured automation workflow steps against a host CLIMenu."""
 
-    def __init__(self, host):
+    def __init__(self, host, progress_reporter=None):
         self.host = host
+        self.progress_reporter = progress_reporter
 
     def run(self, task_config: dict) -> bool:
         input_path = task_config.get("input_path") or ""
@@ -135,6 +136,7 @@ class WorkflowRunner:
             for index, step in enumerate(steps, 1):
                 step = self._with_task_defaults(step, task_config)
                 step_type = step.get("type")
+                self._report_step(index, len(steps), step_type)
                 self._log("info", f"Workflow step {index}/{len(steps)}: {step_type}")
                 if step_type == "extract_glossary":
                     self._run_glossary_step(input_path, step)
@@ -157,6 +159,12 @@ class WorkflowRunner:
             self.host.active_rules_profile_name = original_rules_profile
             self.host.root_config = original_root_config
             self.host.config = original_config
+
+    def _report_step(self, index: int, total: int, step_type: str):
+        if not self.progress_reporter:
+            return
+        label = WORKFLOW_STEP_LABELS.get(step_type, step_type or "?")
+        self.progress_reporter.update_workflow_step(index, total, step_type, label)
 
     def _with_task_defaults(self, step: dict, task_config: dict) -> dict:
         prepared = dict(step)
@@ -248,6 +256,7 @@ class WorkflowRunner:
                 from_queue=True,
                 skip_preflight=True,
                 save_runtime_config=False,
+                automation_progress=bool(self.progress_reporter),
             )
         finally:
             self.host.config["label_output_path"] = previous_output_path

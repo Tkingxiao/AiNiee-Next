@@ -14,7 +14,8 @@ class QueueTaskItem:
                  threads=None, retry=None, timeout=None, rounds=None, 
                  pre_lines=None, lines_limit=None, tokens_limit=None, 
                  think_depth=None, thinking_budget=None, workflow_steps=None,
-                 source=None, rule_id=None):
+                 source=None, rule_id=None, automation_run_id=None,
+                 automation_progress_file=None, automation_worker_pid=None):
         self.task_type = task_type
         self.input_path = input_path
         self.output_path = output_path
@@ -43,6 +44,9 @@ class QueueTaskItem:
         self.workflow_steps = workflow_steps or []
         self.source = source
         self.rule_id = rule_id
+        self.automation_run_id = automation_run_id
+        self.automation_progress_file = automation_progress_file
+        self.automation_worker_pid = automation_worker_pid
         
         self.status = "waiting" # waiting, workflow, translating, translated, polishing, completed, error, stopped
         self.locked = False  # 是否被锁定（正在执行中不可修改）
@@ -752,11 +756,26 @@ class QueueManager(Base):
 
     def _run_workflow_task(self, cli_menu, task):
         try:
-            from ModuleFolders.Infrastructure.Automation.WorkflowRunner import WorkflowRunner
+            from ModuleFolders.Infrastructure.Automation.AutomationProcessRunner import AutomationProcessRunner
 
             task_config = task.to_dict()
-            WorkflowRunner(cli_menu).run(task_config)
-            return True
+            run_info = AutomationProcessRunner.start(
+                task_config,
+                project_root=getattr(cli_menu, "PROJECT_ROOT", None),
+            )
+            task.automation_run_id = run_info.get("run_id")
+            task.automation_progress_file = run_info.get("progress_file")
+            task.automation_worker_pid = run_info.get("pid")
+            self.save_tasks()
+
+            process = AutomationProcessRunner.get_process(task.automation_run_id)
+            while process and process.poll() is None:
+                if Base.work_status == Base.STATUS.STOPING:
+                    process.terminate()
+                    return False
+                self.update_task_activity(self.current_task_index)
+                time.sleep(0.5)
+            return bool(process and process.returncode == 0)
         except Exception as e:
             self.error(f"Workflow Task Error: {e}")
             task.status = "error"

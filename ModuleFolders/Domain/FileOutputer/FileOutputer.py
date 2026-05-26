@@ -148,7 +148,12 @@ class FileOutputer:
 
         # 创建基础的 OutputConfig，包含新的配置项
         def create_output_config(**kwargs):
-            base_args = {"bilingual_order": bilingual_order, "input_root": input_path}
+            base_args = {
+                "bilingual_order": bilingual_order,
+                "input_root": input_path,
+                "epub_language_update_mode": config.get("epub_language_update_mode", "auto"),
+                "interface_language": config.get("interface_language", "zh_CN"),
+            }
             base_args.update(kwargs)
             return OutputConfig(**base_args)
 

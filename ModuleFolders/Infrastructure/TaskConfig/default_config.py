@@ -69,6 +69,7 @@ DEFAULT_CONFIG = {
     "output_filename_suffix": "",
     "enable_bilingual_output": False,
     "bilingual_text_order": "translation_first",
+    "epub_language_update_mode": "auto",
     "polishing_mode_selection": "translated_text_polish",
     "polishing_pre_line_counts": 2,
     "cache_backup_limit": 10,

@@ -469,7 +469,7 @@ class TaskQueueMenu:
     def _get_localized_status(self, status):
         status_map = {
             "waiting": self.i18n.get("task_status_waiting"),
-            "workflow": "Workflow",
+            "workflow": self.i18n.get("task_status_workflow"),
             "translating": self.i18n.get("task_status_translating"),
             "translated": self.i18n.get("task_status_translated"),
             "polishing": self.i18n.get("task_status_polishing"),

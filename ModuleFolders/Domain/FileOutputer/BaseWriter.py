@@ -38,6 +38,8 @@ class OutputConfig:
     bilingual_config: TranslationOutputConfig = None
     input_root: Path = None
     bilingual_order: BilingualOrder = field(default=BilingualOrder.TRANSLATION_FIRST)  # 双语排序配置
+    epub_language_update_mode: str = "auto"
+    interface_language: str = "zh_CN"
 
     def __post_init__(self):
         if self.translated_config is None:

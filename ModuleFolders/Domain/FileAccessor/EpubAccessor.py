@@ -16,6 +16,8 @@ class EpubAccessor:
     NCX_MEDIA_TYPE = "application/x-dtbncx+xml"
     CSS_MEDIA_TYPE = "text/css"
     UTF8_NORMALIZED_EXTENSIONS = (".xhtml", ".xhtm", ".html", ".htm", ".opf", ".ncx", ".xml")
+    HTML_LANGUAGE_EXTENSIONS = (".xhtml", ".xhtm", ".html", ".htm")
+    OPF_EXTENSION = ".opf"
     NOISE_PAGE_TEXTS = {
         "次ページへ",
         "次のページへ",
@@ -331,12 +333,82 @@ class EpubAccessor:
     def write_content(
         self, content: dict[str, str], write_file_path: Path,
         source_file_path: Path,
+        html_language: str = "",
     ):
+        if html_language:
+            content = self._merge_language_updates(source_file_path, content, html_language)
         normalized_content = {
             filename: self._normalize_output_text(filename, file_content)
             for filename, file_content in content.items()
         }
         ZipUtil.replace_in_zip_file(source_file_path, write_file_path, normalized_content)
+
+    def _merge_language_updates(self, source_file_path: Path, content: dict[str, str], html_language: str):
+        updated_content = dict(content)
+        with zipfile.ZipFile(source_file_path, 'r') as zipf:
+            files = {item.filename: item for item in zipf.infolist()}
+            for filename, file_info in files.items():
+                lower_name = filename.lower()
+                if lower_name.endswith(self.HTML_LANGUAGE_EXTENSIONS):
+                    original = updated_content.get(filename)
+                    if original is None:
+                        original = self._read_text(zipf, file_info)
+                    updated_content[filename] = self._update_html_language(str(original), html_language)
+                elif lower_name.endswith(self.OPF_EXTENSION):
+                    original = updated_content.get(filename)
+                    if original is None:
+                        original = self._read_text(zipf, file_info)
+                    updated_content[filename] = self._update_opf_language(str(original), html_language)
+        return updated_content
+
+    def _update_html_language(self, content: str, html_language: str) -> str:
+        if not content or not html_language:
+            return content
+
+        html_match = re.search(r'<html\b[^>]*>', content, flags=re.IGNORECASE)
+        if not html_match:
+            return content
+
+        html_tag = html_match.group(0)
+        updated_tag = re.sub(
+            r'\s+xml:lang\s*=\s*(["\']).*?\1',
+            "",
+            html_tag,
+            flags=re.IGNORECASE,
+        )
+        updated_tag = re.sub(
+            r'\s+lang\s*=\s*(["\']).*?\1',
+            "",
+            updated_tag,
+            flags=re.IGNORECASE,
+        )
+        if updated_tag.endswith("/>"):
+            updated_tag = updated_tag[:-2].rstrip() + f' lang="{html_language}" xml:lang="{html_language}" />'
+        else:
+            updated_tag = updated_tag[:-1].rstrip() + f' lang="{html_language}" xml:lang="{html_language}">'
+        return content[:html_match.start()] + updated_tag + content[html_match.end():]
+
+    def _update_opf_language(self, content: str, html_language: str) -> str:
+        if not content or not html_language:
+            return content
+
+        language_match = re.search(r'<dc:language\b[^>]*>.*?</dc:language>', content, flags=re.IGNORECASE | re.DOTALL)
+        if language_match:
+            language_tag = language_match.group(0)
+            updated_tag = re.sub(
+                r'(<dc:language\b[^>]*>).*?(</dc:language>)',
+                lambda match: f"{match.group(1)}{html_language}{match.group(2)}",
+                language_tag,
+                count=1,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            return content[:language_match.start()] + updated_tag + content[language_match.end():]
+
+        metadata_match = re.search(r'</metadata\s*>', content, flags=re.IGNORECASE)
+        if not metadata_match:
+            return content
+        insert_text = f'\n    <dc:language>{html_language}</dc:language>'
+        return content[:metadata_match.start()] + insert_text + content[metadata_match.start():]
 
     def _normalize_output_text(self, filename, content):
         if isinstance(content, bytes):

@@ -19,6 +19,16 @@ from ModuleFolders.Domain.FileOutputer.BaseWriter import (
 
 
 class EpubWriter(BaseBilingualWriter, BaseTranslatedWriter):
+    EPUB_LANGUAGE_MAP = {
+        "zh_CN": "zh-CN",
+        "zh_CNTW": "zh-TW",
+        "ja": "ja",
+        "en": "en",
+        "ko": "ko",
+        "ru": "ru",
+        "es": "es",
+    }
+
     def __init__(self, output_config: OutputConfig):
         super().__init__(output_config)
         self.file_accessor = EpubAccessor()
@@ -68,8 +78,19 @@ class EpubWriter(BaseBilingualWriter, BaseTranslatedWriter):
                     modified_html_content = modified_html_content.replace(original_html, new_html, 1)
             translation_content[item_filename] = modified_html_content
         self.file_accessor.write_content(
-            translation_content, translation_file_path, source_file_path
+            translation_content,
+            translation_file_path,
+            source_file_path,
+            html_language=self._resolve_epub_language(),
         )
+
+    def _resolve_epub_language(self):
+        mode = str(getattr(self.output_config, "epub_language_update_mode", "auto") or "auto")
+        if mode == "disabled":
+            return ""
+        if mode == "auto":
+            mode = str(getattr(self.output_config, "interface_language", "zh_CN") or "zh_CN")
+        return self.EPUB_LANGUAGE_MAP.get(mode, mode)
 
     # 译文版本
     def _rebuild_translated_tag(self, original_html, translated_text):

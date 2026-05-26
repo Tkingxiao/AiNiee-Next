@@ -171,6 +171,7 @@ class WatchManager(Base):
         # 文件状态追踪
         self.file_states: Dict[str, FileState] = {}
         self.processed_files: Set[str] = set()
+        self.file_observations: Dict[str, Dict[str, Any]] = {}
 
         # 配置
         self.scan_interval = 10  # 扫描间隔（秒）
@@ -223,6 +224,11 @@ class WatchManager(Base):
         with self._lock:
             if rule_id in self.rules:
                 rule = self.rules.pop(rule_id)
+                self.file_observations = {
+                    path: item
+                    for path, item in self.file_observations.items()
+                    if item.get("rule_id") != rule_id
+                }
                 self._log("info", f"Watch rule removed: {rule.watch_path}")
                 return True
             return False
@@ -250,6 +256,249 @@ class WatchManager(Base):
     def get_all_rules(self) -> List[WatchRule]:
         """获取所有规则"""
         return list(self.rules.values())
+
+    @staticmethod
+    def _observation_key(file_path: str, rule: WatchRule) -> str:
+        return f"{rule.id}:{os.path.abspath(file_path)}"
+
+    def _record_file_observation(
+        self,
+        file_path: str,
+        rule: WatchRule,
+        matched: bool,
+        status: str = None,
+    ) -> dict:
+        path = os.path.abspath(file_path)
+        now = datetime.now()
+        observation_key = self._observation_key(path, rule)
+        observation = self.file_observations.get(observation_key)
+        if observation is None:
+            observation = {
+                "path": path,
+                "detected_at": now,
+                "queued_at": None,
+                "processed_at": None,
+            }
+            self.file_observations[observation_key] = observation
+
+        try:
+            relative_path = os.path.relpath(path, rule.watch_path)
+        except ValueError:
+            relative_path = os.path.basename(path)
+
+        observation.update({
+            "rule_id": rule.id,
+            "name": os.path.basename(path),
+            "relative_path": relative_path,
+            "matched": matched,
+            "patterns": list(rule.file_patterns),
+            "workflow": describe_workflow_steps(rule.workflow_steps),
+            "last_seen": now,
+        })
+        if status:
+            observation["status"] = status
+            if status == "queued":
+                observation["queued_at"] = now
+            elif status == "done":
+                observation["processed_at"] = now
+
+        try:
+            stat = os.stat(path)
+            observation["size"] = stat.st_size
+            observation["mtime"] = stat.st_mtime
+        except OSError:
+            observation["missing"] = True
+
+        return observation
+
+    def _scan_rule_file_entries(
+        self,
+        rule: WatchRule,
+        include_unmatched: bool,
+        scan_limit: int,
+    ) -> tuple:
+        entries = []
+        truncated = False
+
+        def add_entry(path: str, name: str) -> bool:
+            nonlocal truncated
+            matched = rule.matches_pattern(name)
+            if not matched and not include_unmatched:
+                return True
+            try:
+                stat = os.stat(path)
+            except OSError:
+                return True
+            entries.append({
+                "path": os.path.abspath(path),
+                "name": name,
+                "matched": matched,
+                "size": stat.st_size,
+                "mtime": stat.st_mtime,
+            })
+            if len(entries) >= scan_limit:
+                truncated = True
+                return False
+            return True
+
+        try:
+            if rule.recursive:
+                excluded_dirs = {
+                    os.path.abspath(path)
+                    for path in (rule.output_path, rule.done_path)
+                    if path
+                }
+                for root, dirs, files in os.walk(rule.watch_path):
+                    dirs[:] = [
+                        d for d in dirs
+                        if os.path.abspath(os.path.join(root, d)) not in excluded_dirs
+                    ]
+                    for filename in files:
+                        if not add_entry(os.path.join(root, filename), filename):
+                            return entries, truncated
+            else:
+                for entry in os.scandir(rule.watch_path):
+                    if entry.is_file() and not add_entry(entry.path, entry.name):
+                        return entries, truncated
+        except OSError:
+            pass
+
+        return entries, truncated
+
+    def _get_queue_task_lookup(self) -> dict:
+        lookup = {"by_rule_path": {}, "by_path": {}}
+        try:
+            from ModuleFolders.Service.TaskQueue.QueueManager import QueueManager
+
+            queue_manager = QueueManager()
+            for task in queue_manager.tasks:
+                if getattr(task, "source", None) != "watch":
+                    continue
+                input_path = os.path.abspath(getattr(task, "input_path", "") or "")
+                rule_id = getattr(task, "rule_id", None)
+                info = {
+                    "status": getattr(task, "status", "waiting"),
+                    "workflow": describe_workflow_steps(getattr(task, "workflow_steps", []) or []),
+                    "locked": getattr(task, "locked", False),
+                    "is_processing": getattr(task, "is_processing", False),
+                }
+                lookup["by_path"][input_path] = info
+                if rule_id:
+                    lookup["by_rule_path"][(rule_id, input_path)] = info
+        except Exception:
+            pass
+        return lookup
+
+    def _find_queue_task_for_file(self, file_path: str, rule: WatchRule, queue_lookup: dict) -> Optional[dict]:
+        target_path = rule.watch_path if rule.trigger_mode == "folder" else file_path
+        target_path = os.path.abspath(target_path)
+        return (
+            queue_lookup.get("by_rule_path", {}).get((rule.id, target_path))
+            or queue_lookup.get("by_path", {}).get(target_path)
+        )
+
+    @staticmethod
+    def _format_snapshot_time(value) -> str:
+        if isinstance(value, datetime):
+            return value.strftime("%m-%d %H:%M:%S")
+        if isinstance(value, (int, float)) and value:
+            return datetime.fromtimestamp(value).strftime("%m-%d %H:%M:%S")
+        return "-"
+
+    @staticmethod
+    def _status_enters_workflow(status: str) -> bool:
+        return status in {
+            "waiting",
+            "queued",
+            "workflow",
+            "translating",
+            "translated",
+            "polishing",
+            "processing",
+            "completed",
+            "done",
+            "processed",
+        }
+
+    def _build_file_status_row(self, rule: WatchRule, entry: dict, queue_lookup: dict) -> dict:
+        path = entry["path"]
+        matched = entry["matched"]
+        observation = self._record_file_observation(
+            path,
+            rule,
+            matched,
+            "ignored" if not matched else None,
+        )
+        state = self.file_states.get(path)
+        queue_task = self._find_queue_task_for_file(path, rule, queue_lookup) if matched else None
+        processed = self._get_file_key(path) in self.processed_files if matched else False
+        observation_status = observation.get("status")
+
+        if not matched:
+            status = "ignored"
+        elif queue_task:
+            status = queue_task.get("status") or "queued"
+        elif state:
+            status = state.status
+        elif processed:
+            status = observation_status if observation_status in {"queued", "done", "primed", "processed"} else "processed"
+        elif observation_status in {"queued", "done", "error", "processing", "waiting_stable", "waiting_capacity", "waiting_target"}:
+            status = observation_status
+        elif not rule.enabled:
+            status = "rule_disabled"
+        elif not self.running:
+            status = "watch_stopped"
+        else:
+            status = "ready"
+
+        detected_at = state.first_seen if state else observation.get("detected_at")
+        workflow = queue_task.get("workflow") if queue_task and queue_task.get("workflow") else observation.get("workflow", "")
+        entered_workflow = bool(queue_task) or self._status_enters_workflow(status)
+
+        return {
+            "rule_id": rule.id,
+            "path": path,
+            "file": observation.get("relative_path") or entry["name"],
+            "matched": matched,
+            "patterns": ", ".join(rule.file_patterns),
+            "detected_at": self._format_snapshot_time(detected_at),
+            "mtime": self._format_snapshot_time(entry.get("mtime")),
+            "size": entry.get("size", 0),
+            "status": status,
+            "entered_workflow": entered_workflow,
+            "workflow": workflow,
+        }
+
+    def get_file_status_snapshot(
+        self,
+        limit_per_rule: int = 30,
+        include_unmatched: bool = True,
+    ) -> List[dict]:
+        """获取监控目录当前文件状态快照。"""
+        queue_lookup = self._get_queue_task_lookup()
+        limit_per_rule = max(1, limit_per_rule)
+        scan_limit = max(limit_per_rule * 5, 100)
+
+        with self._lock:
+            snapshots = []
+            for rule in self.rules.values():
+                entries, truncated = self._scan_rule_file_entries(rule, include_unmatched, scan_limit)
+                rows = [self._build_file_status_row(rule, entry, queue_lookup) for entry in entries]
+                rows.sort(key=lambda item: (item["matched"], item.get("mtime") or ""), reverse=True)
+
+                visible_rows = rows[:limit_per_rule]
+                snapshots.append({
+                    "rule_id": rule.id,
+                    "watch_path": rule.watch_path,
+                    "patterns": list(rule.file_patterns),
+                    "enabled": rule.enabled,
+                    "running": self.running,
+                    "files": visible_rows,
+                    "omitted": max(0, len(rows) - len(visible_rows)),
+                    "truncated": truncated or len(rows) > len(visible_rows),
+                })
+
+            return snapshots
 
     def start(self):
         """启动监控"""
@@ -349,6 +598,7 @@ class WatchManager(Base):
                 files = self._scan_recursive(rule.watch_path, rule) if rule.recursive else self._scan_flat(rule.watch_path, rule)
                 for file_path in files:
                     self.processed_files.add(self._get_file_key(file_path))
+                    self._record_file_observation(file_path, rule, True, "primed")
             except Exception as e:
                 self._log("warning", f"Failed to prime existing files for {rule.watch_path}: {e}")
 
@@ -357,7 +607,13 @@ class WatchManager(Base):
         # 检查是否已处理
         file_key = self._get_file_key(file_path)
         if file_key in self.processed_files:
+            observation = self.file_observations.get(self._observation_key(file_path, rule))
+            if observation and observation.get("status") == "primed":
+                return
+            self._record_file_observation(file_path, rule, True, "processed")
             return
+
+        self._record_file_observation(file_path, rule, True, "pending")
 
         # 获取或创建文件状态
         if file_path not in self.file_states:
@@ -370,19 +626,26 @@ class WatchManager(Base):
 
         # 检查文件是否稳定
         if not state.is_stable(rule.debounce_seconds):
+            state.status = "waiting_stable"
+            self._record_file_observation(file_path, rule, True, "waiting_stable")
             return
 
         # 检查并发限制
         if self.current_tasks >= self.max_concurrent:
+            state.status = "waiting_capacity"
+            self._record_file_observation(file_path, rule, True, "waiting_capacity")
             return
 
         # 标记为处理中
         state.status = "processing"
+        self._record_file_observation(file_path, rule, True, "processing")
         self.current_tasks += 1
         target_path = rule.watch_path if rule.trigger_mode == "folder" else file_path
         target_key = self._get_file_key(target_path)
         if target_key in self._active_targets:
             self.current_tasks -= 1
+            state.status = "waiting_target"
+            self._record_file_observation(file_path, rule, True, "waiting_target")
             return
         self._active_targets.add(target_key)
 
@@ -413,6 +676,7 @@ class WatchManager(Base):
             except Exception as e:
                 self._log("error", f"Failed to queue task: {e}")
                 state.status = "error"
+                self._record_file_observation(file_path, rule, True, "error")
             finally:
                 self.current_tasks -= 1
                 self._active_targets.discard(target_key)
@@ -427,6 +691,7 @@ class WatchManager(Base):
         else:
             self._log("warning", "No task or queue callback configured")
             state.status = "error"
+            self._record_file_observation(file_path, rule, True, "error")
             self.current_tasks -= 1
             self._active_targets.discard(target_key)
 
@@ -441,6 +706,7 @@ class WatchManager(Base):
             self._log("error", f"Task failed: {os.path.basename(file_path)} - {e}")
             if state:
                 state.status = "error"
+            self._record_file_observation(file_path, rule, True, "error")
         finally:
             self.current_tasks -= 1
             self._active_targets.discard(target_key)
@@ -460,6 +726,7 @@ class WatchManager(Base):
         state = self.file_states.get(file_path)
         if state:
             state.status = status
+        self._record_file_observation(file_path, rule, True, status)
 
         rule.files_processed += 1
         rule.last_activity = datetime.now()
@@ -570,7 +837,7 @@ class WatchManager(Base):
             "rule_count": len(self.rules),
             "enabled_count": sum(1 for r in self.rules.values() if r.enabled),
             "pending_files": len([s for s in self.file_states.values()
-                                  if s.status == "pending"]),
+                                  if s.status in {"pending", "waiting_stable", "waiting_capacity", "waiting_target"}]),
             "current_tasks": self.current_tasks,
             "total_processed": sum(r.files_processed for r in self.rules.values())
         }
@@ -579,4 +846,5 @@ class WatchManager(Base):
         """清除已处理文件历史"""
         self.processed_files.clear()
         self.file_states.clear()
+        self.file_observations.clear()
         self._log("info", "Processed history cleared")
