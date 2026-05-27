@@ -16,13 +16,14 @@ from ModuleFolders.Infrastructure.Automation.AutomationProgress import (
     read_progress_file,
     task_config_file_for_run,
 )
-from ModuleFolders.Infrastructure.Automation.WorkflowRunner import describe_workflow_steps
+from ModuleFolders.Infrastructure.Automation.WorkflowRunner import describe_workflow_steps, WorkflowRunner
 
 
 class AutomationProcessRunner:
     _lock = threading.RLock()
     _processes: Dict[str, subprocess.Popen] = {}
     _progress_files: Dict[str, str] = {}
+    _task_config_files: Dict[str, str] = {}
 
     @classmethod
     def start(cls, task_config: dict, project_root: str = None) -> dict:
@@ -83,6 +84,7 @@ class AutomationProcessRunner:
         with cls._lock:
             cls._processes[run_id] = process
             cls._progress_files[run_id] = progress_file
+            cls._task_config_files[run_id] = task_config_path
 
         threading.Thread(
             target=cls._watch_process,
@@ -107,15 +109,46 @@ class AutomationProcessRunner:
 
         state = read_progress_file(progress_file)
         if state.get("status") not in TERMINAL_STATUSES:
-            reporter = AutomationProgressReporter(progress_file, run_id, emit_initial=False)
+            reporter = AutomationProgressReporter(
+                progress_file,
+                run_id,
+                initial=cls._state_for_resume(state),
+                emit_initial=False,
+            )
             if return_code == 0:
-                reporter.finish("completed", "Automation worker completed")
+                task_config = cls._read_task_config_for_run(run_id, progress_file)
+                if WorkflowRunner.is_enqueue_only(task_config):
+                    reporter.finish("enqueued", "Queued for task processing")
+                else:
+                    reporter.finish("completed", "Automation worker completed")
             else:
                 reporter.finish("interrupted", f"Automation worker exited with code {return_code}")
 
         with cls._lock:
             cls._processes.pop(run_id, None)
             cls._progress_files.pop(run_id, None)
+            cls._task_config_files.pop(run_id, None)
+
+    @classmethod
+    def _read_task_config_for_run(cls, run_id: str, progress_file: str) -> dict:
+        with cls._lock:
+            task_config_path = cls._task_config_files.get(run_id)
+        if not task_config_path:
+            task_config_path = os.path.splitext(progress_file)[0] + ".task.json"
+        try:
+            with open(task_config_path, "r", encoding="utf-8") as file:
+                data = json.load(file)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _state_for_resume(state: dict) -> dict:
+        return {
+            key: value
+            for key, value in (state or {}).items()
+            if not str(key).startswith("_") and key != "logs"
+        }
 
     @classmethod
     def get_process(cls, run_id: str):
@@ -137,9 +170,11 @@ class AutomationProcessRunner:
 
         if process.poll() is None:
             process.terminate()
+        state = read_progress_file(progress_file)
         reporter = AutomationProgressReporter(
             progress_file,
             run_id,
+            initial=cls._state_for_resume(state),
             emit_initial=False,
         )
         reporter.finish("interrupted", message)

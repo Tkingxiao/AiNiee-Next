@@ -82,7 +82,7 @@ class TaskQueueMenu:
             if getattr(task, "workflow_steps", None):
                 details = (
                     f"{task.profile or 'def'}/{task.rules_profile or 'def'} | "
-                    f"{describe_workflow_steps(task.workflow_steps)}"
+                    f"{describe_workflow_steps(task.workflow_steps, self.i18n)}"
                 )
             else:
                 details = (
@@ -126,7 +126,18 @@ class TaskQueueMenu:
     def _add_task(self, queue_manager):
         from ModuleFolders.Service.TaskQueue.QueueManager import QueueTaskItem
 
-        task_choice = IntPrompt.ask(self.i18n.get("prompt_select"), choices=["1", "2", "3"], default=1)
+        console.print(f"\n[bold]{self.i18n.get('prompt_queue_add_task_type')}[/bold]")
+        type_table = Table(show_header=False, box=None)
+        type_table.add_row("[cyan]1.[/]", self.i18n.get("task_type_translation"))
+        type_table.add_row("[cyan]2.[/]", self.i18n.get("task_type_polishing"))
+        type_table.add_row("[cyan]3.[/]", self.i18n.get("task_type_all_in_one"))
+        console.print(type_table)
+        task_choice = IntPrompt.ask(
+            self.i18n.get("prompt_queue_add_task_type"),
+            choices=["1", "2", "3"],
+            default=1,
+            show_choices=False,
+        )
         type_map = {
             1: TaskType.TRANSLATION,
             2: TaskType.POLISH,
@@ -137,21 +148,21 @@ class TaskQueueMenu:
         input_path = self.host.file_selector.select_path(start_path=start_path)
         if input_path:
             queue_manager.add_task(QueueTaskItem(task_type, input_path))
-            console.print("[green]Task added (default config). Use Edit to customize.[/green]")
+            console.print(f"[green]{self.i18n.get('msg_queue_task_added_default')}[/green]")
         time.sleep(1)
 
     def _remove_task(self, queue_manager):
-        index = IntPrompt.ask("Enter ID to remove", default=1) - 1
+        index = IntPrompt.ask(self.i18n.get("prompt_queue_task_id_remove"), default=1) - 1
         if queue_manager.remove_task(index):
-            console.print("[green]Task removed.[/green]")
+            console.print(f"[green]{self.i18n.get('msg_queue_task_removed')}[/green]")
         else:
-            console.print("[red]Invalid ID or task is running.[/red]")
+            console.print(f"[red]{self.i18n.get('msg_queue_task_remove_failed')}[/red]")
         time.sleep(1)
 
     def _edit_task(self, queue_manager):
-        index = IntPrompt.ask("Enter ID to edit", default=1) - 1
+        index = IntPrompt.ask(self.i18n.get("prompt_queue_task_id_edit"), default=1) - 1
         if not 0 <= index < len(queue_manager.tasks):
-            console.print("[red]Invalid ID.[/red]")
+            console.print(f"[red]{self.i18n.get('msg_queue_invalid_task_id')}[/red]")
             time.sleep(1)
             return
 
@@ -168,7 +179,7 @@ class TaskQueueMenu:
             TaskType.POLISH: self.i18n.get("task_type_polishing"),
             TaskType.TRANSLATE_AND_POLISH: self.i18n.get("task_type_all_in_one"),
         }
-        console.print(f"\n[cyan]{self.i18n.get('ui_recent_type')}:[/] {task_type_map.get(task.task_type, 'Unknown')}")
+        console.print(f"\n[cyan]{self.i18n.get('ui_recent_type')}:[/] {task_type_map.get(task.task_type, self.i18n.get('label_unknown'))}")
         new_task_type = Prompt.ask(
             f"{self.i18n.get('prompt_task_type_queue')}{self.i18n.get('tip_follow_profile')}",
             choices=list(task_type_map.values()) + [""],
@@ -224,7 +235,7 @@ class TaskQueueMenu:
         ) or None
 
         current_platform = task.platform or self.config.get("target_platform")
-        console.print(f"\n[cyan]{self.i18n.get('label_platform_override')}:[/] {current_platform or 'Default'}")
+        console.print(f"\n[cyan]{self.i18n.get('label_platform_override')}:[/] {current_platform or self.i18n.get('label_default')}")
         platforms_list = list(self.config.get("platforms", {}).keys())
         task.platform = Prompt.ask(
             f"{self.i18n.get('label_platform_override')}{self.i18n.get('tip_follow_profile')}",
@@ -269,14 +280,14 @@ class TaskQueueMenu:
         self._edit_task_thinking(task)
 
         queue_manager.save_tasks()
-        console.print("[green]Task updated.[/green]")
+        console.print(f"[green]{self.i18n.get('msg_queue_task_updated')}[/green]")
         time.sleep(1)
 
     def _edit_task_model_settings(self, task):
         if task.platform:
             available_models = self._get_available_models_for_platform(task)
             if available_models:
-                console.print(f"[cyan]  可用模型 ({task.platform}):[/] {', '.join(available_models)}")
+                console.print(f"[cyan]  {self.i18n.get('label_available_models')} ({task.platform}):[/] {', '.join(available_models)}")
                 task.model = Prompt.ask(
                     f"{self.i18n.get('label_model_override')}{self.i18n.get('tip_follow_profile')}",
                     choices=available_models + [""],
@@ -369,7 +380,7 @@ class TaskQueueMenu:
                 default=current_think_depth,
             ) or None
 
-        console.print(f"[dim]{self.i18n.get('hint_think_budget') or '提示: 0=关闭, -1=无上限'}[/dim]")
+        console.print(f"[dim]{self.i18n.get('hint_think_budget')}[/dim]")
         budget_str = Prompt.ask(
             f"{self.i18n.get('menu_api_think_budget')}{self.i18n.get('tip_follow_profile')}",
             default=str(task.thinking_budget) if task.thinking_budget is not None else "0",
@@ -383,37 +394,37 @@ class TaskQueueMenu:
         if open_in_editor(queue_manager.queue_file):
             Prompt.ask(f"\n{self.i18n.get('msg_press_enter_after_save')}")
             queue_manager.load_tasks()
-            console.print("[green]Queue reloaded from file.[/green]")
+            console.print(f"[green]{self.i18n.get('msg_queue_reloaded_from_file')}[/green]")
         time.sleep(1)
 
     def _clear_queue(self, queue_manager):
         if queue_manager.clear_tasks():
-            console.print("[green]Queue cleared.[/green]")
+            console.print(f"[green]{self.i18n.get('msg_queue_cleared')}[/green]")
         else:
-            console.print("[red]Cannot clear while queue is running.[/red]")
+            console.print(f"[red]{self.i18n.get('msg_queue_clear_failed_running')}[/red]")
         time.sleep(1)
 
     def _start_queue(self, queue_manager):
         if not queue_manager.tasks:
             return
         if queue_manager.is_running:
-            console.print("[yellow]Queue is already running.[/yellow]")
+            console.print(f"[yellow]{self.i18n.get('msg_queue_already_running')}[/yellow]")
             time.sleep(1)
             return
 
-        console.print("\n[bold green]Starting Queue Processing...[/bold green]")
+        console.print(f"\n[bold green]{self.i18n.get('msg_queue_starting')}[/bold green]")
         self.host._is_queue_mode = True
         self.host.start_queue_log_monitor()
         queue_manager.start_queue(self.host)
 
     def _reorder_queue(self, queue_manager):
         if len(queue_manager.tasks) <= 1:
-            console.print("[yellow]Need at least 2 tasks to reorder.[/yellow]")
+            console.print(f"[yellow]{self.i18n.get('msg_queue_reorder_need_two')}[/yellow]")
             time.sleep(1)
             return
 
         console.print(Panel(f"[bold]{self.i18n.get('menu_queue_reorder')}[/bold]"))
-        console.print("\n[cyan]Current Order:[/]")
+        console.print(f"\n[cyan]{self.i18n.get('label_current_order')}:[/]")
         for index, task in enumerate(queue_manager.tasks):
             console.print(f"  {index + 1}. [{self._get_task_type_tag(task.task_type)}] {os.path.basename(task.input_path)}")
 

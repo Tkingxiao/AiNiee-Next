@@ -8,12 +8,21 @@ analysis capabilities.
 import copy
 import os
 import time
+import uuid
 from typing import Any, Dict, Iterable, List, Optional
 
 from rich.console import Console
 
 from ModuleFolders.Base.Base import Base
+from ModuleFolders.Infrastructure.TaskConfig.ConfigProfileService import (
+    atomic_write_json,
+    default_rules_payload,
+    normalize_rules_payload,
+    resolve_profile_path,
+    sanitize_profile_name,
+)
 from ModuleFolders.Infrastructure.TaskConfig.TaskType import TaskType
+from ModuleFolders.Infrastructure.Automation.AutomationPaths import automation_glossary_dir_for
 
 
 console = Console()
@@ -37,6 +46,11 @@ WORKFLOW_STEP_LABELS = {
     "queue": "Add to queue",
     "run_queue": "Run queue",
 }
+
+
+class AutomationPartialCompletion(RuntimeError):
+    def __init__(self, message: str = "Automation task completed partially"):
+        super().__init__(message)
 
 
 def normalize_task_type(value: Any) -> int:
@@ -97,11 +111,28 @@ def normalize_workflow_steps(
     return normalized_steps or default_workflow_steps(task_type, auto_start)
 
 
-def describe_workflow_steps(steps: Iterable[dict]) -> str:
+def workflow_step_label(step_type: str, i18n=None) -> str:
+    step_type = str(step_type or "").strip()
+    key = f"workflow_step_{step_type}"
+    if i18n is not None:
+        try:
+            label = i18n.get(key)
+            if label and label != key:
+                return label
+        except Exception:
+            pass
+    return WORKFLOW_STEP_LABELS.get(step_type, step_type or "?")
+
+
+def describe_workflow_steps(steps: Iterable[dict], i18n=None) -> str:
     labels = []
     for step in steps or []:
         step_type = str(step.get("type") or "").strip()
-        labels.append(WORKFLOW_STEP_LABELS.get(step_type, step_type or "?"))
+        if step_type == "all_in_one":
+            labels.append(workflow_step_label("translate", i18n))
+            labels.append(workflow_step_label("polish", i18n))
+        else:
+            labels.append(workflow_step_label(step_type, i18n))
     return " -> ".join(labels)
 
 
@@ -124,28 +155,31 @@ class WorkflowRunner:
             task_config.get("task_type", "translation"),
             task_config.get("auto_start", True),
         )
+        steps = self._prepare_series_glossary_steps(steps, task_config)
 
         original_active_profile = getattr(self.host, "active_profile_name", "default")
         original_rules_profile = getattr(self.host, "active_rules_profile_name", "default")
         original_root_config = copy.deepcopy(getattr(self.host, "root_config", {}))
         original_config = copy.deepcopy(getattr(self.host, "config", {}))
+        workflow_context: Dict[str, Any] = {}
 
         try:
             self._apply_profile_context(task_config)
 
             for index, step in enumerate(steps, 1):
                 step = self._with_task_defaults(step, task_config)
+                step = self._with_workflow_context(step, workflow_context)
                 step_type = step.get("type")
                 self._report_step(index, len(steps), step_type)
                 self._log("info", f"Workflow step {index}/{len(steps)}: {step_type}")
                 if step_type == "extract_glossary":
-                    self._run_glossary_step(input_path, step)
+                    self._run_glossary_step(input_path, step, task_config, workflow_context)
                 elif step_type == "translate":
-                    self._run_task_step(TaskType.TRANSLATION, input_path, step)
+                    self._run_task_step(TaskType.TRANSLATION, input_path, step, task_config)
                 elif step_type == "polish":
-                    self._run_task_step(TaskType.POLISH, input_path, step, resume=bool(step.get("resume", True)))
+                    self._run_task_step(TaskType.POLISH, input_path, step, task_config, resume=bool(step.get("resume", True)))
                 elif step_type == "all_in_one":
-                    self._run_all_in_one_step(input_path, step)
+                    self._run_all_in_one_step(input_path, step, task_config)
                 elif step_type == "queue":
                     self._run_queue_add_step(input_path, task_config, step)
                 elif step_type == "run_queue":
@@ -160,10 +194,20 @@ class WorkflowRunner:
             self.host.root_config = original_root_config
             self.host.config = original_config
 
+    @staticmethod
+    def is_enqueue_only(task_config: dict) -> bool:
+        steps = normalize_workflow_steps(
+            task_config.get("workflow_steps"),
+            task_config.get("task_type", "translation"),
+            task_config.get("auto_start", True),
+        )
+        steps = WorkflowRunner._prepare_series_glossary_steps(steps, task_config)
+        return bool(steps) and steps[-1].get("type") == "queue"
+
     def _report_step(self, index: int, total: int, step_type: str):
         if not self.progress_reporter:
             return
-        label = WORKFLOW_STEP_LABELS.get(step_type, step_type or "?")
+        label = workflow_step_label(step_type, getattr(self.host, "i18n", None))
         self.progress_reporter.update_workflow_step(index, total, step_type, label)
 
     def _with_task_defaults(self, step: dict, task_config: dict) -> dict:
@@ -178,6 +222,13 @@ class WorkflowRunner:
             prepared["output_mode"] = "exact"
         return prepared
 
+    def _with_workflow_context(self, step: dict, workflow_context: dict) -> dict:
+        prepared = dict(step)
+        rules_profile = workflow_context.get("rules_profile")
+        if rules_profile and prepared.get("type") in {"translate", "polish", "all_in_one", "queue"}:
+            prepared.setdefault("rules_profile", rules_profile)
+        return prepared
+
     def _apply_profile_context(self, task_config: dict):
         profile = task_config.get("profile")
         rules_profile = task_config.get("rules_profile")
@@ -186,8 +237,82 @@ class WorkflowRunner:
                 active_profile_name=profile or getattr(self.host, "active_profile_name", None),
                 active_rules_profile_name=rules_profile or getattr(self.host, "active_rules_profile_name", None),
             )
+        self._apply_task_overrides(task_config)
 
-    def _run_glossary_step(self, input_path: str, step: dict):
+    def _apply_task_overrides(self, task_config: dict):
+        cfg = getattr(self.host, "config", {})
+        if not isinstance(cfg, dict):
+            return
+
+        if task_config.get("source_lang"):
+            cfg["source_language"] = task_config.get("source_lang")
+        if task_config.get("target_lang"):
+            cfg["target_language"] = task_config.get("target_lang")
+        if task_config.get("project_type"):
+            cfg["translation_project"] = task_config.get("project_type")
+        if task_config.get("output_path"):
+            cfg["label_output_path"] = task_config.get("output_path")
+
+        if task_config.get("platform"):
+            cfg["target_platform"] = task_config.get("platform")
+        if task_config.get("api_url"):
+            cfg["base_url"] = task_config.get("api_url")
+        if task_config.get("api_key"):
+            cfg["api_key"] = task_config.get("api_key")
+            target_platform = cfg.get("target_platform")
+            if target_platform and target_platform in cfg.get("platforms", {}):
+                cfg["platforms"][target_platform]["api_key"] = task_config.get("api_key")
+        if task_config.get("model"):
+            cfg["model"] = task_config.get("model")
+
+        if task_config.get("threads") is not None:
+            cfg["user_thread_counts"] = task_config.get("threads")
+        if task_config.get("retry") is not None:
+            cfg["retry_count"] = task_config.get("retry")
+        if task_config.get("timeout") is not None:
+            cfg["request_timeout"] = task_config.get("timeout")
+        if task_config.get("rounds") is not None:
+            cfg["round_limit"] = task_config.get("rounds")
+        if task_config.get("pre_lines") is not None:
+            cfg["pre_line_counts"] = task_config.get("pre_lines")
+
+        if task_config.get("lines_limit") is not None:
+            cfg["tokens_limit_switch"] = False
+            cfg["lines_limit"] = task_config.get("lines_limit")
+        if task_config.get("tokens_limit") is not None:
+            cfg["tokens_limit_switch"] = True
+            cfg["tokens_limit"] = task_config.get("tokens_limit")
+
+        if task_config.get("think_depth") is not None:
+            cfg["think_depth"] = task_config.get("think_depth")
+            target_platform = cfg.get("target_platform")
+            if target_platform and target_platform in cfg.get("platforms", {}):
+                cfg["platforms"][target_platform]["think_depth"] = task_config.get("think_depth")
+        if task_config.get("thinking_budget") is not None:
+            cfg["thinking_budget"] = task_config.get("thinking_budget")
+            target_platform = cfg.get("target_platform")
+            if target_platform and target_platform in cfg.get("platforms", {}):
+                cfg["platforms"][target_platform]["thinking_budget"] = task_config.get("thinking_budget")
+
+    @staticmethod
+    def _prepare_series_glossary_steps(steps: List[dict], task_config: dict) -> List[dict]:
+        if not task_config.get("series_incremental"):
+            return steps
+        prepared_steps = []
+        for step in steps:
+            prepared = dict(step)
+            if prepared.get("type") == "extract_glossary":
+                prepared["series_incremental"] = True
+                if task_config.get("series_volume") is not None:
+                    prepared.setdefault("source_volume", task_config.get("series_volume"))
+                if task_config.get("series_volume") is not None:
+                    prepared.setdefault("source_label", f"Vol_{task_config.get('series_volume')}")
+                elif task_config.get("series_key"):
+                    prepared.setdefault("source_label", task_config.get("series_key"))
+            prepared_steps.append(prepared)
+        return prepared_steps
+
+    def _run_glossary_step(self, input_path: str, step: dict, task_config: dict, workflow_context: dict):
         if not input_path:
             raise ValueError("Glossary analysis requires input_path")
         if not os.path.exists(input_path):
@@ -196,6 +321,13 @@ class WorkflowRunner:
         from ModuleFolders.Service.GlossaryAnalysis import GlossaryAnalyzer
 
         analyzer = GlossaryAnalyzer(self.host)
+        trigger_path = task_config.get("trigger_file_path") or input_path
+        source_volume = step.get("source_volume")
+        if source_volume is None and step.get("series_incremental"):
+            source_volume = self._series_volume_for(trigger_path)
+        source_label = step.get("source_label") or self._source_label_for(input_path)
+        if step.get("series_incremental") and source_volume is not None and not step.get("source_label"):
+            source_label = f"Vol_{source_volume}"
         analysis_result = analyzer.execute_analysis(
             input_path,
             int(step.get("analysis_percent", 100) or 100),
@@ -206,35 +338,106 @@ class WorkflowRunner:
             translate_during_analysis=bool(step.get("translate_during_analysis", True)),
             new=bool(step.get("new", True)),
             replace=bool(step.get("replace", True)),
-            source_label=step.get("source_label") or self._source_label_for(input_path),
-            source_volume=step.get("source_volume"),
+            source_label=source_label,
+            source_volume=source_volume,
+            existing_rules_context=self._series_rules_context(trigger_path, source_volume, task_config) if step.get("series_incremental") else None,
+            output_dir=automation_glossary_dir_for(input_path),
         )
         if analysis_result is None:
             raise RuntimeError("Glossary analysis returned no result")
 
         min_frequency = int(step.get("min_frequency", 2) or 2)
-        save_result = analyzer.filter_and_save(analysis_result, min_frequency)
+        save_result = analyzer.filter_and_save(
+            analysis_result,
+            min_frequency,
+            output_dir=automation_glossary_dir_for(input_path),
+        )
         if save_result is None:
             raise RuntimeError("Glossary analysis did not produce savable rules")
 
         structured_rules = save_result.get("structured_rules")
         incremental_options = save_result.get("incremental_options")
+        save_mode = str(step.get("save_mode") or "isolated")
+        if save_mode == "isolated":
+            profile_name = self._create_isolated_rules_profile(input_path, task_config, structured_rules, save_result.get("glossary_data"))
+            workflow_context["rules_profile"] = profile_name
+            if self.progress_reporter:
+                self.progress_reporter.update(rules_profile=profile_name, message=f"Isolated glossary profile: {profile_name}")
+            self._log("info", f"Isolated glossary profile created: {profile_name}")
+            return
+
         if structured_rules:
             analyzer.save_structured_rules_directly(
                 structured_rules,
-                save_mode=str(step.get("save_mode") or "import"),
+                save_mode=save_mode,
                 base_glossary_path=save_result.get("glossary_path"),
                 merge_options=incremental_options,
             )
         elif save_result.get("glossary_data"):
             analyzer.save_glossary_directly(
                 save_result["glossary_data"],
-                save_mode=str(step.get("save_mode") or "import"),
+                save_mode=save_mode,
                 base_glossary_path=save_result.get("glossary_path"),
                 merge_options=incremental_options,
             )
 
-    def _run_task_step(self, task_type: int, input_path: str, step: dict, resume: bool = False):
+    def _create_isolated_rules_profile(self, input_path: str, task_config: dict, structured_rules: dict, glossary_data: list) -> str:
+        profile_name = self._isolated_rules_profile_name(input_path, task_config)
+        rules_dir = getattr(self.host, "rules_profiles_dir", None) or os.path.join(getattr(self.host, "PROJECT_ROOT", os.getcwd()), "Resource", "rules_profiles")
+        os.makedirs(rules_dir, exist_ok=True)
+        profile_path, profile_name = resolve_profile_path(rules_dir, profile_name)
+        if self._has_rules_payload(structured_rules):
+            payload = {
+                key: copy.deepcopy(value)
+                for key, value in structured_rules.items()
+                if key in default_rules_payload()
+            }
+        elif glossary_data:
+            payload = {"prompt_dictionary_data": copy.deepcopy(glossary_data)}
+        else:
+            payload = {}
+        payload = normalize_rules_payload(payload)
+        atomic_write_json(profile_path, payload)
+        return profile_name
+
+    @staticmethod
+    def _has_rules_payload(payload: dict) -> bool:
+        if not isinstance(payload, dict):
+            return False
+        defaults = default_rules_payload()
+        for key in defaults:
+            value = payload.get(key)
+            if isinstance(value, str):
+                if value.strip():
+                    return True
+            elif value:
+                return True
+        return False
+
+    def _isolated_rules_profile_name(self, input_path: str, task_config: dict) -> str:
+        run_id = str(task_config.get("automation_run_id") or "").strip()
+        label = self._source_label_for(input_path)
+        if task_config.get("series_incremental") or self._task_has_series_glossary_step(task_config):
+            volume = self._series_volume_for(task_config.get("trigger_file_path") or input_path)
+            if volume is not None:
+                base = f"auto_series_{self._series_key_for(task_config.get('trigger_file_path') or input_path, task_config)}_v{volume}"
+            else:
+                base = f"auto_series_{self._series_key_for(task_config.get('trigger_file_path') or input_path, task_config)}_{uuid.uuid4().hex[:8]}"
+        else:
+            base = f"auto_{run_id}_{label}" if run_id else f"auto_{label}_{uuid.uuid4().hex[:8]}"
+        try:
+            return sanitize_profile_name(base, allow_none=False)
+        except ValueError:
+            return f"auto_{uuid.uuid4().hex[:12]}"
+
+    @staticmethod
+    def _task_has_series_glossary_step(task_config: dict) -> bool:
+        for step in task_config.get("workflow_steps") or []:
+            if isinstance(step, dict) and step.get("type") == "extract_glossary" and step.get("series_incremental"):
+                return True
+        return False
+
+    def _run_task_step(self, task_type: int, input_path: str, step: dict, task_config: dict = None, resume: bool = False):
         if not input_path:
             raise ValueError("Task step requires input_path")
         if not os.path.exists(input_path):
@@ -248,6 +451,13 @@ class WorkflowRunner:
             self.host.config["auto_set_output_path"] = False
 
         try:
+            rules_profile = step.get("rules_profile")
+            if rules_profile:
+                self.host.load_config(
+                    active_profile_name=getattr(self.host, "active_profile_name", None),
+                    active_rules_profile_name=rules_profile,
+                )
+                self._apply_task_overrides(task_config or {})
             ok = self.host.run_task(
                 task_type,
                 target_path=input_path,
@@ -263,20 +473,21 @@ class WorkflowRunner:
             self.host.config["auto_set_output_path"] = previous_auto_output
 
         if not ok:
+            partial_message = self._partial_message_from_reporter()
+            if partial_message:
+                raise AutomationPartialCompletion(partial_message)
             raise RuntimeError("Task blocked before start")
 
-    def _run_all_in_one_step(self, input_path: str, step: dict):
-        if not self.host.prompt_selection_guard.ensure_prompts_selected(
-            TaskType.TRANSLATE_AND_POLISH,
-            interactive=False,
-        ):
-            raise RuntimeError("Required prompt selection is missing for all-in-one task.")
+        partial_message = self._partial_message_from_reporter()
+        if partial_message:
+            raise AutomationPartialCompletion(partial_message)
 
-        self._run_task_step(TaskType.TRANSLATION, input_path, step, resume=bool(step.get("resume", False)))
+    def _run_all_in_one_step(self, input_path: str, step: dict, task_config: dict = None):
+        self._run_task_step(TaskType.TRANSLATION, input_path, step, task_config, resume=bool(step.get("resume", False)))
         if Base.work_status != Base.STATUS.STOPING:
             polish_step = dict(step)
             polish_step.setdefault("resume", True)
-            self._run_task_step(TaskType.POLISH, input_path, polish_step, resume=True)
+            self._run_task_step(TaskType.POLISH, input_path, polish_step, task_config, resume=True)
 
     def _run_queue_add_step(self, input_path: str, task_config: dict, step: dict):
         from ModuleFolders.Service.TaskQueue.QueueManager import QueueManager, QueueTaskItem
@@ -294,7 +505,15 @@ class WorkflowRunner:
                 input_path,
                 output_path=output_path,
                 profile=task_config.get("profile") or None,
-                rules_profile=task_config.get("rules_profile") or None,
+                rules_profile=step.get("rules_profile") or task_config.get("rules_profile") or None,
+                source=task_config.get("source"),
+                rule_id=task_config.get("rule_id"),
+                trigger_file_path=task_config.get("trigger_file_path"),
+                trigger_file_name=task_config.get("trigger_file_name"),
+                trigger_detected_at=task_config.get("trigger_detected_at"),
+                series_incremental=task_config.get("series_incremental", False),
+                series_key=task_config.get("series_key"),
+                series_volume=task_config.get("series_volume"),
             )
         )
 
@@ -310,13 +529,11 @@ class WorkflowRunner:
             return
 
         self.host._is_queue_mode = True
-        self.host.start_queue_log_monitor()
-        queue_manager.start_queue(self.host)
+        queue_manager.start_queue(self.host, automation_background=bool(self.progress_reporter))
         try:
             while queue_manager.is_running:
                 time.sleep(0.5)
         finally:
-            self.host.stop_queue_log_monitor()
             self.host._is_queue_mode = False
 
     def _resolve_step_output_path(self, input_path: str, step: dict) -> str:
@@ -338,6 +555,89 @@ class WorkflowRunner:
         if os.path.isfile(input_path):
             base_name = os.path.splitext(base_name)[0]
         return base_name or "Automation"
+
+    def _partial_message_from_reporter(self) -> str:
+        if not self.progress_reporter:
+            return ""
+        state = {}
+        try:
+            if hasattr(self.progress_reporter, "current_state"):
+                state = self.progress_reporter.current_state()
+            else:
+                state = dict(getattr(self.progress_reporter, "state", {}) or {})
+        except Exception:
+            state = {}
+
+        status = state.get("status")
+        if status == "partial":
+            return str(state.get("message") or "Automation task completed partially")
+
+        current, total = self._progress_counts_from_state(state)
+        if total > 0 and 0 < current < total:
+            message = f"Translation items missing: {current}/{total}"
+            try:
+                self.progress_reporter.finish("partial", message)
+            except Exception:
+                pass
+            return message
+        return ""
+
+    @staticmethod
+    def _progress_counts_from_state(state: dict) -> tuple[int, int]:
+        try:
+            current = int(state.get("line") or state.get("completed") or 0)
+            total = int(state.get("total_line") or state.get("total") or 0)
+        except (TypeError, ValueError):
+            return 0, 0
+        return current, total
+
+    def _series_volume_for(self, input_path: str):
+        try:
+            from ModuleFolders.Infrastructure.Automation.WatchManager import parse_series_volume
+            return parse_series_volume(input_path).get("volume")
+        except Exception:
+            return None
+
+    def _series_rules_context(self, input_path: str, source_volume, task_config: dict = None):
+        if source_volume is None:
+            return None
+        rules_dir = getattr(self.host, "rules_profiles_dir", None) or os.path.join(getattr(self.host, "PROJECT_ROOT", os.getcwd()), "Resource", "rules_profiles")
+        prefix = f"auto_series_{self._series_key_for(input_path, task_config)}_"
+        latest_path = None
+        latest_volume = -1
+        try:
+            for filename in os.listdir(rules_dir):
+                if not filename.startswith(prefix) or not filename.endswith(".json"):
+                    continue
+                stem = filename[:-5]
+                try:
+                    volume = int(stem.rsplit("_v", 1)[1])
+                except (IndexError, ValueError):
+                    continue
+                if volume < int(source_volume) and volume > latest_volume:
+                    latest_volume = volume
+                    latest_path = os.path.join(rules_dir, filename)
+            if latest_path:
+                with open(latest_path, "r", encoding="utf-8") as file:
+                    import rapidjson as json
+                    data = json.load(file)
+                return data if isinstance(data, dict) else None
+        except Exception:
+            return None
+        return None
+
+    def _series_key_for(self, input_path: str, task_config: dict = None) -> str:
+        task_config = task_config or {}
+        if task_config.get("series_key"):
+            return sanitize_profile_name(str(task_config["series_key"]), allow_none=False)
+        try:
+            from ModuleFolders.Infrastructure.Automation.WatchManager import parse_series_volume
+            parsed = parse_series_volume(input_path)
+            if parsed.get("series_key"):
+                return sanitize_profile_name(str(parsed["series_key"]), allow_none=False)
+        except Exception:
+            pass
+        return sanitize_profile_name(self._source_label_for(input_path), allow_none=False)
 
     def _log(self, level: str, message: str):
         ui = getattr(self.host, "ui", None)

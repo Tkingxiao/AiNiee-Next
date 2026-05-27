@@ -102,6 +102,8 @@ class GlossaryAnalyzer:
         replace=False,
         source_label=None,
         source_volume=None,
+        existing_rules_context=None,
+        output_dir=None,
     ):
         """
         执行术语表分析的核心逻辑
@@ -215,7 +217,7 @@ class GlossaryAnalyzer:
             )
 
         if incremental_options.get("enabled"):
-            existing_context = self._build_incremental_existing_rules_context()
+            existing_context = existing_rules_context or self._build_incremental_existing_rules_context()
             system_prompt = self._append_incremental_analysis_instruction(
                 system_prompt,
                 existing_context,
@@ -372,7 +374,7 @@ class GlossaryAnalyzer:
         if not term_freq:
             if not self._has_non_glossary_analysis(structured_analysis):
                 console.print(f"[yellow]{self.i18n.get('msg_no_terms_found') or '未找到专有名词'}[/yellow]")
-                diagnostic_path = self._save_raw_analysis_response_log(input_path, raw_response_diagnostics)
+                diagnostic_path = self._save_raw_analysis_response_log(input_path, raw_response_diagnostics, output_dir=output_dir)
                 if diagnostic_path:
                     console.print(
                         f"[yellow]{self._tr('msg_glossary_parse_empty_with_response', '模型返回了内容，但未解析到术语/分类 JSON；已保存原始响应诊断: {}', diagnostic_path)}[/yellow]"
@@ -394,9 +396,10 @@ class GlossaryAnalyzer:
             'translate_during_analysis': translate_during_analysis,
             'incremental_options': incremental_options,
             'raw_response_diagnostics': raw_response_diagnostics,
+            'output_dir': output_dir,
         }
 
-    def filter_and_save(self, analysis_result, min_freq):
+    def filter_and_save(self, analysis_result, min_freq, output_dir=None):
         """
         过滤低频词并保存结果
 
@@ -417,6 +420,7 @@ class GlossaryAnalyzer:
         structured_analysis = analysis_result.get('structured_analysis') or self._empty_analysis_payload()
         incremental_options = analysis_result.get('incremental_options') or {}
         raw_response_diagnostics = analysis_result.get('raw_response_diagnostics') or []
+        output_dir = output_dir or analysis_result.get("output_dir") or None
 
         # 过滤低频词
         filtered_terms = {k: v for k, v in term_freq.items() if v['count'] >= min_freq}
@@ -426,7 +430,7 @@ class GlossaryAnalyzer:
 
         if not filtered_terms and not self._has_non_glossary_analysis(structured_analysis):
             console.print(f"[yellow]{self.i18n.get('msg_no_terms_after_filter') or '过滤后无剩余词条'}[/yellow]")
-            diagnostic_path = self._save_raw_analysis_response_log(input_path, raw_response_diagnostics)
+            diagnostic_path = self._save_raw_analysis_response_log(input_path, raw_response_diagnostics, output_dir=output_dir)
             if diagnostic_path:
                 console.print(
                     f"[yellow]{self._tr('msg_glossary_parse_empty_with_response', '模型返回了内容，但未解析到术语/分类 JSON；已保存原始响应诊断: {}', diagnostic_path)}[/yellow]"
@@ -435,7 +439,8 @@ class GlossaryAnalyzer:
 
         # 生成术语表文件
         input_basename = os.path.splitext(os.path.basename(input_path))[0]
-        input_dir = os.path.dirname(input_path) or "."
+        input_dir = output_dir or os.path.dirname(input_path) or "."
+        os.makedirs(input_dir, exist_ok=True)
 
         glossary_path = os.path.join(input_dir, f"{input_basename}_自动术语.json")
         structured_path = os.path.join(input_dir, f"{input_basename}_分类规则配置.json")
@@ -776,13 +781,14 @@ class GlossaryAnalyzer:
             "preview": self._normalize_glossary_text(response)[:4000],
         }
 
-    def _save_raw_analysis_response_log(self, input_path, diagnostics):
+    def _save_raw_analysis_response_log(self, input_path, diagnostics, output_dir=None):
         diagnostics = [item for item in diagnostics or [] if item and item.get("preview")]
         if not diagnostics:
             return ""
 
         input_basename = os.path.splitext(os.path.basename(input_path))[0]
-        input_dir = os.path.dirname(input_path) or "."
+        input_dir = output_dir or os.path.dirname(input_path) or "."
+        os.makedirs(input_dir, exist_ok=True)
         diagnostic_path = os.path.join(input_dir, f"{input_basename}_分析原始响应.txt")
         lines = [
             "=== AI术语表分析原始响应诊断 ===",

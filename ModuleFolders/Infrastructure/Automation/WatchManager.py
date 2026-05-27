@@ -3,18 +3,69 @@
 监控指定目录，检测新文件并自动加入翻译队列
 """
 import os
+import re
 import shutil
 import threading
 import time
 import hashlib
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Any, Set
+from typing import Callable, Dict, List, Optional, Any, Set, Tuple
 from ModuleFolders.Base.Base import Base
 from ModuleFolders.Infrastructure.Automation.WorkflowRunner import (
     describe_workflow_steps,
+    is_queue_only_workflow,
     normalize_workflow_steps,
 )
+from ModuleFolders.Infrastructure.Automation.AutomationPaths import (
+    AUTOMATION_GLOSSARY_DIR_NAME,
+    is_under_automation_glossary_dir,
+)
+
+
+SERIES_VOLUME_PATTERNS = (
+    re.compile(r"^(?P<prefix>.*?)(?:第\s*)?(?P<volume>\d{1,4})\s*(?:卷|巻|册|冊|集|话|話)(?P<suffix>.*)$", re.IGNORECASE),
+    re.compile(r"^(?P<prefix>.*?)(?:vol(?:ume)?|book)\s*\.?\s*(?P<volume>\d{1,4})(?P<suffix>.*)$", re.IGNORECASE),
+    re.compile(r"^(?P<prefix>.*?)(?P<volume>\d{1,4})(?P<suffix>\D*)$"),
+)
+
+WATCH_TARGET_TYPES = {"file", "folder", "both"}
+
+
+def parse_series_volume(path: str) -> dict:
+    stem = os.path.splitext(os.path.basename(os.path.normpath(path or "")))[0]
+    normalized = stem.strip()
+    for pattern in SERIES_VOLUME_PATTERNS:
+        match = pattern.match(normalized)
+        if not match:
+            continue
+        try:
+            volume = int(match.group("volume"))
+        except (TypeError, ValueError):
+            continue
+        if volume <= 0:
+            continue
+        prefix = re.sub(r"[\s._\-\[\]【】()（）]+$", "", match.groupdict().get("prefix") or "")
+        suffix = re.sub(r"^[\s._\-\[\]【】()（）]+", "", match.groupdict().get("suffix") or "")
+        series_key = (prefix or suffix or os.path.basename(os.path.dirname(os.path.abspath(path or "."))) or "series").strip()
+        series_key = re.sub(r"\s+", " ", series_key)
+        return {
+            "series_key": series_key,
+            "volume": volume,
+            "label": f"Vol_{volume}",
+        }
+    return {}
+
+
+def normalize_series_family_key(value: str) -> str:
+    value = re.sub(r"\s+", " ", str(value or "")).strip().lower()
+    return value
+
+
+def natural_sort_key(value: str) -> list:
+    text = os.path.basename(os.path.normpath(value or ""))
+    parts = re.split(r"(\d+)", text.lower())
+    return [int(part) if part.isdigit() else part for part in parts]
 
 
 class WatchRule:
@@ -27,7 +78,8 @@ class WatchRule:
                  recursive: bool = False, enabled: bool = True,
                  move_to_done: bool = True, workflow_steps: List[dict] = None,
                  trigger_mode: str = "file", rules_profile: str = "",
-                 settle_existing: bool = False, **kwargs):
+                 settle_existing: bool = False, series_incremental: bool = False,
+                 watch_target_type: str = "file", **kwargs):
         self.id = rule_id
         self.watch_path = os.path.abspath(watch_path)
         self.output_path = output_path
@@ -41,9 +93,11 @@ class WatchRule:
         self.recursive = recursive
         self.enabled = enabled
         self.move_to_done = move_to_done
-        self.workflow_steps = normalize_workflow_steps(workflow_steps, task_type, auto_start)
+        self.workflow_steps = self._normalize_rule_workflow_steps(workflow_steps, task_type, auto_start)
         self.trigger_mode = trigger_mode if trigger_mode in {"file", "folder"} else "file"
         self.settle_existing = settle_existing
+        self.series_incremental = bool(series_incremental)
+        self.watch_target_type = self._normalize_watch_target_type(watch_target_type)
         self.extra = kwargs
 
         # 运行状态
@@ -64,11 +118,32 @@ class WatchRule:
             patterns.append(pattern)
         return patterns or ["*.txt", "*.epub", "*.srt"]
 
+    @staticmethod
+    def _normalize_rule_workflow_steps(workflow_steps: List[dict], task_type: str, auto_start: bool) -> List[dict]:
+        if not workflow_steps and not auto_start:
+            return []
+
+        normalized = normalize_workflow_steps(workflow_steps, task_type, auto_start)
+        if not auto_start and is_queue_only_workflow(normalized):
+            return []
+        return normalized
+
     def matches_pattern(self, filename: str) -> bool:
         """检查文件是否匹配模式"""
         from fnmatch import fnmatch
         return any(fnmatch(filename.lower(), pattern.lower())
                    for pattern in self.file_patterns)
+
+    @staticmethod
+    def _normalize_watch_target_type(value: str) -> str:
+        value = str(value or "file").strip().lower()
+        return value if value in WATCH_TARGET_TYPES else "file"
+
+    def detects_files(self) -> bool:
+        return self.watch_target_type in {"file", "both"}
+
+    def detects_folders(self) -> bool:
+        return self.watch_target_type in {"folder", "both"}
 
     def to_dict(self) -> dict:
         """转换为字典"""
@@ -89,6 +164,8 @@ class WatchRule:
             "workflow_steps": self.workflow_steps,
             "trigger_mode": self.trigger_mode,
             "settle_existing": self.settle_existing,
+            "series_incremental": self.series_incremental,
+            "watch_target_type": self.watch_target_type,
             **self.extra
         }
 
@@ -112,6 +189,8 @@ class WatchRule:
             workflow_steps=data.get("workflow_steps"),
             trigger_mode=data.get("trigger_mode", "file"),
             settle_existing=data.get("settle_existing", False),
+            series_incremental=data.get("series_incremental", False),
+            watch_target_type=data.get("watch_target_type", data.get("detect_target", "file")),
         )
 
 
@@ -130,13 +209,12 @@ class FileState:
     def update(self) -> bool:
         """更新文件状态，返回是否有变化"""
         try:
-            stat = os.stat(self.path)
-            new_size = stat.st_size
-            new_mtime = stat.st_mtime
+            new_size, new_mtime, new_hash = self._snapshot_path(self.path)
 
-            if new_size != self.size or new_mtime != self.mtime:
+            if new_size != self.size or new_mtime != self.mtime or new_hash != self.hash:
                 self.size = new_size
                 self.mtime = new_mtime
+                self.hash = new_hash
                 self.stable_since = None
                 return True
             else:
@@ -145,6 +223,30 @@ class FileState:
                 return False
         except OSError:
             return False
+
+    @staticmethod
+    def _snapshot_path(path: str) -> Tuple[int, float, str]:
+        if not os.path.isdir(path):
+            stat = os.stat(path)
+            return stat.st_size, stat.st_mtime, f"file:{stat.st_size}:{stat.st_mtime}"
+
+        total_size = 0
+        latest_mtime = 0.0
+        file_count = 0
+        for root, dirs, files in os.walk(path):
+            dirs[:] = [d for d in dirs if d != AUTOMATION_GLOSSARY_DIR_NAME]
+            for filename in files:
+                child = os.path.join(root, filename)
+                try:
+                    stat = os.stat(child)
+                except OSError:
+                    continue
+                total_size += stat.st_size
+                latest_mtime = max(latest_mtime, stat.st_mtime)
+                file_count += 1
+        stat = os.stat(path)
+        latest_mtime = max(latest_mtime, stat.st_mtime)
+        return total_size, latest_mtime, f"dir:{file_count}:{total_size}:{latest_mtime}"
 
     def is_stable(self, debounce_seconds: int) -> bool:
         """检查文件是否稳定（不再被写入）"""
@@ -240,12 +342,21 @@ class WatchManager(Base):
                 return False
 
             rule = self.rules[rule_id]
-            for key, value in kwargs.items():
+            updates = dict(kwargs)
+            task_type = updates.get("task_type", rule.task_type)
+            auto_start = updates.get("auto_start", rule.auto_start)
+
+            if "file_patterns" in updates:
+                updates["file_patterns"] = WatchRule._normalize_patterns(updates["file_patterns"])
+            if "workflow_steps" in updates:
+                updates["workflow_steps"] = WatchRule._normalize_rule_workflow_steps(
+                    updates["workflow_steps"],
+                    task_type,
+                    auto_start,
+                )
+
+            for key, value in updates.items():
                 if hasattr(rule, key):
-                    if key == "file_patterns":
-                        value = WatchRule._normalize_patterns(value)
-                    if key == "workflow_steps":
-                        value = normalize_workflow_steps(value, rule.task_type, rule.auto_start)
                     setattr(rule, key, value)
             return True
 
@@ -267,8 +378,12 @@ class WatchManager(Base):
         rule: WatchRule,
         matched: bool,
         status: str = None,
+        path_type: str = None,
+        series: dict = None,
     ) -> dict:
         path = os.path.abspath(file_path)
+        if self._is_system_ignored_path(path, rule):
+            return {}
         now = datetime.now()
         observation_key = self._observation_key(path, rule)
         observation = self.file_observations.get(observation_key)
@@ -286,13 +401,25 @@ class WatchManager(Base):
         except ValueError:
             relative_path = os.path.basename(path)
 
+        observed_path_type = path_type or ("folder" if os.path.isdir(path) else "file")
+        if series is not None:
+            series_value = series
+        elif observed_path_type == "folder":
+            series_value = observation.get("series", {})
+        elif rule.series_incremental:
+            series_value = parse_series_volume(path)
+        else:
+            series_value = {}
+
         observation.update({
             "rule_id": rule.id,
             "name": os.path.basename(path),
             "relative_path": relative_path,
             "matched": matched,
+            "path_type": observed_path_type,
             "patterns": list(rule.file_patterns),
-            "workflow": describe_workflow_steps(rule.workflow_steps),
+            "workflow": self._describe_workflow(rule.workflow_steps),
+            "series": series_value,
             "last_seen": now,
         })
         if status:
@@ -311,6 +438,130 @@ class WatchManager(Base):
 
         return observation
 
+    def _is_system_ignored_path(self, path: str, rule: WatchRule = None) -> bool:
+        watch_root = getattr(rule, "watch_path", "") if rule else ""
+        return is_under_automation_glossary_dir(path, watch_root)
+
+    def _filter_system_dirs(self, root: str, dirs: List[str], rule: WatchRule, excluded_dirs: Set[str] = None) -> None:
+        excluded_dirs = excluded_dirs or set()
+        dirs[:] = [
+            d for d in dirs
+            if d != AUTOMATION_GLOSSARY_DIR_NAME
+            and os.path.abspath(os.path.join(root, d)) not in excluded_dirs
+            and not self._is_system_ignored_path(os.path.join(root, d), rule)
+        ]
+
+    def _excluded_dirs_for_rule(self, rule: WatchRule) -> Set[str]:
+        return {
+            os.path.abspath(path)
+            for path in (rule.output_path, rule.done_path)
+            if path
+        }
+
+    @staticmethod
+    def _is_dir_excluded(path: str, excluded_dirs: Set[str]) -> bool:
+        path = os.path.abspath(path)
+        return any(path == excluded or path.startswith(excluded + os.sep) for excluded in excluded_dirs)
+
+    def _is_detectable_directory(self, path: str, rule: WatchRule, excluded_dirs: Set[str] = None) -> bool:
+        name = os.path.basename(os.path.normpath(path))
+        if name == AUTOMATION_GLOSSARY_DIR_NAME:
+            return False
+        if self._is_system_ignored_path(path, rule):
+            return False
+        if excluded_dirs and self._is_dir_excluded(path, excluded_dirs):
+            return False
+        return True
+
+    def _iter_files_in_folder(self, folder_path: str, rule: WatchRule, include_unmatched: bool = True) -> List[str]:
+        result = []
+        excluded_dirs = self._excluded_dirs_for_rule(rule)
+        try:
+            for root, dirs, files in os.walk(folder_path):
+                self._filter_system_dirs(root, dirs, rule, excluded_dirs)
+                for filename in files:
+                    path = os.path.join(root, filename)
+                    if self._is_system_ignored_path(path, rule):
+                        continue
+                    if include_unmatched or rule.matches_pattern(filename):
+                        result.append(os.path.abspath(path))
+        except OSError:
+            pass
+        return sorted(result, key=natural_sort_key)
+
+    def _iter_matching_files_in_folder(self, folder_path: str, rule: WatchRule) -> List[str]:
+        return self._iter_files_in_folder(folder_path, rule, include_unmatched=False)
+
+    def _analyze_folder_series(self, folder_path: str, rule: WatchRule) -> dict:
+        files = self._iter_matching_files_in_folder(folder_path, rule)
+        if not files:
+            return {
+                "is_series": False,
+                "reason": "no_matching_files",
+                "files": [],
+                "volumes": [],
+                "missing_volumes": [],
+            }
+
+        parsed_items = []
+        missing_parse = []
+        for path in files:
+            parsed = parse_series_volume(path)
+            if not parsed.get("volume"):
+                missing_parse.append(path)
+                continue
+            family_key = normalize_series_family_key(parsed.get("series_key"))
+            folder_key = normalize_series_family_key(os.path.basename(os.path.normpath(folder_path)))
+            parent_key = normalize_series_family_key(os.path.basename(os.path.dirname(os.path.abspath(path))))
+            if not family_key or family_key == "series" or family_key == parent_key:
+                family_key = folder_key
+            parsed = dict(parsed)
+            parsed["series_key"] = family_key or os.path.basename(os.path.normpath(folder_path))
+            parsed["path"] = path
+            parsed_items.append(parsed)
+
+        if missing_parse:
+            return {
+                "is_series": False,
+                "reason": "unparsed_volume",
+                "files": files,
+                "unparsed_files": [os.path.basename(path) for path in missing_parse],
+                "volumes": [],
+                "missing_volumes": [],
+            }
+
+        family_keys = {item["series_key"] for item in parsed_items}
+        if len(family_keys) != 1:
+            return {
+                "is_series": False,
+                "reason": "mixed_series",
+                "files": files,
+                "families": sorted(family_keys),
+                "volumes": sorted(item["volume"] for item in parsed_items),
+                "missing_volumes": [],
+            }
+
+        volumes = sorted({item["volume"] for item in parsed_items})
+        missing_volumes = []
+        if volumes:
+            expected = set(range(min(volumes), max(volumes) + 1))
+            missing_volumes = sorted(expected - set(volumes))
+
+        parsed_by_path = {
+            item["path"]: item
+            for item in parsed_items
+        }
+        sorted_files = sorted(files, key=lambda path: (parsed_by_path[path]["volume"], natural_sort_key(path)))
+        return {
+            "is_series": True,
+            "reason": "series_detected",
+            "files": sorted_files,
+            "series_key": parsed_items[0]["series_key"],
+            "volumes": volumes,
+            "missing_volumes": missing_volumes,
+            "parsed": parsed_by_path,
+        }
+
     def _scan_rule_file_entries(
         self,
         rule: WatchRule,
@@ -320,21 +571,29 @@ class WatchManager(Base):
         entries = []
         truncated = False
 
-        def add_entry(path: str, name: str) -> bool:
+        def add_entry(path: str, name: str, path_type: str = "file") -> bool:
             nonlocal truncated
-            matched = rule.matches_pattern(name)
+            if self._is_system_ignored_path(path, rule):
+                return True
+            matched = rule.matches_pattern(name) if path_type == "file" else True
             if not matched and not include_unmatched:
                 return True
             try:
-                stat = os.stat(path)
+                if path_type == "folder":
+                    size, mtime, _ = FileState._snapshot_path(path)
+                else:
+                    stat = os.stat(path)
+                    size = stat.st_size
+                    mtime = stat.st_mtime
             except OSError:
                 return True
             entries.append({
                 "path": os.path.abspath(path),
                 "name": name,
                 "matched": matched,
-                "size": stat.st_size,
-                "mtime": stat.st_mtime,
+                "size": size,
+                "mtime": mtime,
+                "path_type": path_type,
             })
             if len(entries) >= scan_limit:
                 truncated = True
@@ -342,23 +601,29 @@ class WatchManager(Base):
             return True
 
         try:
+            excluded_dirs = self._excluded_dirs_for_rule(rule)
             if rule.recursive:
-                excluded_dirs = {
-                    os.path.abspath(path)
-                    for path in (rule.output_path, rule.done_path)
-                    if path
-                }
                 for root, dirs, files in os.walk(rule.watch_path):
-                    dirs[:] = [
-                        d for d in dirs
-                        if os.path.abspath(os.path.join(root, d)) not in excluded_dirs
-                    ]
-                    for filename in files:
-                        if not add_entry(os.path.join(root, filename), filename):
-                            return entries, truncated
+                    if rule.detects_folders() and os.path.abspath(root) == os.path.abspath(rule.watch_path):
+                        for dirname in list(dirs):
+                            path = os.path.join(root, dirname)
+                            if self._is_detectable_directory(path, rule, excluded_dirs):
+                                if not add_entry(path, dirname, "folder"):
+                                    return entries, truncated
+                    self._filter_system_dirs(root, dirs, rule, excluded_dirs)
+                    if rule.detects_files() or rule.detects_folders():
+                        for filename in files:
+                            if not add_entry(os.path.join(root, filename), filename, "file"):
+                                return entries, truncated
             else:
                 for entry in os.scandir(rule.watch_path):
-                    if entry.is_file() and not add_entry(entry.path, entry.name):
+                    if entry.is_dir() and rule.detects_folders() and self._is_detectable_directory(entry.path, rule, excluded_dirs):
+                        if not add_entry(entry.path, entry.name, "folder"):
+                            return entries, truncated
+                        for child_path in self._iter_files_in_folder(entry.path, rule, include_unmatched=include_unmatched):
+                            if not add_entry(child_path, os.path.basename(child_path), "file"):
+                                return entries, truncated
+                    if entry.is_file() and rule.detects_files() and not add_entry(entry.path, entry.name, "file"):
                         return entries, truncated
         except OSError:
             pass
@@ -378,7 +643,7 @@ class WatchManager(Base):
                 rule_id = getattr(task, "rule_id", None)
                 info = {
                     "status": getattr(task, "status", "waiting"),
-                    "workflow": describe_workflow_steps(getattr(task, "workflow_steps", []) or []),
+                    "workflow": self._describe_workflow(getattr(task, "workflow_steps", []) or []),
                     "locked": getattr(task, "locked", False),
                     "is_processing": getattr(task, "is_processing", False),
                     "trigger_file_path": getattr(task, "trigger_file_path", None),
@@ -441,6 +706,7 @@ class WatchManager(Base):
             "polishing",
             "processing",
             "completed",
+            "partial",
             "done",
             "processed",
         }
@@ -453,6 +719,7 @@ class WatchManager(Base):
             rule,
             matched,
             "ignored" if not matched else None,
+            path_type=entry.get("path_type"),
         )
         state = self.file_states.get(path)
         queue_task = self._find_queue_task_for_file(path, rule, queue_lookup) if matched else None
@@ -479,11 +746,14 @@ class WatchManager(Base):
         detected_at = queue_task.get("trigger_detected_at") if queue_task and queue_task.get("trigger_detected_at") else state.first_seen if state else observation.get("detected_at")
         workflow = queue_task.get("workflow") if queue_task and queue_task.get("workflow") else observation.get("workflow", "")
         entered_workflow = bool(queue_task) or self._status_enters_workflow(status)
+        series = observation.get("series") or {}
+        path_type = observation.get("path_type") or entry.get("path_type") or "file"
 
         return {
             "rule_id": rule.id,
             "path": path,
             "file": observation.get("relative_path") or entry["name"],
+            "path_type": path_type,
             "matched": matched,
             "patterns": ", ".join(rule.file_patterns),
             "detected_at": self._format_snapshot_time(detected_at),
@@ -492,6 +762,14 @@ class WatchManager(Base):
             "status": status,
             "entered_workflow": entered_workflow,
             "workflow": workflow,
+            "queue_only": bool(matched and not workflow),
+            "series_key": series.get("series_key", ""),
+            "series_volume": series.get("volume", ""),
+            "series_is_folder": bool(path_type == "folder" and series),
+            "series_detected": bool(series.get("is_series")),
+            "series_reason": series.get("reason", ""),
+            "series_missing_volumes": series.get("missing_volumes", []),
+            "series_volumes": series.get("volumes", []),
         }
 
     def get_file_status_snapshot(
@@ -509,7 +787,7 @@ class WatchManager(Base):
             for rule in self.rules.values():
                 entries, truncated = self._scan_rule_file_entries(rule, include_unmatched, scan_limit)
                 rows = [self._build_file_status_row(rule, entry, queue_lookup) for entry in entries]
-                rows.sort(key=lambda item: (item["matched"], item.get("mtime") or ""), reverse=True)
+                rows.sort(key=lambda item: (item["path_type"] != "folder", item["file"].lower()))
 
                 visible_rows = rows[:limit_per_rule]
                 snapshots.append({
@@ -569,23 +847,46 @@ class WatchManager(Base):
     def _scan_directory(self, rule: WatchRule):
         """扫描目录"""
         try:
-            if rule.recursive:
-                files = self._scan_recursive(rule.watch_path, rule)
-            else:
-                files = self._scan_flat(rule.watch_path, rule)
-
-            for file_path in files:
-                self._process_file(file_path, rule)
+            paths = self._scan_watch_targets(rule)
+            for path in paths:
+                if os.path.isdir(path):
+                    self._process_folder(path, rule)
+                else:
+                    self._process_file(path, rule)
 
         except Exception as e:
             self._log("error", f"Scan error for {rule.watch_path}: {e}")
+
+    def _scan_watch_targets(self, rule: WatchRule) -> List[str]:
+        result = []
+        if rule.detects_folders():
+            result.extend(self._scan_folders(rule.watch_path, rule))
+        if rule.detects_files():
+            if rule.detects_folders():
+                result.extend(self._scan_flat(rule.watch_path, rule))
+            else:
+                result.extend(self._scan_recursive(rule.watch_path, rule) if rule.recursive else self._scan_flat(rule.watch_path, rule))
+        return result
 
     def _scan_flat(self, directory: str, rule: WatchRule) -> List[str]:
         """扫描单层目录"""
         result = []
         try:
             for entry in os.scandir(directory):
+                if entry.is_dir() and entry.name == AUTOMATION_GLOSSARY_DIR_NAME:
+                    continue
                 if entry.is_file() and rule.matches_pattern(entry.name):
+                    result.append(entry.path)
+        except OSError:
+            pass
+        return result
+
+    def _scan_folders(self, directory: str, rule: WatchRule) -> List[str]:
+        result = []
+        excluded_dirs = self._excluded_dirs_for_rule(rule)
+        try:
+            for entry in os.scandir(directory):
+                if entry.is_dir() and self._is_detectable_directory(entry.path, rule, excluded_dirs):
                     result.append(entry.path)
         except OSError:
             pass
@@ -601,15 +902,12 @@ class WatchManager(Base):
                 if path
             }
             for root, dirs, files in os.walk(directory):
-                # 排除输出目录和完成目录
-                dirs[:] = [
-                    d for d in dirs
-                    if os.path.abspath(os.path.join(root, d)) not in excluded_dirs
-                ]
+                self._filter_system_dirs(root, dirs, rule, excluded_dirs)
 
                 for filename in files:
-                    if rule.matches_pattern(filename):
-                        result.append(os.path.join(root, filename))
+                    path = os.path.join(root, filename)
+                    if not self._is_system_ignored_path(path, rule) and rule.matches_pattern(filename):
+                        result.append(path)
         except OSError:
             pass
         return result
@@ -620,23 +918,37 @@ class WatchManager(Base):
             if rule.settle_existing:
                 continue
             try:
-                files = self._scan_recursive(rule.watch_path, rule) if rule.recursive else self._scan_flat(rule.watch_path, rule)
-                for file_path in files:
-                    self.processed_files.add(self._get_file_key(file_path))
-                    self._record_file_observation(file_path, rule, True, "primed")
+                paths = self._scan_watch_targets(rule)
+                for path in paths:
+                    self.processed_files.add(self._get_file_key(path))
+                    self._record_file_observation(path, rule, True, "primed", path_type="folder" if os.path.isdir(path) else "file")
             except Exception as e:
                 self._log("warning", f"Failed to prime existing files for {rule.watch_path}: {e}")
 
     def _process_file(self, file_path: str, rule: WatchRule):
         """处理检测到的文件"""
-        # 检查是否已处理
+        self._process_single_target(file_path, rule, None)
+
+    def _process_single_target(
+        self,
+        file_path: str,
+        rule: WatchRule,
+        folder_series: dict = None,
+        skip_stability: bool = False,
+    ) -> bool:
+        """处理检测到的单个文件目标"""
+        if self._is_system_ignored_path(file_path, rule):
+            return False
         file_key = self._get_file_key(file_path)
         if file_key in self.processed_files:
             observation = self.file_observations.get(self._observation_key(file_path, rule))
             if observation and observation.get("status") == "primed":
-                return
+                return False
+            if observation and observation.get("status") == "partial":
+                self._record_file_observation(file_path, rule, True, "partial")
+                return False
             self._record_file_observation(file_path, rule, True, "processed")
-            return
+            return False
 
         self._record_file_observation(file_path, rule, True, "pending")
 
@@ -650,28 +962,28 @@ class WatchManager(Base):
         state.update()
 
         # 检查文件是否稳定
-        if not state.is_stable(rule.debounce_seconds):
+        if not skip_stability and not state.is_stable(rule.debounce_seconds):
             state.status = "waiting_stable"
             self._record_file_observation(file_path, rule, True, "waiting_stable")
-            return
+            return False
 
         # 检查并发限制
         if self.current_tasks >= self.max_concurrent:
             state.status = "waiting_capacity"
             self._record_file_observation(file_path, rule, True, "waiting_capacity")
-            return
+            return False
 
         # 标记为处理中
         state.status = "processing"
         self._record_file_observation(file_path, rule, True, "processing")
         self.current_tasks += 1
-        target_path = rule.watch_path if rule.trigger_mode == "folder" else file_path
+        target_path = file_path if folder_series is not None else rule.watch_path if rule.trigger_mode == "folder" else file_path
         target_key = self._get_file_key(target_path)
         if target_key in self._active_targets:
             self.current_tasks -= 1
             state.status = "waiting_target"
             self._record_file_observation(file_path, rule, True, "waiting_target")
-            return
+            return False
         self._active_targets.add(target_key)
 
         # 创建任务
@@ -685,14 +997,36 @@ class WatchManager(Base):
             "rule_id": rule.id,
             "auto_start": rule.auto_start,
             "workflow_steps": rule.workflow_steps,
+            "series_incremental": rule.series_incremental,
             "trigger_file_path": file_path,
             "trigger_file_name": os.path.basename(file_path),
             "trigger_detected_at": datetime.now().isoformat(timespec="seconds"),
         }
+        series_enabled = bool(rule.series_incremental)
+        series = {}
+        if folder_series is not None:
+            series_enabled = False
+            if folder_series.get("is_series"):
+                series = (folder_series.get("parsed") or {}).get(os.path.abspath(file_path), {}) or {}
+                if series:
+                    series_enabled = bool(rule.series_incremental)
+                    task_config["series_container_path"] = folder_series.get("folder_path")
+                    task_config["series_missing_volumes"] = folder_series.get("missing_volumes", [])
+        elif rule.series_incremental:
+            series = parse_series_volume(file_path)
+        task_config["series_incremental"] = bool(series_enabled and series)
+        if series_enabled:
+            if series:
+                task_config["series_key"] = series.get("series_key")
+                task_config["series_volume"] = series.get("volume")
+                self._apply_series_context_to_workflow(task_config, series)
+            else:
+                self._log("warning", f"Series volume not recognized: {os.path.basename(file_path)}")
 
+        workflow_description = self._describe_workflow(rule.workflow_steps)
         self._log(
             "info",
-            f"New file detected: {os.path.basename(file_path)} | workflow: {describe_workflow_steps(rule.workflow_steps)}",
+            f"New file detected: {os.path.basename(file_path)} | workflow: {workflow_description or 'Queue only'}",
         )
 
         # 默认交给队列系统管理；只有未配置队列回调时才直接执行。
@@ -700,11 +1034,13 @@ class WatchManager(Base):
             # 加入队列
             try:
                 self.queue_callback(task_config)
-                self._mark_processed(file_path, rule, "queued")
+                self._mark_processed(file_path, rule, "queued", mark_related=folder_series is None)
+                return True
             except Exception as e:
                 self._log("error", f"Failed to queue task: {e}")
                 state.status = "error"
                 self._record_file_observation(file_path, rule, True, "error")
+                return False
             finally:
                 self.current_tasks -= 1
                 self._active_targets.discard(target_key)
@@ -716,12 +1052,95 @@ class WatchManager(Base):
                 daemon=True
             )
             exec_thread.start()
+            return True
         else:
             self._log("warning", "No task or queue callback configured")
             state.status = "error"
             self._record_file_observation(file_path, rule, True, "error")
             self.current_tasks -= 1
             self._active_targets.discard(target_key)
+            return False
+
+    def _process_folder(self, folder_path: str, rule: WatchRule):
+        """处理检测到的文件夹。"""
+        folder_path = os.path.abspath(folder_path)
+        if self._is_system_ignored_path(folder_path, rule):
+            return
+        folder_key = self._get_file_key(folder_path)
+        if folder_key in self.processed_files:
+            observation = self.file_observations.get(self._observation_key(folder_path, rule))
+            if observation and observation.get("status") == "primed":
+                return
+            self._record_file_observation(folder_path, rule, True, "processed", path_type="folder")
+            return
+
+        self._record_file_observation(folder_path, rule, True, "pending", path_type="folder")
+        if folder_path not in self.file_states:
+            self.file_states[folder_path] = FileState(folder_path)
+        state = self.file_states[folder_path]
+        state.update()
+
+        if not state.is_stable(rule.debounce_seconds):
+            state.status = "waiting_stable"
+            self._record_file_observation(folder_path, rule, True, "waiting_stable", path_type="folder")
+            return
+
+        files = self._iter_matching_files_in_folder(folder_path, rule)
+        if not files:
+            state.status = "ignored"
+            self._record_file_observation(folder_path, rule, True, "ignored", path_type="folder")
+            self.processed_files.add(folder_key)
+            del self.file_states[folder_path]
+            return
+
+        folder_series = self._analyze_folder_series(folder_path, rule)
+        folder_series["folder_path"] = folder_path
+        if folder_series.get("is_series"):
+            self._log(
+                "info",
+                f"Folder series detected: {os.path.basename(folder_path)} | volumes: {folder_series.get('volumes', [])}",
+            )
+            if folder_series.get("missing_volumes"):
+                self._log(
+                    "warning",
+                    f"Folder series has missing volumes: {os.path.basename(folder_path)} | missing: {folder_series.get('missing_volumes')}",
+                )
+        else:
+            self._log(
+                "info",
+                f"Folder queued as ordinary files: {os.path.basename(folder_path)} | reason: {folder_series.get('reason')}",
+            )
+
+        self._record_file_observation(
+            folder_path,
+            rule,
+            True,
+            "processing",
+            path_type="folder",
+            series=folder_series,
+        )
+
+        queued_count = 0
+        for file_path in folder_series.get("files", files):
+            if self._get_file_key(file_path) in self.processed_files:
+                continue
+            queued = self._process_single_target(file_path, rule, folder_series, skip_stability=True)
+            if queued:
+                queued_count += 1
+
+        self.processed_files.add(folder_key)
+        state.status = "queued" if queued_count else "processed"
+        self._record_file_observation(
+            folder_path,
+            rule,
+            True,
+            state.status,
+            path_type="folder",
+            series=folder_series,
+        )
+        rule.last_activity = datetime.now()
+        if folder_path in self.file_states:
+            del self.file_states[folder_path]
 
     def _execute_task(self, file_path: str, rule: WatchRule, task_config: dict, target_key: str):
         """执行任务"""
@@ -739,11 +1158,15 @@ class WatchManager(Base):
             self.current_tasks -= 1
             self._active_targets.discard(target_key)
 
-    def _mark_processed(self, file_path: str, rule: WatchRule, status: str):
+    def _mark_processed(self, file_path: str, rule: WatchRule, status: str, mark_related: bool = True):
         """标记文件已处理"""
         file_key = self._get_file_key(file_path)
         self.processed_files.add(file_key)
-        if rule.trigger_mode == "folder":
+        observation = self.file_observations.get(self._observation_key(file_path, rule))
+        if status == "processed" and observation and observation.get("status") == "partial":
+            self._record_file_observation(file_path, rule, True, "partial")
+            return
+        if mark_related and rule.trigger_mode == "folder":
             try:
                 files = self._scan_recursive(rule.watch_path, rule) if rule.recursive else self._scan_flat(rule.watch_path, rule)
                 for related_path in files:
@@ -827,6 +1250,21 @@ class WatchManager(Base):
         if len(self.logs) > self.max_logs:
             self.logs = self.logs[-self.max_logs:]
 
+    def _describe_workflow(self, steps: List[dict]) -> str:
+        return describe_workflow_steps(steps, getattr(Base, "i18n", None))
+
+    @staticmethod
+    def _apply_series_context_to_workflow(task_config: dict, series: dict) -> None:
+        steps = []
+        for step in task_config.get("workflow_steps") or []:
+            prepared = dict(step)
+            if prepared.get("type") == "extract_glossary":
+                prepared["series_incremental"] = True
+                prepared.setdefault("source_volume", series.get("volume"))
+                prepared.setdefault("source_label", series.get("label"))
+            steps.append(prepared)
+        task_config["workflow_steps"] = steps
+
     def get_logs(self, limit: int = 20) -> List[dict]:
         """获取最近的日志"""
         return self.logs[-limit:]
@@ -876,3 +1314,15 @@ class WatchManager(Base):
         self.file_states.clear()
         self.file_observations.clear()
         self._log("info", "Processed history cleared")
+
+    def requeue_file(self, file_path: str, rule_id: str, workflow: str = "") -> bool:
+        rule = self.rules.get(rule_id)
+        if not rule or not file_path:
+            return False
+
+        path = os.path.abspath(file_path)
+        observation = self._record_file_observation(path, rule, True, "queued")
+        if workflow:
+            observation["workflow"] = workflow
+        self._log("info", f"Re-queued detected file: {os.path.basename(path)} | workflow: {workflow or 'Queue only'}")
+        return True

@@ -13,7 +13,7 @@ from rich.text import Text
 PROGRESS_FILE_ENV = "AINIEE_AUTOMATION_PROGRESS_FILE"
 RUN_ID_ENV = "AINIEE_AUTOMATION_RUN_ID"
 TASK_CONFIG_ENV = "AINIEE_AUTOMATION_TASK_CONFIG"
-TERMINAL_STATUSES = {"completed", "partial", "error", "stopped", "interrupted"}
+TERMINAL_STATUSES = {"completed", "partial", "enqueued", "error", "stopped", "interrupted"}
 
 
 def get_project_root() -> str:
@@ -90,6 +90,8 @@ class AutomationProgressReporter:
             "step_name": "",
             "line": 0,
             "total_line": 0,
+            "remaining_line": 0,
+            "eta": 0,
             "token": 0,
             "time": 0,
             "percent": 0,
@@ -178,16 +180,20 @@ class AutomationProgressReporter:
             self.state.update({
                 "event": "state",
                 "status": status,
-                "phase": "finished" if status in {"completed", "partial"} else "error",
+                "phase": "finished" if status in {"completed", "partial", "enqueued"} else "error",
                 "message": message or status,
-                "percent": 100 if status == "completed" else self.state.get("percent", 0),
+                "percent": 100 if status in {"completed", "enqueued"} else self.state.get("percent", 0),
                 "finished_at": _now_iso(),
                 "updated_at": _now_iso(),
             })
             self._normalize_percent()
-            if status == "completed":
+            if status in {"completed", "enqueued"}:
                 self.state["percent"] = 100
             self.flush(force=True)
+
+    def current_state(self) -> dict:
+        with self._lock:
+            return dict(self.state)
 
     def _progress_counts(self) -> tuple[int, int]:
         total = self.state.get("total_line") or self.state.get("total") or 0
@@ -199,7 +205,7 @@ class AutomationProgressReporter:
 
     def _has_missing_items(self) -> bool:
         current, total = self._progress_counts()
-        return total > 0 and current < total
+        return total > 0 and 0 < current < total
 
     def _normalize_percent(self) -> None:
         total = self.state.get("total_line") or self.state.get("total") or 0
@@ -214,12 +220,36 @@ class AutomationProgressReporter:
             self.state["percent"] = max(0, min(100, int(current * 100 / total)))
             self.state["line"] = current
             self.state["total_line"] = total
+            self.state["remaining_line"] = max(0, total - current)
+            elapsed = self._elapsed_seconds()
+            if current > 0 and elapsed > 0 and current < total:
+                self.state["eta"] = int(max(0, (total - current) * elapsed / current))
+            elif current >= total:
+                self.state["eta"] = 0
             return
 
         step_total = int(self.state.get("step_total") or 0)
         step_index = int(self.state.get("step_index") or 0)
         if step_total > 0:
             self.state["percent"] = max(0, min(100, int(max(step_index - 1, 0) * 100 / step_total)))
+
+    def _elapsed_seconds(self) -> float:
+        value = self.state.get("time")
+        try:
+            seconds = float(value or 0)
+            if seconds > 0:
+                return seconds
+        except (TypeError, ValueError):
+            pass
+
+        started_at = self.state.get("started_at")
+        if not started_at:
+            return 0
+        try:
+            started = datetime.fromisoformat(str(started_at))
+            return max(0, (datetime.now() - started).total_seconds())
+        except ValueError:
+            return 0
 
     def flush(self, force: bool = False) -> None:
         now = time.monotonic()
@@ -331,11 +361,58 @@ class AutomationProgressStore:
     def __init__(self, project_root: str = None):
         self.progress_dir = get_progress_dir(project_root)
 
-    def list_states(self, limit: int = 20) -> List[dict]:
+    def list_states(
+        self,
+        limit: int = 20,
+        include_terminal: bool = False,
+        cleanup_terminal: bool = True,
+        terminal_ttl_seconds: float = 5.0,
+    ) -> List[dict]:
         states = []
         for path in Path(self.progress_dir).glob("*.jsonl"):
             state = read_progress_file(str(path))
-            if state:
-                states.append(state)
+            if not state:
+                continue
+            if state.get("status") in TERMINAL_STATUSES:
+                if cleanup_terminal and self._terminal_state_expired(state, terminal_ttl_seconds):
+                    self.delete_run_files(str(path))
+                if not include_terminal:
+                    continue
+            states.append(state)
         states.sort(key=lambda item: item.get("updated_at", ""), reverse=True)
         return states[:limit]
+
+    @staticmethod
+    def _terminal_state_expired(state: dict, ttl_seconds: float) -> bool:
+        if ttl_seconds <= 0:
+            return True
+
+        for key in ("finished_at", "updated_at", "written_at"):
+            value = state.get(key)
+            if not value:
+                continue
+            try:
+                timestamp = datetime.fromisoformat(str(value))
+            except ValueError:
+                continue
+            return (datetime.now() - timestamp).total_seconds() >= ttl_seconds
+        return True
+
+    @staticmethod
+    def delete_run_files(progress_path: str) -> None:
+        if not progress_path:
+            return
+
+        progress_path = os.path.abspath(progress_path)
+        run_base, _ = os.path.splitext(progress_path)
+        for path in (
+            progress_path,
+            f"{run_base}.task.json",
+            f"{run_base}.worker.log",
+        ):
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass

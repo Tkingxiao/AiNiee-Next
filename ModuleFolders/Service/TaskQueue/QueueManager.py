@@ -16,7 +16,8 @@ class QueueTaskItem:
                  think_depth=None, thinking_budget=None, workflow_steps=None,
                  source=None, rule_id=None, automation_run_id=None,
                  automation_progress_file=None, automation_worker_pid=None,
-                 trigger_file_path=None, trigger_file_name=None, trigger_detected_at=None):
+                 trigger_file_path=None, trigger_file_name=None, trigger_detected_at=None,
+                 series_incremental=False, series_key=None, series_volume=None, extra=None):
         self.task_type = task_type
         self.input_path = input_path
         self.output_path = output_path
@@ -51,6 +52,10 @@ class QueueTaskItem:
         self.trigger_file_path = trigger_file_path
         self.trigger_file_name = trigger_file_name
         self.trigger_detected_at = trigger_detected_at
+        self.series_incremental = bool(series_incremental)
+        self.series_key = series_key
+        self.series_volume = series_volume
+        self.extra = extra if isinstance(extra, dict) else {}
         
         self.status = "waiting" # waiting, workflow, translating, translated, polishing, completed, partial, error, stopped
         self.locked = False  # 是否被锁定（正在执行中不可修改）
@@ -110,6 +115,7 @@ class QueueManager(Base):
 
         self.tasks = []
         self.is_running = False
+        self._automation_stop_requested = False
         self.current_task_index = -1
         self.load_tasks()
         self._initialized = True
@@ -590,7 +596,7 @@ class QueueManager(Base):
             return True
         return False
 
-    def mark_task_completed(self, index, final_status="completed"):
+    def mark_task_completed(self, index, final_status="completed", final_state: dict = None):
         """标记任务完成并解锁 - 使用智能处理状态管理"""
         if 0 <= index < len(self.tasks):
             task = self.tasks[index]
@@ -599,6 +605,11 @@ class QueueManager(Base):
             self.stop_task_processing(index)
 
             task.status = final_status
+            if final_status == "partial" and isinstance(final_state, dict):
+                task.extra = getattr(task, "extra", {}) or {}
+                task.extra["partial_step_type"] = final_state.get("step_type") or ""
+                task.extra["partial_step_index"] = final_state.get("step_index") or 0
+                task.extra["partial_message"] = final_state.get("message") or ""
             self.save_tasks()
             return True
         return False
@@ -618,6 +629,70 @@ class QueueManager(Base):
         if updated:
             self.save_tasks()
         return updated
+
+    def continue_partial_task(self, run_id: str = "", input_path: str = "") -> bool:
+        target_input = os.path.abspath(input_path) if input_path else ""
+        for task in self.tasks:
+            matches_run = run_id and getattr(task, "automation_run_id", None) == run_id
+            matches_path = target_input and os.path.abspath(getattr(task, "input_path", "") or "") == target_input
+            if not (matches_run or matches_path):
+                continue
+            if getattr(task, "status", "") != "partial":
+                continue
+            task.status = "waiting"
+            task.locked = False
+            task.is_processing = False
+            task.process_start_time = None
+            task.last_activity_time = None
+            task.workflow_steps = self._workflow_steps_for_partial_resume(task)
+            task.automation_run_id = None
+            task.automation_progress_file = None
+            task.automation_worker_pid = None
+            task.extra = getattr(task, "extra", {}) or {}
+            task.extra.pop("partial_step_type", None)
+            task.extra.pop("partial_step_index", None)
+            task.extra.pop("partial_message", None)
+            self.save_tasks()
+            return True
+        return False
+
+    def _workflow_steps_for_partial_resume(self, task):
+        steps = [
+            dict(step)
+            for step in (getattr(task, "workflow_steps", None) or [])
+            if isinstance(step, dict)
+        ]
+        step_types = [str(step.get("type") or "").strip().lower() for step in steps]
+        try:
+            partial_step = str((getattr(task, "extra", {}) or {}).get("partial_step_type") or "").strip().lower()
+        except Exception:
+            partial_step = ""
+        if partial_step in step_types:
+            index = step_types.index(partial_step)
+            resume_steps = steps[index:]
+        elif "translate" in step_types:
+            index = step_types.index("translate")
+            resume_steps = steps[index:]
+        elif "all_in_one" in step_types:
+            resume_steps = [
+                {
+                    **steps[step_types.index("all_in_one")],
+                    "type": "all_in_one",
+                }
+            ]
+        elif "polish" in step_types:
+            index = step_types.index("polish")
+            resume_steps = steps[index:]
+        else:
+            resume_steps = self._workflow_steps_for_background_task(task)
+
+        for step in resume_steps:
+            step.pop("series_incremental", None)
+            step.pop("source_volume", None)
+            step.pop("source_label", None)
+            if step.get("type") in {"translate", "polish", "all_in_one"}:
+                step["resume"] = True
+        return resume_steps
 
     def find_task_by_file_path(self, file_path):
         """根据文件路径查找任务"""
@@ -660,13 +735,21 @@ class QueueManager(Base):
             self.error(f"Failed to skip task: {e}")
             return False, str(e)
 
-    def start_queue(self, cli_menu):
+    def start_queue(self, cli_menu, automation_background=False):
         if self.is_running: return
         self.is_running = True
-        threading.Thread(target=self._process_queue, args=(cli_menu,), daemon=True).start()
+        self._automation_stop_requested = False
+        threading.Thread(target=self._process_queue, args=(cli_menu, automation_background), daemon=True).start()
 
-    def _process_queue(self, cli_menu):
+    def request_automation_stop(self):
+        self._automation_stop_requested = True
+
+    def _process_queue(self, cli_menu, automation_background=False):
         self.info("Starting task queue processing with full API overrides...")
+
+        if automation_background:
+            self._process_background_queue(cli_menu)
+            return
 
         # Phase 0: Custom automation workflows
         self._process_workflow_tasks(cli_menu)
@@ -744,18 +827,79 @@ class QueueManager(Base):
         self.is_running = False
         self.info("Task queue processing finished.")
 
+    def _process_background_queue(self, cli_menu):
+        try:
+            idle_rounds = 0
+            while True:
+                if self._automation_stop_requested or Base.work_status == Base.STATUS.STOPING:
+                    break
+
+                self.hot_reload_queue(quiet=True)
+                self.cleanup_stale_locks()
+                self._ensure_background_workflow_tasks()
+                self._process_workflow_tasks(cli_menu)
+
+                self.hot_reload_queue(quiet=True)
+                if self._has_background_pending_tasks():
+                    idle_rounds = 0
+                    continue
+
+                idle_rounds += 1
+                if idle_rounds >= 2:
+                    break
+                time.sleep(0.5)
+        finally:
+            self._automation_stop_requested = False
+            self.is_running = False
+            self.info("Background task queue processing finished.")
+
+    def _ensure_background_workflow_tasks(self):
+        changed = False
+        for task in self.tasks:
+            if task.locked or self._task_has_workflow(task):
+                continue
+            if task.status not in {"waiting", "translated"}:
+                continue
+
+            steps = self._workflow_steps_for_background_task(task)
+            if not steps:
+                continue
+            task.workflow_steps = steps
+            changed = True
+
+        if changed:
+            self.save_tasks()
+
+    def _workflow_steps_for_background_task(self, task):
+        if task.status == "translated":
+            return [{"type": "polish", "resume": True}]
+
+        if task.task_type == TaskType.TRANSLATE_AND_POLISH:
+            return [{"type": "all_in_one"}]
+        if task.task_type == TaskType.POLISH:
+            return [{"type": "polish", "resume": True}]
+        return [{"type": "translate"}]
+
+    def _has_background_pending_tasks(self):
+        for task in self.tasks:
+            if task.locked:
+                continue
+            if task.status in {"waiting", "translated"}:
+                return True
+        return False
+
     def _task_has_workflow(self, task):
         return bool(getattr(task, "workflow_steps", None))
 
     def _get_next_workflow_task(self):
         for i, task in enumerate(self.tasks):
-            if not task.locked and task.status == "waiting" and self._task_has_workflow(task):
+            if not task.locked and task.status in {"waiting", "translated"} and self._task_has_workflow(task):
                 return i, task
         return None, None
 
     def _process_workflow_tasks(self, cli_menu):
         while True:
-            if Base.work_status == Base.STATUS.STOPING:
+            if self._automation_stop_requested or Base.work_status == Base.STATUS.STOPING:
                 break
 
             self.hot_reload_queue(quiet=True)
@@ -770,8 +914,8 @@ class QueueManager(Base):
             self.save_tasks()
 
             workflow_status = self._run_workflow_task(cli_menu, task)
-            if workflow_status in {"completed", "partial"}:
-                self.mark_task_completed(index, workflow_status)
+            if workflow_status in {"completed", "partial", "enqueued"}:
+                self.mark_task_completed(index, workflow_status, getattr(task, "_automation_final_state", None))
             else:
                 self.mark_task_completed(index, "stopped" if workflow_status == "interrupted" else "error")
 
@@ -791,7 +935,7 @@ class QueueManager(Base):
 
             process = AutomationProcessRunner.get_process(task.automation_run_id)
             while process and process.poll() is None:
-                if Base.work_status == Base.STATUS.STOPING:
+                if self._automation_stop_requested or Base.work_status == Base.STATUS.STOPING:
                     AutomationProcessRunner.terminate(task.automation_run_id, "Automation workflow interrupted by user")
                     return "interrupted"
                 self.update_task_activity(self.current_task_index)
@@ -799,8 +943,9 @@ class QueueManager(Base):
             from ModuleFolders.Infrastructure.Automation.AutomationProgress import read_progress_file
 
             state = read_progress_file(task.automation_progress_file)
+            task._automation_final_state = state
             status = state.get("status")
-            if status in {"completed", "partial", "interrupted"}:
+            if status in {"completed", "partial", "interrupted", "enqueued"}:
                 return status
             return "completed" if process and process.returncode == 0 else "error"
         except Exception as e:

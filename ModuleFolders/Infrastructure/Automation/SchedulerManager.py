@@ -189,13 +189,18 @@ class ScheduledTask:
                  run_queue: bool = False, rules_profile: str = "", **kwargs):
         self.id = task_id
         self.name = name
-        self.schedule = schedule
         self.trigger_type = kwargs.pop("trigger_type", "scheduled") or "scheduled"
         self.event_type = kwargs.pop("event_type", "")
         if self.trigger_type == "queue_added":
             self.event_type = "queue_added"
         elif self.trigger_type == "queue_pending":
             self.event_type = "queue_pending"
+            schedule = ""
+        if self.trigger_type in {"queue_added", "queue_pending"}:
+            input_path = input_path or "queue"
+            run_queue = True
+            workflow_steps = [{"type": "run_queue"}]
+        self.schedule = schedule
         self.input_path = input_path
         self.output_path = output_path
         self.profile = profile
@@ -259,7 +264,7 @@ class ScheduledTask:
         self.pending_event = True
         self.pending_event_count += max(1, int(count or 1))
         if self.schedule_rule.get("type") == "none":
-            self.next_run = datetime.now() - timedelta(seconds=1)
+            self.next_run = None
         else:
             self._calculate_next_run()
 
@@ -365,9 +370,28 @@ class SchedulerManager(Base):
                 return False
 
             task = self.tasks[task_id]
-            new_schedule = kwargs.get("schedule", task.schedule)
-            new_trigger_type = kwargs.get("trigger_type", task.trigger_type)
-            if {"schedule", "trigger_type", "event_type"} & set(kwargs):
+            updates = dict(kwargs)
+            new_schedule = updates.get("schedule", task.schedule)
+            new_trigger_type = updates.get("trigger_type", task.trigger_type)
+            if new_trigger_type == "queue_pending":
+                new_schedule = ""
+                updates["schedule"] = ""
+            if new_trigger_type in {"queue_added", "queue_pending"}:
+                updates["run_queue"] = True
+                updates["workflow_steps"] = [{"type": "run_queue"}]
+                if not str(updates.get("input_path", task.input_path) or "").strip():
+                    updates["input_path"] = "queue"
+            elif "workflow_steps" in updates:
+                updates["workflow_steps"] = (
+                    normalize_workflow_steps(
+                        updates["workflow_steps"],
+                        updates.get("task_type", task.task_type),
+                        True,
+                    )
+                    if updates["workflow_steps"]
+                    else []
+                )
+            if {"schedule", "trigger_type", "event_type"} & set(updates):
                 new_schedule_rule = ScheduleParser.parse(
                     new_schedule,
                     allow_empty=new_trigger_type in {"queue_added", "queue_pending"},
@@ -377,16 +401,16 @@ class SchedulerManager(Base):
             else:
                 new_schedule_rule = None
 
-            for key, value in kwargs.items():
+            for key, value in updates.items():
                 if hasattr(task, key):
                     setattr(task, key, value)
             if task.trigger_type in {"queue_added", "queue_pending"}:
                 task.event_type = task.trigger_type
-            elif "trigger_type" in kwargs:
+            elif "trigger_type" in updates:
                 task.event_type = ""
 
             # 如果更新了 schedule，重新解析
-            if {"schedule", "trigger_type", "event_type"} & set(kwargs):
+            if {"schedule", "trigger_type", "event_type"} & set(updates):
                 task.schedule_rule = new_schedule_rule
                 task.cron_dict = task.schedule_rule
                 task._calculate_next_run()
@@ -626,8 +650,19 @@ class SchedulerManager(Base):
         """获取下一个要执行的任务信息"""
         next_task = None
         next_time = None
+        immediate_task = None
 
         for task in self.tasks.values():
+            if task.enabled and task.trigger_type == "queue_pending":
+                immediate_task = immediate_task or task
+                if task.pending_event:
+                    return {
+                        "id": task.id,
+                        "name": task.name,
+                        "next_run": "",
+                        "trigger_type": task.trigger_type,
+                    }
+                continue
             if task.enabled and task.next_run:
                 if next_time is None or task.next_run < next_time:
                     next_time = task.next_run
@@ -637,6 +672,14 @@ class SchedulerManager(Base):
             return {
                 "id": next_task.id,
                 "name": next_task.name,
-                "next_run": next_task.next_run.strftime("%Y-%m-%d %H:%M")
+                "next_run": next_task.next_run.strftime("%Y-%m-%d %H:%M"),
+                "trigger_type": next_task.trigger_type,
+            }
+        if immediate_task:
+            return {
+                "id": immediate_task.id,
+                "name": immediate_task.name,
+                "next_run": "",
+                "trigger_type": immediate_task.trigger_type,
             }
         return None

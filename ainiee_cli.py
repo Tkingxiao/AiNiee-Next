@@ -1527,7 +1527,7 @@ class CLIMenu:
 
         def _task_has_missing_items():
             line, total_line = _task_completion_counts()
-            return total_line > 0 and line < total_line
+            return total_line > 0 and 0 < line < total_line
 
         def _task_missing_items_message():
             line, total_line = _task_completion_counts()

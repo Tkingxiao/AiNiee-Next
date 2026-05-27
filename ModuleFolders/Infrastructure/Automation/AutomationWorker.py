@@ -40,7 +40,7 @@ def run_worker(task_config_path: str) -> int:
 
     try:
         import ainiee_cli
-        from ModuleFolders.Infrastructure.Automation.WorkflowRunner import WorkflowRunner
+        from ModuleFolders.Infrastructure.Automation.WorkflowRunner import AutomationPartialCompletion, WorkflowRunner
 
         cli = ainiee_cli.CLIMenu()
         ui = AutomationProgressUI(reporter) if reporter else None
@@ -54,12 +54,20 @@ def run_worker(task_config_path: str) -> int:
         if reporter:
             reporter.update(status="workflow", phase="workflow", message="Workflow started")
 
-        WorkflowRunner(cli, progress_reporter=reporter).run(task_config)
+        runner = WorkflowRunner(cli, progress_reporter=reporter)
+        runner.run(task_config)
 
         if ui:
             state = read_progress_file(reporter.progress_file) if reporter else {}
             if state.get("status") not in TERMINAL_STATUSES:
-                ui.finish("completed", "Workflow completed")
+                if runner.is_enqueue_only(task_config):
+                    ui.finish("enqueued", "Queued for task processing")
+                else:
+                    ui.finish("completed", "Workflow completed")
+        return 0
+    except AutomationPartialCompletion as exc:
+        if reporter:
+            reporter.finish("partial", str(exc))
         return 0
     except Exception as exc:
         if reporter:
