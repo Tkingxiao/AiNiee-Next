@@ -1286,6 +1286,8 @@
         "watch_status_folded": "Folded",
         "automation_watch_file_queued": "Detected incoming file \"{}\". It has been queued and will run after {} task(s): \"{}\".",
         "automation_queue_start_preview_required": "The task was queued, but automatic start only works on the Automation Status Preview page.",
+        "automation_series_glossary_detected_existing": "Detected existing auto glossary \"{}\". Current glossary version is {}, this task covers translation through {}, and {} volume(s) need one incremental glossary extraction.",
+        "automation_series_glossary_skip_existing": "Current volume {} is already included in auto glossary \"{}\". Skipping glossary extraction and binding that glossary directly.",
 
         "automation_status_title": "Automation Status Preview",
         "automation_scheduler_status": "Trigger Rules",

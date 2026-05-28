@@ -1297,6 +1297,8 @@
     "watch_status_folded": "已折疊",
     "automation_watch_file_queued": "目前偵測到「{}」傳入，已加入佇列，{} 個任務後執行「{}」的工作流",
     "automation_queue_start_preview_required": "已加入佇列，但自動啟動只會在自動化狀態預覽頁面生效。",
+    "automation_series_glossary_detected_existing": "偵測到已有自動術語表「{}」，目前偵測到術語表版本為{}，此次任務翻譯覆蓋到{}，有 {} 卷需要進行一次增量術語抓取。",
+    "automation_series_glossary_skip_existing": "目前卷{}已包含在自動術語表「{}」中，跳過術語提取並直接綁定該術語表。",
 
     "automation_status_title": "自動化狀態預覽",
     "automation_scheduler_status": "觸發規則",

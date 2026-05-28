@@ -1297,6 +1297,8 @@
     "watch_status_folded": "접힘",
     "automation_watch_file_queued": "\"{}\" 파일 유입을 감지했습니다. 대기열에 추가되었고 {}개 작업 후 \"{}\" 워크플로가 실행됩니다.",
     "automation_queue_start_preview_required": "대기열에 추가되었지만 자동 시작은 자동화 상태 미리보기 화면에서만 동작합니다.",
+    "automation_series_glossary_detected_existing": "기존 자동 용어집 \"{}\"을 감지했습니다. 현재 용어집 버전은 {}, 이번 번역 작업은 {}까지 포함하며, {}권은 증분 용어 추출이 필요합니다.",
+    "automation_series_glossary_skip_existing": "현재 권 {}은 자동 용어집 \"{}\"에 이미 포함되어 있습니다. 용어 추출을 건너뛰고 해당 용어집을 직접 연결합니다.",
 
     "automation_status_title": "자동화 상태 미리보기",
     "automation_scheduler_status": "트리거 규칙",

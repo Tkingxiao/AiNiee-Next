@@ -1305,6 +1305,8 @@
         "watch_status_folded": "已折叠",
         "automation_watch_file_queued": "当前检测到“{}”传入，已加入队列，{} 个任务后执行“{}”的工作流",
         "automation_queue_start_preview_required": "队列已加入，但自动启动只在自动化状态预览页面生效。",
+        "automation_series_glossary_detected_existing": "检测到已有自动术语表“{}”，当前检测到术语表版本为{}，此次任务翻译覆盖到{}，有 {} 卷需要进行一次增量术语抓取。",
+        "automation_series_glossary_skip_existing": "当前卷{}已包含在自动术语表“{}”中，跳过术语提取并直接绑定该术语表。",
 
         "automation_status_title": "自动化状态预览",
         "automation_scheduler_status": "触发规则",

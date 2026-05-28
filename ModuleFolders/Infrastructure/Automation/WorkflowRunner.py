@@ -363,6 +363,7 @@ class WorkflowRunner:
         series_profile_seed = ""
         series_initial_run = False
         series_existing_volumes = set()
+        normalized_source_volume = None
         if step.get("series_incremental"):
             series_profile_name, series_profile_created, series_profile_seed = self._activate_series_rules_profile(
                 trigger_path,
@@ -370,11 +371,19 @@ class WorkflowRunner:
             )
             series_existing_volumes = self._series_existing_volumes_from_config()
             normalized_source_volume = self._normalize_int(source_volume)
+            self._report_series_glossary_status(
+                series_profile_name,
+                series_existing_volumes,
+                task_config,
+                normalized_source_volume,
+            )
             if normalized_source_volume is not None and normalized_source_volume in series_existing_volumes:
                 workflow_context["rules_profile"] = series_profile_name
-                message = (
-                    f"Auto series glossary profile already covers {source_label}; "
-                    f"skip glossary analysis and bind profile: {series_profile_name}"
+                message = self._tr(
+                    "automation_series_glossary_skip_existing",
+                    "当前卷{}已包含在自动术语表“{}”中，跳过术语提取并直接绑定该术语表。",
+                    source_label,
+                    series_profile_name,
                 )
                 if self.progress_reporter:
                     self.progress_reporter.update(rules_profile=series_profile_name, message=message)
@@ -579,6 +588,72 @@ class WorkflowRunner:
         if isinstance(value, list):
             for item in value:
                 self._collect_series_volumes(item, volumes)
+
+    def _report_series_glossary_status(
+        self,
+        profile_name: str,
+        existing_volumes: set[int],
+        task_config: dict,
+        source_volume,
+    ) -> None:
+        if not existing_volumes:
+            return
+
+        covered_volume = max(existing_volumes)
+        target_volumes = self._series_target_volumes(task_config, source_volume)
+        target_volume = max(target_volumes) if target_volumes else source_volume
+        if target_volume is None:
+            target_volume = covered_volume
+        missing_volumes = [volume for volume in target_volumes if volume not in existing_volumes]
+        message = self._tr(
+            "automation_series_glossary_detected_existing",
+            "检测到已有自动术语表“{}”，当前检测到术语表版本为{}，此次任务翻译覆盖到{}，有 {} 卷需要进行一次增量术语抓取。",
+            profile_name,
+            self._format_series_volume_label(covered_volume),
+            self._format_series_volume_label(target_volume),
+            len(missing_volumes),
+        )
+        if self.progress_reporter:
+            self.progress_reporter.update(rules_profile=profile_name, message=message)
+        self._log("info", message)
+
+    def _series_target_volumes(self, task_config: dict, source_volume) -> List[int]:
+        volumes = task_config.get("series_batch_volumes")
+        if not volumes and isinstance(task_config.get("extra"), dict):
+            volumes = task_config.get("extra", {}).get("series_batch_volumes")
+        parsed = [
+            volume
+            for volume in (self._normalize_int(item) for item in (volumes or []))
+            if volume is not None
+        ]
+        if not parsed:
+            source_volume = self._normalize_int(source_volume)
+            if source_volume is not None:
+                parsed = [source_volume]
+        return sorted(set(parsed))
+
+    def _format_series_volume_label(self, volume) -> str:
+        normalized = self._normalize_int(volume)
+        if normalized is None:
+            return "-"
+        return self._tr("watch_series_volume_short", "第{}卷", normalized)
+
+    def _tr(self, key: str, default: str, *args) -> str:
+        value = None
+        i18n = getattr(self.host, "i18n", None)
+        if i18n is not None:
+            try:
+                value = i18n.get(key)
+            except Exception:
+                value = None
+        if not value or value == key:
+            value = default
+        if args:
+            try:
+                return value.format(*args)
+            except Exception:
+                return value
+        return value
 
     @staticmethod
     def _has_rules_payload(payload: dict) -> bool:

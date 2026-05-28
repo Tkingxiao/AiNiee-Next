@@ -1262,6 +1262,8 @@
         "watch_status_folded": "折りたたみ済み",
         "automation_watch_file_queued": "\"{}\" の入力を検出しました。キューに追加され、{} 件後に \"{}\" のワークフローを実行します。",
         "automation_queue_start_preview_required": "キューに追加しましたが、自動開始は自動化ステータスプレビューページでのみ有効です。",
+        "automation_series_glossary_detected_existing": "既存の自動用語集 \"{}\" を検出しました。現在の用語集バージョンは{}、今回の翻訳タスクは{}までを対象とし、{} 巻分の増分用語抽出が必要です。",
+        "automation_series_glossary_skip_existing": "現在の巻{}は自動用語集 \"{}\" に既に含まれています。用語抽出をスキップし、この用語集を直接適用します。",
 
         "automation_status_title": "自動化ステータスプレビュー",
         "automation_scheduler_status": "トリガールール",

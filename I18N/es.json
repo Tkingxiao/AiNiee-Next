@@ -1297,6 +1297,8 @@
     "watch_status_folded": "Plegado",
     "automation_watch_file_queued": "Archivo entrante detectado \"{}\". Se añadió a la cola y ejecutará el flujo después de {} tarea(s): \"{}\".",
     "automation_queue_start_preview_required": "La tarea se añadió a la cola, pero el inicio automático solo funciona en la vista previa de automatización.",
+    "automation_series_glossary_detected_existing": "Se detectó el glosario automático existente \"{}\". La versión actual del glosario es {}, esta tarea cubre la traducción hasta {} y {} volumen(es) requieren una extracción incremental de glosario.",
+    "automation_series_glossary_skip_existing": "El volumen actual {} ya está incluido en el glosario automático \"{}\". Se omite la extracción de glosario y se vincula directamente ese glosario.",
 
     "automation_status_title": "Vista previa de automatización",
     "automation_scheduler_status": "Reglas de activación",
