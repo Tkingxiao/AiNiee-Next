@@ -11,6 +11,7 @@ import time
 import uuid
 from typing import Any, Dict, Iterable, List, Optional
 
+import rapidjson as json
 from rich.console import Console
 
 from ModuleFolders.Base.Base import Base
@@ -306,7 +307,7 @@ class WorkflowRunner:
                 if task_config.get("series_volume") is not None:
                     prepared.setdefault("source_volume", task_config.get("series_volume"))
                 if task_config.get("series_volume") is not None:
-                    prepared.setdefault("source_label", f"Vol_{task_config.get('series_volume')}")
+                    prepared.setdefault("source_label", f"第{task_config.get('series_volume')}卷")
                 elif task_config.get("series_key"):
                     prepared.setdefault("source_label", task_config.get("series_key"))
             prepared_steps.append(prepared)
@@ -327,7 +328,52 @@ class WorkflowRunner:
             source_volume = self._series_volume_for(trigger_path)
         source_label = step.get("source_label") or self._source_label_for(input_path)
         if step.get("series_incremental") and source_volume is not None and not step.get("source_label"):
-            source_label = f"Vol_{source_volume}"
+            source_label = f"第{source_volume}卷"
+
+        series_profile_name = ""
+        series_profile_created = False
+        series_profile_seed = ""
+        series_initial_run = False
+        if step.get("series_incremental"):
+            series_profile_name, series_profile_created, series_profile_seed = self._activate_series_rules_profile(
+                trigger_path,
+                task_config,
+            )
+            series_initial_run = self._is_initial_series_glossary_run(
+                task_config,
+                source_volume,
+                series_profile_created,
+                series_profile_seed,
+            )
+            analyzer = GlossaryAnalyzer(self.host)
+            if self.progress_reporter:
+                message = (
+                    f"Auto series glossary profile initialized: {series_profile_name}"
+                    if series_profile_created
+                    else f"Auto series glossary profile loaded: {series_profile_name}"
+                )
+                if series_profile_seed:
+                    message = f"{message} | seed: {series_profile_seed}"
+                if series_initial_run:
+                    message = f"{message} | initial volume: {source_label}"
+                self.progress_reporter.update(rules_profile=series_profile_name, message=message)
+            self._log(
+                "info",
+                (
+                    f"Auto series glossary profile initialized: {series_profile_name}"
+                    if series_profile_created
+                    else f"Auto series glossary profile loaded: {series_profile_name}"
+                )
+                + (f" | seed: {series_profile_seed}" if series_profile_seed else "")
+                + (f" | initial volume: {source_label}" if series_initial_run else ""),
+            )
+
+        analysis_new = bool(step.get("new", True))
+        analysis_replace = bool(step.get("replace", True))
+        if series_initial_run:
+            analysis_new = False
+            analysis_replace = False
+
         analysis_result = analyzer.execute_analysis(
             input_path,
             int(step.get("analysis_percent", 100) or 100),
@@ -336,11 +382,11 @@ class WorkflowRunner:
             analysis_mode=str(step.get("analysis_mode") or "full"),
             prompt_file=step.get("prompt_file") or None,
             translate_during_analysis=bool(step.get("translate_during_analysis", True)),
-            new=bool(step.get("new", True)),
-            replace=bool(step.get("replace", True)),
+            new=analysis_new,
+            replace=analysis_replace,
             source_label=source_label,
             source_volume=source_volume,
-            existing_rules_context=self._series_rules_context(trigger_path, source_volume, task_config) if step.get("series_incremental") else None,
+            existing_rules_context=None,
             output_dir=automation_glossary_dir_for(input_path),
         )
         if analysis_result is None:
@@ -359,6 +405,30 @@ class WorkflowRunner:
         incremental_options = save_result.get("incremental_options")
         save_mode = str(step.get("save_mode") or "isolated")
         if save_mode == "isolated":
+            if step.get("series_incremental") and series_profile_name:
+                if structured_rules:
+                    analyzer.save_structured_rules_directly(
+                        structured_rules,
+                        save_mode="import",
+                        base_glossary_path=save_result.get("glossary_path"),
+                        merge_options=incremental_options,
+                    )
+                elif save_result.get("glossary_data"):
+                    analyzer.save_glossary_directly(
+                        save_result["glossary_data"],
+                        save_mode="import",
+                        base_glossary_path=save_result.get("glossary_path"),
+                        merge_options=incremental_options,
+                    )
+                workflow_context["rules_profile"] = series_profile_name
+                if self.progress_reporter:
+                    self.progress_reporter.update(
+                        rules_profile=series_profile_name,
+                        message=f"Auto series glossary profile updated: {series_profile_name}",
+                    )
+                self._log("info", f"Auto series glossary profile updated: {series_profile_name}")
+                return
+
             profile_name = self._create_isolated_rules_profile(input_path, task_config, structured_rules, save_result.get("glossary_data"))
             workflow_context["rules_profile"] = profile_name
             if self.progress_reporter:
@@ -400,6 +470,54 @@ class WorkflowRunner:
         atomic_write_json(profile_path, payload)
         return profile_name
 
+    def _is_initial_series_glossary_run(
+        self,
+        task_config: dict,
+        source_volume,
+        series_profile_created: bool,
+        series_profile_seed: str,
+    ) -> bool:
+        source_volume = self._normalize_int(source_volume)
+        if source_volume is None:
+            return False
+
+        initial_volume = self._series_initial_volume_for(task_config)
+        if initial_volume is not None:
+            return source_volume == initial_volume
+
+        return bool(series_profile_created and not series_profile_seed)
+
+    def _series_initial_volume_for(self, task_config: dict):
+        candidates = [
+            task_config.get("series_initial_volume"),
+            (task_config.get("extra") or {}).get("series_initial_volume") if isinstance(task_config.get("extra"), dict) else None,
+        ]
+        for candidate in candidates:
+            volume = self._normalize_int(candidate)
+            if volume is not None:
+                return volume
+
+        volumes = task_config.get("series_batch_volumes")
+        if not volumes and isinstance(task_config.get("extra"), dict):
+            volumes = task_config.get("extra", {}).get("series_batch_volumes")
+        parsed_volumes = [
+            volume
+            for volume in (self._normalize_int(item) for item in (volumes or []))
+            if volume is not None
+        ]
+        if parsed_volumes:
+            return min(parsed_volumes)
+        return None
+
+    @staticmethod
+    def _normalize_int(value):
+        if value is None or value == "" or isinstance(value, bool):
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
     @staticmethod
     def _has_rules_payload(payload: dict) -> bool:
         if not isinstance(payload, dict):
@@ -418,17 +536,71 @@ class WorkflowRunner:
         run_id = str(task_config.get("automation_run_id") or "").strip()
         label = self._source_label_for(input_path)
         if task_config.get("series_incremental") or self._task_has_series_glossary_step(task_config):
-            volume = self._series_volume_for(task_config.get("trigger_file_path") or input_path)
-            if volume is not None:
-                base = f"auto_series_{self._series_key_for(task_config.get('trigger_file_path') or input_path, task_config)}_v{volume}"
-            else:
-                base = f"auto_series_{self._series_key_for(task_config.get('trigger_file_path') or input_path, task_config)}_{uuid.uuid4().hex[:8]}"
+            return self._series_rules_profile_name(task_config.get("trigger_file_path") or input_path, task_config)
         else:
             base = f"auto_{run_id}_{label}" if run_id else f"auto_{label}_{uuid.uuid4().hex[:8]}"
         try:
             return sanitize_profile_name(base, allow_none=False)
         except ValueError:
             return f"auto_{uuid.uuid4().hex[:12]}"
+
+    def _activate_series_rules_profile(self, input_path: str, task_config: dict) -> tuple[str, bool, str]:
+        profile_name = self._series_rules_profile_name(input_path, task_config)
+        rules_dir = getattr(self.host, "rules_profiles_dir", None) or os.path.join(getattr(self.host, "PROJECT_ROOT", os.getcwd()), "Resource", "rules_profiles")
+        os.makedirs(rules_dir, exist_ok=True)
+        profile_path, profile_name = resolve_profile_path(rules_dir, profile_name)
+
+        created = False
+        seed_name = ""
+        if not os.path.exists(profile_path):
+            seed_payload, seed_name = self._series_rules_seed_payload(input_path, task_config, rules_dir)
+            atomic_write_json(profile_path, seed_payload)
+            created = True
+
+        self.host.load_config(
+            active_profile_name=task_config.get("profile") or getattr(self.host, "active_profile_name", None),
+            active_rules_profile_name=profile_name,
+        )
+        self._apply_task_overrides(task_config)
+        return profile_name, created, seed_name
+
+    def _series_rules_seed_payload(self, input_path: str, task_config: dict, rules_dir: str) -> tuple[dict, str]:
+        series_key = self._series_key_for(input_path, task_config)
+        for candidate in (series_key, task_config.get("rules_profile")):
+            candidate = str(candidate or "").strip()
+            if not candidate or candidate == "None" or candidate == self._series_rules_profile_name(input_path, task_config):
+                continue
+            try:
+                candidate_path, candidate_name = resolve_profile_path(rules_dir, candidate, allow_none=True)
+            except ValueError:
+                continue
+            if not candidate_path or not os.path.exists(candidate_path):
+                continue
+            try:
+                with open(candidate_path, "r", encoding="utf-8-sig") as file:
+                    data = json.load(file)
+                if isinstance(data, dict):
+                    return normalize_rules_payload(data), candidate_name
+            except Exception:
+                continue
+
+        return self._rules_payload_from_current_config(), ""
+
+    def _rules_payload_from_current_config(self) -> dict:
+        config = getattr(self.host, "config", {}) or {}
+        payload = {
+            key: copy.deepcopy(config.get(key))
+            for key in default_rules_payload()
+            if key in config
+        }
+        return normalize_rules_payload(payload)
+
+    def _series_rules_profile_name(self, input_path: str, task_config: dict = None) -> str:
+        key = self._series_key_for(input_path, task_config)
+        try:
+            return sanitize_profile_name(f"Auto_{key}", allow_none=False)
+        except ValueError:
+            return f"Auto_{uuid.uuid4().hex[:12]}"
 
     @staticmethod
     def _task_has_series_glossary_step(task_config: dict) -> bool:
@@ -599,27 +771,14 @@ class WorkflowRunner:
             return None
 
     def _series_rules_context(self, input_path: str, source_volume, task_config: dict = None):
-        if source_volume is None:
-            return None
         rules_dir = getattr(self.host, "rules_profiles_dir", None) or os.path.join(getattr(self.host, "PROJECT_ROOT", os.getcwd()), "Resource", "rules_profiles")
-        prefix = f"auto_series_{self._series_key_for(input_path, task_config)}_"
-        latest_path = None
-        latest_volume = -1
         try:
-            for filename in os.listdir(rules_dir):
-                if not filename.startswith(prefix) or not filename.endswith(".json"):
-                    continue
-                stem = filename[:-5]
-                try:
-                    volume = int(stem.rsplit("_v", 1)[1])
-                except (IndexError, ValueError):
-                    continue
-                if volume < int(source_volume) and volume > latest_volume:
-                    latest_volume = volume
-                    latest_path = os.path.join(rules_dir, filename)
-            if latest_path:
-                with open(latest_path, "r", encoding="utf-8") as file:
-                    import rapidjson as json
+            profile_path, _ = resolve_profile_path(
+                rules_dir,
+                self._series_rules_profile_name(input_path, task_config),
+            )
+            if os.path.exists(profile_path):
+                with open(profile_path, "r", encoding="utf-8-sig") as file:
                     data = json.load(file)
                 return data if isinstance(data, dict) else None
         except Exception:

@@ -1304,6 +1304,7 @@
         "watch_status_stopped": "已停止",
         "watch_status_folded": "已折叠",
         "automation_watch_file_queued": "当前检测到“{}”传入，已加入队列，{} 个任务后执行“{}”的工作流",
+        "automation_queue_start_preview_required": "队列已加入，但自动启动只在自动化状态预览页面生效。",
 
         "automation_status_title": "自动化状态预览",
         "automation_scheduler_status": "触发规则",
@@ -1435,6 +1436,7 @@
         "watch_detect_target_both": "检测文件和文件夹",
         "watch_folder_series_strict_tip": "文件夹会作为候选系列容器：同一命名族群且能解析卷号时才启用系列增量术语表；缺卷允许但会提示；混装不同作品或无法解析卷号时会降级为普通队列。",
         "watch_series_detected_short": "系列",
+        "watch_series_volume_short": "第{}卷",
         "watch_series_missing_short": "缺卷: {}",
         "watch_series_reason_no_matching_files": "无匹配文件，按普通队列处理",
         "watch_series_reason_unparsed_volume": "存在无法解析卷号的文件，按普通队列处理",

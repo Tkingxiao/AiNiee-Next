@@ -1296,6 +1296,7 @@
     "watch_status_stopped": "중지됨",
     "watch_status_folded": "접힘",
     "automation_watch_file_queued": "\"{}\" 파일 유입을 감지했습니다. 대기열에 추가되었고 {}개 작업 후 \"{}\" 워크플로가 실행됩니다.",
+    "automation_queue_start_preview_required": "대기열에 추가되었지만 자동 시작은 자동화 상태 미리보기 화면에서만 동작합니다.",
 
     "automation_status_title": "자동화 상태 미리보기",
     "automation_scheduler_status": "트리거 규칙",
@@ -1427,6 +1428,7 @@
         "watch_detect_target_both": "파일 및 폴더 감지",
         "watch_folder_series_strict_tip": "폴더는 후보 시리즈 컨테이너로 처리됩니다. 동일한 명명 계열이고 권 번호를 파싱할 수 있을 때만 시리즈 증분 용어집이 활성화됩니다. 누락 권은 허용되지만 표시됩니다. 다른 작품이 섞였거나 권 번호를 파싱할 수 없으면 일반 대기열로 처리됩니다.",
         "watch_series_detected_short": "시리즈",
+        "watch_series_volume_short": "{}권",
         "watch_series_missing_short": "누락: {}",
         "watch_series_reason_no_matching_files": "일치하는 파일 없음, 일반 대기열",
         "watch_series_reason_unparsed_volume": "권 번호를 파싱할 수 없는 파일 있음, 일반 대기열",

@@ -460,8 +460,8 @@ class GlossaryMenu:
             previous_volume = int(previous_volume)
         except (TypeError, ValueError):
             previous_volume = None
-        default_label = defaults.get("source_label") if previous_volume == source_volume else f"Vol_{source_volume}"
-        default_label = default_label or f"Vol_{source_volume}"
+        default_label = defaults.get("source_label") if previous_volume == source_volume else f"第{source_volume}卷"
+        default_label = default_label or f"第{source_volume}卷"
         source_label = Prompt.ask(
             self._tr('prompt_glossary_source_label', "请输入本次来源标签"),
             default=default_label,
@@ -921,7 +921,7 @@ class GlossaryMenu:
                     next_volume = 1
                 next_volume = max(1, next_volume)
                 next_defaults["source_volume"] = next_volume
-                next_defaults["source_label"] = f"Vol_{next_volume}"
+                next_defaults["source_label"] = f"第{next_volume}卷"
                 next_defaults.setdefault("new", True)
                 next_defaults.setdefault("replace", True)
                 self.run_glossary_analysis_task(incremental_defaults=next_defaults, assume_series=True)

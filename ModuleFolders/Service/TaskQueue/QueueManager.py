@@ -947,11 +947,31 @@ class QueueManager(Base):
             status = state.get("status")
             if status in {"completed", "partial", "interrupted", "enqueued"}:
                 return status
+            state_status = self._workflow_status_from_progress_state(state)
+            if state_status:
+                return state_status
             return "completed" if process and process.returncode == 0 else "error"
         except Exception as e:
             self.error(f"Workflow Task Error: {e}")
             task.status = "error"
             return "error"
+
+    @staticmethod
+    def _workflow_status_from_progress_state(state: dict):
+        if not isinstance(state, dict):
+            return None
+        try:
+            current = int(state.get("line") or state.get("completed") or 0)
+            total = int(state.get("total_line") or state.get("total") or 0)
+        except (TypeError, ValueError):
+            return None
+        if total <= 0:
+            return None
+        if current >= total:
+            return "completed"
+        if current > 0:
+            return "partial"
+        return None
 
     def _run_single_step(self, cli_menu, task, step_type, resume=False):
         if self._task_has_workflow(task):

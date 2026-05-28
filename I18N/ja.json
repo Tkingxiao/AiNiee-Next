@@ -1261,6 +1261,7 @@
         "watch_status_stopped": "停止",
         "watch_status_folded": "折りたたみ済み",
         "automation_watch_file_queued": "\"{}\" の入力を検出しました。キューに追加され、{} 件後に \"{}\" のワークフローを実行します。",
+        "automation_queue_start_preview_required": "キューに追加しましたが、自動開始は自動化ステータスプレビューページでのみ有効です。",
 
         "automation_status_title": "自動化ステータスプレビュー",
         "automation_scheduler_status": "トリガールール",
@@ -1393,6 +1394,7 @@
         "watch_detect_target_both": "ファイルとフォルダ",
         "watch_folder_series_strict_tip": "フォルダは候補シリーズとして扱います。同じ命名ファミリーで巻数を解析できる場合のみシリーズ増分用語集を有効にします。欠番は許可しますが表示します。異なる作品の混在や巻数解析不可の場合は通常キューに戻します。",
         "watch_series_detected_short": "シリーズ",
+        "watch_series_volume_short": "{}巻",
         "watch_series_missing_short": "欠番: {}",
         "watch_series_reason_no_matching_files": "一致するファイルがないため通常キュー",
         "watch_series_reason_unparsed_volume": "巻数を解析できないファイルがあるため通常キュー",

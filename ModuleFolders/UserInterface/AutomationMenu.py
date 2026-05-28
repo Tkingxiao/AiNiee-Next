@@ -38,6 +38,7 @@ class AutomationMenu:
         self.host = host
         self.scheduler_manager = None
         self.watch_manager = None
+        self._automation_status_view_active = False
 
     @property
     def config(self):
@@ -88,6 +89,7 @@ class AutomationMenu:
             series_incremental=task_config.get("series_incremental", False),
             series_key=task_config.get("series_key"),
             series_volume=task_config.get("series_volume"),
+            extra=self._automation_task_extra(task_config),
         )
         queue_manager.add_task(task_item)
 
@@ -106,11 +108,36 @@ class AutomationMenu:
             self.i18n.get("automation_watch_file_queued").format(file_name, ahead_count, file_name),
         )
 
-        if task_config.get("auto_start", True) and not task_config.get("defer_auto_start"):
+        if self._can_start_automation_queue() and task_config.get("auto_start", True) and not task_config.get("defer_auto_start"):
             self._run_queue_if_needed()
+
+    @staticmethod
+    def _automation_task_extra(task_config):
+        extra = dict(task_config.get("extra") or {})
+        for key in (
+            "folder_batch_id",
+            "folder_batch_index",
+            "folder_batch_total",
+            "series_initial_volume",
+            "series_batch_volumes",
+            "series_container_path",
+            "series_missing_volumes",
+            "defer_auto_start",
+        ):
+            if key in task_config and task_config.get(key) is not None:
+                extra[key] = task_config.get(key)
+        return extra
+
+    def _can_start_automation_queue(self) -> bool:
+        return bool(self._automation_status_view_active)
 
     def _run_queue_if_needed(self):
         from ModuleFolders.Service.TaskQueue.QueueManager import QueueManager
+
+        if not self._can_start_automation_queue():
+            if self.watch_manager:
+                self.watch_manager._log("info", self.i18n.get("automation_queue_start_preview_required"))
+            return
 
         queue_manager = QueueManager()
         if not queue_manager.is_running:
@@ -721,7 +748,7 @@ class AutomationMenu:
             return ""
 
         if item.get("series_key") and item.get("series_volume"):
-            return f"[green]{item.get('series_key')} v{item.get('series_volume')}[/]"
+            return f"[green]{item.get('series_key')} {self.i18n.get('watch_series_volume_short').format(item.get('series_volume'))}[/]"
         return ""
 
     def _format_watch_series_reason(self, reason: str) -> str:
@@ -1058,6 +1085,7 @@ class AutomationMenu:
         console.print(f"[dim]{self.i18n.get('automation_status_press_c_hint')}[/dim]")
         scheduler_was_running = self.scheduler_manager.running
         watch_was_running = self.watch_manager.running
+        self._automation_status_view_active = True
         self.scheduler_manager.set_event_triggers_active(True)
         if not scheduler_was_running:
             self.scheduler_manager.start()
@@ -1084,6 +1112,7 @@ class AutomationMenu:
         except KeyboardInterrupt:
             interrupted = self._interrupt_automation_workers()
         finally:
+            self._automation_status_view_active = False
             self.scheduler_manager.set_event_triggers_active(False)
             if not scheduler_was_running:
                 self.scheduler_manager.stop()

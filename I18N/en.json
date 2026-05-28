@@ -1285,6 +1285,7 @@
         "watch_status_stopped": "Stopped",
         "watch_status_folded": "Folded",
         "automation_watch_file_queued": "Detected incoming file \"{}\". It has been queued and will run after {} task(s): \"{}\".",
+        "automation_queue_start_preview_required": "The task was queued, but automatic start only works on the Automation Status Preview page.",
 
         "automation_status_title": "Automation Status Preview",
         "automation_scheduler_status": "Trigger Rules",
@@ -1416,6 +1417,7 @@
         "watch_detect_target_both": "Files and folders",
         "watch_folder_series_strict_tip": "Folders are treated as candidate series containers: series glossary mode is enabled only when files share one naming family and have parseable volume numbers. Missing volumes are allowed but shown. Mixed works or unparseable volumes fall back to ordinary queue tasks.",
         "watch_series_detected_short": "Series",
+        "watch_series_volume_short": "volume {}",
         "watch_series_missing_short": "missing: {}",
         "watch_series_reason_no_matching_files": "No matching files; ordinary queue",
         "watch_series_reason_unparsed_volume": "Some files have unparseable volume numbers; ordinary queue",

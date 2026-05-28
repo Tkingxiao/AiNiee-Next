@@ -21,6 +21,7 @@ from ModuleFolders.Infrastructure.Automation.WorkflowRunner import (
 from ModuleFolders.Infrastructure.Automation.AutomationPaths import (
     AUTOMATION_GLOSSARY_DIR_NAME,
     is_under_automation_glossary_dir,
+    is_under_automation_output_dir,
 )
 
 
@@ -54,7 +55,7 @@ def parse_series_volume(path: str) -> dict:
         return {
             "series_key": series_key,
             "volume": volume,
-            "label": f"Vol_{volume}",
+            "label": f"第{volume}卷",
         }
     return {}
 
@@ -453,7 +454,10 @@ class WatchManager(Base):
 
     def _is_system_ignored_path(self, path: str, rule: WatchRule = None) -> bool:
         watch_root = getattr(rule, "watch_path", "") if rule else ""
-        return is_under_automation_glossary_dir(path, watch_root)
+        return (
+            is_under_automation_glossary_dir(path, watch_root)
+            or is_under_automation_output_dir(path, watch_root)
+        )
 
     def _filter_system_dirs(self, root: str, dirs: List[str], rule: WatchRule, excluded_dirs: Set[str] = None) -> None:
         excluded_dirs = excluded_dirs or set()
@@ -947,9 +951,24 @@ class WatchManager(Base):
                 paths = self._scan_watch_targets(rule)
                 for path in paths:
                     self.processed_files.add(self._get_file_key(path))
-                    self._record_file_observation(path, rule, True, "primed", path_type="folder" if os.path.isdir(path) else "file")
+                    path_type = "folder" if os.path.isdir(path) else "file"
+                    self._record_file_observation(path, rule, True, "primed", path_type=path_type)
+                    if path_type == "folder":
+                        self._prime_existing_folder_children(path, rule)
             except Exception as e:
                 self._log("warning", f"Failed to prime existing files for {rule.watch_path}: {e}")
+
+    def _prime_existing_folder_children(self, folder_path: str, rule: WatchRule):
+        for child_path in self._iter_matching_files_in_folder(folder_path, rule):
+            self.processed_files.add(self._get_file_key(child_path))
+            series = {}
+            try:
+                folder_series = self._analyze_folder_series(folder_path, rule)
+                if folder_series.get("is_series"):
+                    series = (folder_series.get("parsed") or {}).get(os.path.abspath(child_path), {}) or {}
+            except Exception:
+                series = parse_series_volume(child_path) if rule.series_incremental else {}
+            self._record_file_observation(child_path, rule, True, "primed", path_type="file", series=series)
 
     def _process_file(self, file_path: str, rule: WatchRule):
         """处理检测到的文件"""
@@ -1100,9 +1119,18 @@ class WatchManager(Base):
         if folder_key in self.processed_files:
             observation = self.file_observations.get(self._observation_key(folder_path, rule))
             if observation and observation.get("status") == "primed":
+                self._prime_existing_folder_children(folder_path, rule)
                 return
-            self._record_file_observation(folder_path, rule, True, "processed", path_type="folder")
-            return
+            pending_files = [
+                file_path
+                for file_path in self._iter_matching_files_in_folder(folder_path, rule)
+                if self._get_file_key(file_path) not in self.processed_files
+            ]
+            if pending_files:
+                self.processed_files.discard(folder_key)
+            else:
+                self._record_file_observation(folder_path, rule, True, "processed", path_type="folder")
+                return
 
         self._record_file_observation(folder_path, rule, True, "pending", path_type="folder")
         if folder_path not in self.file_states:
@@ -1157,6 +1185,8 @@ class WatchManager(Base):
             if self._get_file_key(file_path) not in self.processed_files
         ]
         batch_total = len(pending_files)
+        series_volumes = sorted(folder_series.get("volumes") or [])
+        series_initial_volume = series_volumes[0] if folder_series.get("is_series") and series_volumes else None
         batch_id = hashlib.sha1(
             f"{rule.id}:{folder_path}:{time.time_ns()}".encode("utf-8", errors="ignore")
         ).hexdigest()[:12] if batch_total else ""
@@ -1168,6 +1198,11 @@ class WatchManager(Base):
                 "folder_batch_total": batch_total,
                 "defer_auto_start": should_defer_auto_start,
             }
+            if folder_series.get("is_series"):
+                queue_options.update({
+                    "series_initial_volume": series_initial_volume,
+                    "series_batch_volumes": series_volumes,
+                })
             queued = self._process_single_target(
                 file_path,
                 rule,

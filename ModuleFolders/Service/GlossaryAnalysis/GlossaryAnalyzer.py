@@ -118,7 +118,7 @@ class GlossaryAnalyzer:
             translate_during_analysis: 分析时让 LLM 同时输出目标语言译名和注释
             new: 增量模式下允许新增当前文本中出现的新术语/规则
             replace: 增量模式下允许补全或替换现有术语/角色/规则描述
-            source_label: 本次提取来源标签，例如 Vol_2
+            source_label: 本次提取来源标签，例如 第2卷
             source_volume: 本次提取卷号，用于动态术语表时间线
 
         Returns:
@@ -2255,7 +2255,7 @@ Translation|Note"""
 
     def _format_volume_label(self, volume):
         normalized = self._normalize_volume_number(volume)
-        return f"Vol_{normalized}" if normalized is not None else ""
+        return f"第{normalized}卷" if normalized is not None else ""
 
     def _normalize_glossary_info(self, item):
         for key in ("info", "description", "desc", "note", "annotation", "说明", "注释", "备注"):

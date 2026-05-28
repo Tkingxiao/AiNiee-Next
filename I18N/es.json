@@ -1296,6 +1296,7 @@
     "watch_status_stopped": "Detenido",
     "watch_status_folded": "Plegado",
     "automation_watch_file_queued": "Archivo entrante detectado \"{}\". Se añadió a la cola y ejecutará el flujo después de {} tarea(s): \"{}\".",
+    "automation_queue_start_preview_required": "La tarea se añadió a la cola, pero el inicio automático solo funciona en la vista previa de automatización.",
 
     "automation_status_title": "Vista previa de automatización",
     "automation_scheduler_status": "Reglas de activación",
@@ -1427,6 +1428,7 @@
         "watch_detect_target_both": "Archivos y carpetas",
         "watch_folder_series_strict_tip": "Las carpetas se tratan como contenedores candidatos de serie: el glosario incremental solo se activa si los archivos comparten una familia de nombres y tienen volúmenes analizables. Se permiten volúmenes faltantes, pero se muestran. Obras mezcladas o volúmenes no analizables vuelven a la cola ordinaria.",
         "watch_series_detected_short": "Serie",
+        "watch_series_volume_short": "volumen {}",
         "watch_series_missing_short": "faltan: {}",
         "watch_series_reason_no_matching_files": "Sin archivos coincidentes; cola ordinaria",
         "watch_series_reason_unparsed_volume": "Algunos archivos no tienen volumen analizable; cola ordinaria",

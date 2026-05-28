@@ -140,7 +140,7 @@ def _select_effective_history_entry(history, current_volume, key_field, tracked_
             if _has_text(entry.get(field)):
                 selected[field] = entry.get(field)
         selected_volume = volume
-        selected_source = entry.get("source") or f"Vol_{volume}"
+        selected_source = entry.get("source") or f"第{volume}卷"
     if not selected:
         return None
     if selected_source:
