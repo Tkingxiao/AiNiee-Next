@@ -1290,6 +1290,7 @@
     "watch_status_partial": "일부 줄 이상",
     "watch_status_done": "완료됨",
     "watch_status_processed": "처리됨",
+    "watch_status_folder_expanded": "펼쳐짐",
     "watch_status_primed": "시작 전 존재",
     "watch_status_error": "오류",
     "watch_status_stopped": "중지됨",

@@ -1290,6 +1290,7 @@
     "watch_status_partial": "Частичные ошибки строк",
     "watch_status_done": "Завершено",
     "watch_status_processed": "Обработано",
+    "watch_status_folder_expanded": "Развёрнуто",
     "watch_status_primed": "Было до запуска",
     "watch_status_error": "Ошибка",
     "watch_status_stopped": "Остановлено",

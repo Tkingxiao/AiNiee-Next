@@ -1255,6 +1255,7 @@
         "watch_status_partial": "一部行に異常",
         "watch_status_done": "完了",
         "watch_status_processed": "処理済み",
+        "watch_status_folder_expanded": "展開済み",
         "watch_status_primed": "開始前に存在",
         "watch_status_error": "エラー",
         "watch_status_stopped": "停止",

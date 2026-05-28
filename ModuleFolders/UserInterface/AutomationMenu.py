@@ -59,11 +59,13 @@ class AutomationMenu:
             self.watch_manager = WatchManager(
                 task_callback=self._execute_watch_task,
                 queue_callback=self._enqueue_watch_task,
+                queue_start_callback=self._run_queue_if_needed,
             )
             self.watch_manager.load_from_config(self.config)
             self.watch_manager.set_callbacks(
                 task_callback=self._execute_watch_task,
                 queue_callback=self._enqueue_watch_task,
+                queue_start_callback=self._run_queue_if_needed,
             )
 
     def _enqueue_watch_task(self, task_config):
@@ -104,7 +106,7 @@ class AutomationMenu:
             self.i18n.get("automation_watch_file_queued").format(file_name, ahead_count, file_name),
         )
 
-        if task_config.get("auto_start", True):
+        if task_config.get("auto_start", True) and not task_config.get("defer_auto_start"):
             self._run_queue_if_needed()
 
     def _run_queue_if_needed(self):
@@ -757,6 +759,7 @@ class AutomationMenu:
             "partial": ("yellow", "watch_status_partial"),
             "done": ("green", "watch_status_done"),
             "processed": ("green", "watch_status_processed"),
+            "folder_expanded": ("green", "watch_status_folder_expanded"),
             "primed": ("dim", "watch_status_primed"),
             "error": ("red", "watch_status_error"),
             "stopped": ("red", "watch_status_stopped"),
@@ -968,6 +971,8 @@ class AutomationMenu:
             for item in snapshot.get("files", []):
                 if not item.get("matched") or not os.path.exists(item.get("path", "")):
                     continue
+                if item.get("path_type") == "folder":
+                    continue
                 candidates.append((rule, item))
 
         if not candidates:
@@ -1002,7 +1007,7 @@ class AutomationMenu:
 
         rule, item = candidates[choice - 1]
         workflow_steps, auto_start = self._select_requeue_workflow(rule)
-        target_path = rule.watch_path if rule.trigger_mode == "folder" else item["path"]
+        target_path = item["path"]
         output_path = rule.output_path or self.watch_manager._generate_output_path(target_path)
         task_item = QueueTaskItem(
             normalize_task_type(rule.task_type),

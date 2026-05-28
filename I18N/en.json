@@ -1279,6 +1279,7 @@
         "watch_status_partial": "Partial line issues",
         "watch_status_done": "Completed",
         "watch_status_processed": "Processed",
+        "watch_status_folder_expanded": "Expanded",
         "watch_status_primed": "Existed before start",
         "watch_status_error": "Error",
         "watch_status_stopped": "Stopped",

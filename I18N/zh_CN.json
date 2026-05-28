@@ -1298,6 +1298,7 @@
         "watch_status_partial": "部分行异常",
         "watch_status_done": "已完成",
         "watch_status_processed": "已处理",
+        "watch_status_folder_expanded": "已展开",
         "watch_status_primed": "启动前已存在",
         "watch_status_error": "错误",
         "watch_status_stopped": "已停止",

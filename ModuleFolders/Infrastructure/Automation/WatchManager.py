@@ -11,6 +11,7 @@ import hashlib
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Any, Set, Tuple
+from natsort import natsort_keygen, natsorted, ns
 from ModuleFolders.Base.Base import Base
 from ModuleFolders.Infrastructure.Automation.WorkflowRunner import (
     describe_workflow_steps,
@@ -30,6 +31,7 @@ SERIES_VOLUME_PATTERNS = (
 )
 
 WATCH_TARGET_TYPES = {"file", "folder", "both"}
+_NAT_SORT_KEY = natsort_keygen(alg=ns.PATH | ns.IGNORECASE)
 
 
 def parse_series_volume(path: str) -> dict:
@@ -63,9 +65,15 @@ def normalize_series_family_key(value: str) -> str:
 
 
 def natural_sort_key(value: str) -> list:
-    text = os.path.basename(os.path.normpath(value or ""))
-    parts = re.split(r"(\d+)", text.lower())
-    return [int(part) if part.isdigit() else part for part in parts]
+    return _NAT_SORT_KEY(os.path.normpath(str(value or "")))
+
+
+def natural_sort_paths(values) -> list:
+    return list(natsorted(
+        list(values or []),
+        key=lambda value: os.path.normpath(str(value or "")),
+        alg=ns.PATH | ns.IGNORECASE,
+    ))
 
 
 class WatchRule:
@@ -260,10 +268,12 @@ class WatchManager(Base):
     """文件夹监控管理器"""
 
     def __init__(self, task_callback: Callable[[dict], Any] = None,
-                 queue_callback: Callable[[dict], Any] = None):
+                 queue_callback: Callable[[dict], Any] = None,
+                 queue_start_callback: Callable[[], Any] = None):
         super().__init__()
         self.task_callback = task_callback  # 直接执行任务
         self.queue_callback = queue_callback  # 加入队列
+        self.queue_start_callback = queue_start_callback  # 批量入队后启动队列
         self.rules: Dict[str, WatchRule] = {}
         self.running = False
         self._thread: Optional[threading.Thread] = None
@@ -289,12 +299,15 @@ class WatchManager(Base):
         self.processed_file_path = ""
 
     def set_callbacks(self, task_callback: Callable = None,
-                      queue_callback: Callable = None):
+                      queue_callback: Callable = None,
+                      queue_start_callback: Callable = None):
         """设置回调函数"""
         if task_callback:
             self.task_callback = task_callback
         if queue_callback:
             self.queue_callback = queue_callback
+        if queue_start_callback:
+            self.queue_start_callback = queue_start_callback
 
     def add_rule(self, rule: WatchRule) -> bool:
         """添加监控规则"""
@@ -487,7 +500,7 @@ class WatchManager(Base):
                         result.append(os.path.abspath(path))
         except OSError:
             pass
-        return sorted(result, key=natural_sort_key)
+        return natural_sort_paths(result)
 
     def _iter_matching_files_in_folder(self, folder_path: str, rule: WatchRule) -> List[str]:
         return self._iter_files_in_folder(folder_path, rule, include_unmatched=False)
@@ -536,7 +549,7 @@ class WatchManager(Base):
                 "is_series": False,
                 "reason": "mixed_series",
                 "files": files,
-                "families": sorted(family_keys),
+                "families": natural_sort_paths(family_keys),
                 "volumes": sorted(item["volume"] for item in parsed_items),
                 "missing_volumes": [],
             }
@@ -722,12 +735,26 @@ class WatchManager(Base):
             path_type=entry.get("path_type"),
         )
         state = self.file_states.get(path)
-        queue_task = self._find_queue_task_for_file(path, rule, queue_lookup) if matched else None
+        path_type = observation.get("path_type") or entry.get("path_type") or "file"
+        queue_task = self._find_queue_task_for_file(path, rule, queue_lookup) if matched and path_type != "folder" else None
         processed = self._get_file_key(path) in self.processed_files if matched else False
         observation_status = observation.get("status")
 
         if not matched:
             status = "ignored"
+        elif path_type == "folder":
+            if state and state.status in {"pending", "waiting_stable"}:
+                status = state.status
+            elif observation_status in {"ignored", "primed", "error"}:
+                status = observation_status
+            elif processed or observation_status in {"queued", "done", "processed", "processing"}:
+                status = "folder_expanded"
+            elif not rule.enabled:
+                status = "rule_disabled"
+            elif not self.running:
+                status = "watch_stopped"
+            else:
+                status = "ready"
         elif queue_task:
             status = queue_task.get("status") or "queued"
         elif state:
@@ -745,9 +772,8 @@ class WatchManager(Base):
 
         detected_at = queue_task.get("trigger_detected_at") if queue_task and queue_task.get("trigger_detected_at") else state.first_seen if state else observation.get("detected_at")
         workflow = queue_task.get("workflow") if queue_task and queue_task.get("workflow") else observation.get("workflow", "")
-        entered_workflow = bool(queue_task) or self._status_enters_workflow(status)
+        entered_workflow = False if path_type == "folder" else bool(queue_task) or self._status_enters_workflow(status)
         series = observation.get("series") or {}
-        path_type = observation.get("path_type") or entry.get("path_type") or "file"
 
         return {
             "rule_id": rule.id,
@@ -787,7 +813,7 @@ class WatchManager(Base):
             for rule in self.rules.values():
                 entries, truncated = self._scan_rule_file_entries(rule, include_unmatched, scan_limit)
                 rows = [self._build_file_status_row(rule, entry, queue_lookup) for entry in entries]
-                rows.sort(key=lambda item: (item["path_type"] != "folder", item["file"].lower()))
+                rows.sort(key=lambda item: (item["path_type"] != "folder", natural_sort_key(item["file"])))
 
                 visible_rows = rows[:limit_per_rule]
                 snapshots.append({
@@ -866,7 +892,7 @@ class WatchManager(Base):
                 result.extend(self._scan_flat(rule.watch_path, rule))
             else:
                 result.extend(self._scan_recursive(rule.watch_path, rule) if rule.recursive else self._scan_flat(rule.watch_path, rule))
-        return result
+        return natural_sort_paths(result)
 
     def _scan_flat(self, directory: str, rule: WatchRule) -> List[str]:
         """扫描单层目录"""
@@ -879,7 +905,7 @@ class WatchManager(Base):
                     result.append(entry.path)
         except OSError:
             pass
-        return result
+        return natural_sort_paths(result)
 
     def _scan_folders(self, directory: str, rule: WatchRule) -> List[str]:
         result = []
@@ -890,7 +916,7 @@ class WatchManager(Base):
                     result.append(entry.path)
         except OSError:
             pass
-        return result
+        return natural_sort_paths(result)
 
     def _scan_recursive(self, directory: str, rule: WatchRule) -> List[str]:
         """递归扫描目录"""
@@ -910,7 +936,7 @@ class WatchManager(Base):
                         result.append(path)
         except OSError:
             pass
-        return result
+        return natural_sort_paths(result)
 
     def _prime_existing_files(self):
         """Record existing files so watch mode reacts to future changes by default."""
@@ -935,6 +961,7 @@ class WatchManager(Base):
         rule: WatchRule,
         folder_series: dict = None,
         skip_stability: bool = False,
+        queue_options: dict = None,
     ) -> bool:
         """处理检测到的单个文件目标"""
         if self._is_system_ignored_path(file_path, rule):
@@ -1022,6 +1049,9 @@ class WatchManager(Base):
                 self._apply_series_context_to_workflow(task_config, series)
             else:
                 self._log("warning", f"Series volume not recognized: {os.path.basename(file_path)}")
+
+        if queue_options:
+            task_config.update(queue_options)
 
         workflow_description = self._describe_workflow(rule.workflow_steps)
         self._log(
@@ -1121,12 +1151,37 @@ class WatchManager(Base):
         )
 
         queued_count = 0
-        for file_path in folder_series.get("files", files):
-            if self._get_file_key(file_path) in self.processed_files:
-                continue
-            queued = self._process_single_target(file_path, rule, folder_series, skip_stability=True)
+        pending_files = [
+            os.path.abspath(file_path)
+            for file_path in natural_sort_paths(folder_series.get("files", files))
+            if self._get_file_key(file_path) not in self.processed_files
+        ]
+        batch_total = len(pending_files)
+        batch_id = hashlib.sha1(
+            f"{rule.id}:{folder_path}:{time.time_ns()}".encode("utf-8", errors="ignore")
+        ).hexdigest()[:12] if batch_total else ""
+        should_defer_auto_start = bool(self.queue_start_callback)
+        for batch_index, file_path in enumerate(pending_files, start=1):
+            queue_options = {
+                "folder_batch_id": batch_id,
+                "folder_batch_index": batch_index,
+                "folder_batch_total": batch_total,
+                "defer_auto_start": should_defer_auto_start,
+            }
+            queued = self._process_single_target(
+                file_path,
+                rule,
+                folder_series,
+                skip_stability=True,
+                queue_options=queue_options,
+            )
             if queued:
                 queued_count += 1
+        if queued_count and rule.auto_start and self.queue_start_callback:
+            try:
+                self.queue_start_callback()
+            except Exception as e:
+                self._log("error", f"Failed to start queued folder batch: {e}")
 
         self.processed_files.add(folder_key)
         state.status = "queued" if queued_count else "processed"

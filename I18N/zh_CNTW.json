@@ -1290,6 +1290,7 @@
     "watch_status_partial": "部分行異常",
     "watch_status_done": "已完成",
     "watch_status_processed": "已處理",
+    "watch_status_folder_expanded": "已展開",
     "watch_status_primed": "啟動前已存在",
     "watch_status_error": "錯誤",
     "watch_status_stopped": "已停止",

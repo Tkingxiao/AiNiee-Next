@@ -1290,6 +1290,7 @@
     "watch_status_partial": "Líneas parciales con problemas",
     "watch_status_done": "Completado",
     "watch_status_processed": "Procesado",
+    "watch_status_folder_expanded": "Expandido",
     "watch_status_primed": "Existía antes de iniciar",
     "watch_status_error": "Error",
     "watch_status_stopped": "Detenido",
