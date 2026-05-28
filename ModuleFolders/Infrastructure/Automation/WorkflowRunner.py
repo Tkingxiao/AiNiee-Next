@@ -295,6 +295,34 @@ class WorkflowRunner:
             if target_platform and target_platform in cfg.get("platforms", {}):
                 cfg["platforms"][target_platform]["thinking_budget"] = task_config.get("thinking_budget")
 
+        self._apply_dynamic_glossary_context(task_config)
+
+    def _apply_dynamic_glossary_context(self, task_config: dict):
+        cfg = getattr(self.host, "config", {})
+        if not isinstance(cfg, dict):
+            return
+
+        volume = self._normalize_int(task_config.get("series_volume"))
+        if volume is None:
+            return
+
+        trigger_path = task_config.get("trigger_file_path") or task_config.get("input_path") or ""
+        input_path = task_config.get("input_path") or trigger_path
+        cfg["dynamic_glossary_switch"] = True
+        cfg["dynamic_glossary_series"] = task_config.get("series_key") or self._series_key_for(trigger_path or input_path, task_config)
+        cfg["dynamic_glossary_volume"] = volume
+
+        volume_map = cfg.get("dynamic_glossary_volume_map")
+        if not isinstance(volume_map, dict):
+            volume_map = {}
+        for path in {trigger_path, input_path}:
+            if not path:
+                continue
+            volume_map[path] = volume
+            volume_map[os.path.abspath(path)] = volume
+            volume_map[os.path.basename(os.path.normpath(path))] = volume
+        cfg["dynamic_glossary_volume_map"] = volume_map
+
     @staticmethod
     def _prepare_series_glossary_steps(steps: List[dict], task_config: dict) -> List[dict]:
         if not task_config.get("series_incremental"):
@@ -334,11 +362,24 @@ class WorkflowRunner:
         series_profile_created = False
         series_profile_seed = ""
         series_initial_run = False
+        series_existing_volumes = set()
         if step.get("series_incremental"):
             series_profile_name, series_profile_created, series_profile_seed = self._activate_series_rules_profile(
                 trigger_path,
                 task_config,
             )
+            series_existing_volumes = self._series_existing_volumes_from_config()
+            normalized_source_volume = self._normalize_int(source_volume)
+            if normalized_source_volume is not None and normalized_source_volume in series_existing_volumes:
+                workflow_context["rules_profile"] = series_profile_name
+                message = (
+                    f"Auto series glossary profile already covers {source_label}; "
+                    f"skip glossary analysis and bind profile: {series_profile_name}"
+                )
+                if self.progress_reporter:
+                    self.progress_reporter.update(rules_profile=series_profile_name, message=message)
+                self._log("info", message)
+                return
             series_initial_run = self._is_initial_series_glossary_run(
                 task_config,
                 source_volume,
@@ -517,6 +558,27 @@ class WorkflowRunner:
             return int(value)
         except (TypeError, ValueError):
             return None
+
+    def _series_existing_volumes_from_config(self) -> set[int]:
+        volumes = set()
+        config = getattr(self.host, "config", {}) or {}
+        for key in default_rules_payload():
+            self._collect_series_volumes(config.get(key), volumes)
+        return volumes
+
+    def _collect_series_volumes(self, value, volumes: set[int]) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key in {"volume", "updated_volume", "source_volume"}:
+                    volume = self._normalize_int(item)
+                    if volume is not None:
+                        volumes.add(volume)
+                self._collect_series_volumes(item, volumes)
+            return
+
+        if isinstance(value, list):
+            for item in value:
+                self._collect_series_volumes(item, volumes)
 
     @staticmethod
     def _has_rules_payload(payload: dict) -> bool:
