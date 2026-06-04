@@ -45,6 +45,10 @@ CHARACTER_TIMELINE_FIELDS = (
     "speech_quirks",
     "additional_info",
 )
+DEFAULT_GLOSSARY_TOKEN_WARNING_THRESHOLD = 256_000
+DEFAULT_INCREMENTAL_SPLIT_TARGET_TOKENS = 200_000
+MAX_INCREMENTAL_SPLIT_TARGET_TOKENS = 256_000
+GLOSSARY_ANALYSIS_MODES = ("full", "split", "incremental_split")
 
 
 class GlossaryAnalyzer:
@@ -89,6 +93,55 @@ class GlossaryAnalyzer:
     def save_config(self):
         self.cli.save_config()
 
+    def get_token_warning_threshold(self):
+        try:
+            threshold = int(self.config.get("glossary_analysis_token_warning_threshold") or 0)
+        except (TypeError, ValueError):
+            threshold = 0
+        return threshold if threshold > 0 else DEFAULT_GLOSSARY_TOKEN_WARNING_THRESHOLD
+
+    def get_incremental_split_target_tokens(self):
+        return self._resolve_incremental_split_target_tokens(None)
+
+    def get_incremental_split_target_token_limit(self):
+        return MAX_INCREMENTAL_SPLIT_TARGET_TOKENS
+
+    def prepare_analysis_scan(self, input_path, analysis_percent=100, analysis_lines=None):
+        console.print(f"[cyan]{self.i18n.get('msg_reading_file') or '正在读取文件...'}[/cyan]")
+
+        project_type = self.config.get("translation_project", "auto")
+        cache_data = self.file_reader.read_files(project_type, input_path, "")
+
+        if not cache_data:
+            console.print(f"[red]{self.i18n.get('msg_no_content') or '无法读取文件内容'}[/red]")
+            return None
+
+        all_items = list(cache_data.items_iter())
+        total_lines = len(all_items)
+
+        if total_lines == 0:
+            console.print(f"[red]{self.i18n.get('msg_no_text_found') or '未找到可分析的文本'}[/red]")
+            return None
+
+        if analysis_lines:
+            lines_to_analyze = min(analysis_lines, total_lines)
+        else:
+            lines_to_analyze = int(total_lines * analysis_percent / 100)
+
+        lines_to_analyze = max(1, lines_to_analyze)
+        items_to_analyze = all_items[:lines_to_analyze]
+        selected_text = "\n".join([item.source_text for item in items_to_analyze])
+        estimated_tokens = self._estimate_token_count(selected_text)
+
+        return {
+            "all_items": all_items,
+            "total_lines": total_lines,
+            "lines_to_analyze": lines_to_analyze,
+            "items_to_analyze": items_to_analyze,
+            "selected_text": selected_text,
+            "estimated_tokens": estimated_tokens,
+        }
+
     def execute_analysis(
         self,
         input_path,
@@ -104,6 +157,7 @@ class GlossaryAnalyzer:
         source_volume=None,
         existing_rules_context=None,
         output_dir=None,
+        incremental_split_target_tokens=None,
     ):
         """
         执行术语表分析的核心逻辑
@@ -128,37 +182,16 @@ class GlossaryAnalyzer:
         from ModuleFolders.Infrastructure.TaskConfig.TaskConfig import TaskConfig
         from ModuleFolders.Infrastructure.TaskConfig.TaskType import TaskType
 
-        # 读取文件内容
-        console.print(f"[cyan]{self.i18n.get('msg_reading_file') or '正在读取文件...'}[/cyan]")
-
-        project_type = self.config.get("translation_project", "auto")
-        cache_data = self.file_reader.read_files(project_type, input_path, "")
-
-        if not cache_data:
-            console.print(f"[red]{self.i18n.get('msg_no_content') or '无法读取文件内容'}[/red]")
+        scan_result = self.prepare_analysis_scan(input_path, analysis_percent, analysis_lines)
+        if scan_result is None:
             return None
 
-        # 获取所有文本行
-        all_items = list(cache_data.items_iter())
-        total_lines = len(all_items)
-
-        if total_lines == 0:
-            console.print(f"[red]{self.i18n.get('msg_no_text_found') or '未找到可分析的文本'}[/red]")
-            return None
-
-        # 计算要分析的行数
-        if analysis_lines:
-            lines_to_analyze = min(analysis_lines, total_lines)
-        else:
-            lines_to_analyze = int(total_lines * analysis_percent / 100)
-
-        lines_to_analyze = max(1, lines_to_analyze)
-
-        # 获取要分析的文本
-        items_to_analyze = all_items[:lines_to_analyze]
-        selected_text = "\n".join([item.source_text for item in items_to_analyze])
-        estimated_tokens = self._estimate_token_count(selected_text)
-        normalized_mode = "split" if analysis_mode == "split" else "full"
+        total_lines = scan_result["total_lines"]
+        lines_to_analyze = scan_result["lines_to_analyze"]
+        items_to_analyze = scan_result["items_to_analyze"]
+        selected_text = scan_result["selected_text"]
+        estimated_tokens = scan_result["estimated_tokens"]
+        normalized_mode = self._normalize_analysis_mode(analysis_mode)
 
         console.print(f"[green]{self.i18n.get('msg_total_lines') or '总行数'}: {total_lines}[/green]")
         console.print(f"[green]{self.i18n.get('msg_lines_to_analyze') or '将分析行数'}: {lines_to_analyze}[/green]")
@@ -173,6 +206,10 @@ class GlossaryAnalyzer:
         if normalized_mode == "full":
             console.print(
                 f"[cyan]{self.i18n.get('msg_single_request_analysis') or '全本/按比例提取：将所选文本一次性发送给LLM。'}[/cyan]"
+            )
+        elif normalized_mode == "incremental_split":
+            console.print(
+                f"[yellow]{self._tr('msg_incremental_split_request_analysis', '超长增量分批：将所选文本顺序拆分，每批只输出新增或变化，并逐批合并。')}[/yellow]"
             )
         else:
             console.print(
@@ -233,6 +270,7 @@ class GlossaryAnalyzer:
                 f"{'/'.join(mode_bits) or 'metadata'} | {incremental_options.get('source_label') or '-'}[/cyan]"
             )
 
+        base_system_prompt = system_prompt
         all_terms = []
         structured_analysis = self._empty_analysis_payload()
         raw_response_diagnostics = []
@@ -272,7 +310,7 @@ class GlossaryAnalyzer:
             except Exception as e:
                 error_count = 1
                 console.print(f"[red]✗ {self.i18n.get('msg_analysis_error') or '分析出错'}: {e}[/red]")
-        else:
+        elif normalized_mode == "split":
             batch_size = self._get_split_batch_size()
             batches = [items_to_analyze[i:i+batch_size] for i in range(0, len(items_to_analyze), batch_size)]
 
@@ -365,6 +403,71 @@ class GlossaryAnalyzer:
             console.print(
                 f"\n[cyan]{self._tr('glossary_log_batch_summary', '完成: {}/{}, 失败: {}', completed_count, len(batches), error_count)}[/cyan]"
             )
+        else:
+            target_tokens = self._resolve_incremental_split_target_tokens(incremental_split_target_tokens)
+            batches = self._split_items_by_estimated_tokens(items_to_analyze, target_tokens)
+            console.print(
+                f"[cyan]{self.i18n.get('msg_batch_count') or '批次数量'}: {len(batches)} "
+                f"| {self._tr('msg_incremental_split_target_tokens', '目标每批约 {} Token', target_tokens)}[/cyan]"
+            )
+            console.print(
+                f"[dim]{self._tr('msg_incremental_split_sequential_note', '该模式会顺序执行；后一批会参考此前批次累计出的术语/角色/世界观快照，只在原始文本条目或句末边界分批，不会截断句子。每批目标可自定，但最大不会超过 256000 Token；也不会写入 Vol_2/Vol_3 这类卷号历史。')}[/dim]"
+            )
+
+            for batch_idx, batch in enumerate(batches):
+                text_content = "\n".join([item.source_text for item in batch])
+                batch_context = self._build_incremental_split_context(structured_analysis, all_terms)
+                batch_system_prompt = self._append_incremental_split_instruction(
+                    base_system_prompt,
+                    batch_context,
+                    batch_idx,
+                    len(batches),
+                )
+                messages = [{"role": "user", "content": text_content}]
+                try:
+                    requester = LLMRequester()
+                    skip, _, response, prompt_tokens, completion_tokens = requester.sent_request(
+                        messages, batch_system_prompt, platform_config
+                    )
+                    if not skip and response:
+                        parsed = self._parse_glossary_response(response)
+                        terms = parsed.get("terms", [])
+                        all_terms.extend(terms)
+                        self._merge_analysis_payload(
+                            structured_analysis,
+                            parsed,
+                            fill_existing=True,
+                            replace_existing=True,
+                        )
+                        if not terms and not self._has_non_glossary_analysis(parsed):
+                            raw_response_diagnostics.append(
+                                self._build_raw_response_diagnostic(
+                                    batch_idx + 1,
+                                    response,
+                                    prompt_tokens,
+                                    completion_tokens,
+                                )
+                            )
+                        completed_count += 1
+                        console.print(
+                            f"[green]√ [{batch_idx+1:03d}/{len(batches):03d}] "
+                            f"{self._tr('glossary_log_batch_completed', '完成')} | "
+                            f"{self._tr('msg_found_terms', '发现专有名词')} {len(terms)} | "
+                            f"{prompt_tokens}+{completion_tokens}T[/green]"
+                        )
+                    else:
+                        error_count += 1
+                        console.print(f"[red]✗ [{batch_idx+1:03d}] {self._tr('glossary_log_batch_failed', '失败')}[/red]")
+                except Exception as e:
+                    error_count += 1
+                    console.print(f"[red]✗ [{batch_idx+1:03d}] {self._tr('glossary_log_error', '错误')}: {e}[/red]")
+
+            console.print(
+                f"\n[cyan]{self._tr('glossary_log_batch_summary', '完成: {}/{}, 失败: {}', completed_count, len(batches), error_count)}[/cyan]"
+            )
+
+        if normalized_mode == "incremental_split":
+            all_terms = self._dedupe_terms_for_context(all_terms)
 
         structured_analysis = self._finalize_analysis_payload(structured_analysis, all_terms)
 
@@ -628,6 +731,10 @@ class GlossaryAnalyzer:
             "translation_example_data": [],
         }
 
+    def _normalize_analysis_mode(self, analysis_mode):
+        mode = self._normalize_glossary_text(analysis_mode).lower()
+        return mode if mode in GLOSSARY_ANALYSIS_MODES else "full"
+
     def _build_incremental_options(self, new=False, replace=False, source_label=None, source_volume=None):
         label = self._normalize_glossary_text(source_label)
         volume = self._normalize_volume_number(source_volume)
@@ -692,6 +799,62 @@ class GlossaryAnalyzer:
 """
         return f"{system_prompt.rstrip()}\n{instruction.strip()}\n"
 
+    def _append_incremental_split_instruction(self, system_prompt, accumulated_context, batch_index, total_batches):
+        context_json = json.dumps(accumulated_context or {}, ensure_ascii=False, indent=2)
+        instruction = f"""
+
+## 超长文本增量分批模式
+当前文本因预估 Token 过高被顺序拆分分析。你正在分析第 {batch_index + 1}/{total_batches} 批。
+
+请遵守以下规则：
+- 先阅读“已累计规则快照”，再阅读当前批文本。
+- 当前批只输出新增项，或相对已累计快照有明确变化、补充、纠错价值的条目。
+- 如果当前批没有明显新增、补充、纠错或状态变化，允许对应字段返回空数组或空字符串。
+- 如果某个术语、角色、世界观或文风信息已经存在且当前批没有提供新证据，不要重复输出。
+- 如果当前批有明确证据表明既有术语、角色、世界观、文风、译名或注释发生变化、应补全或应修正，必须输出更新后的条目；不要因为它已存在就省略。
+- 输出更新时只写当前最新状态，程序会按当前最新结果合并。
+- 这是同一文件内部的分批，不是系列卷号增量；不要输出 Vol_2、Vol_3、第2卷、第3卷、volume、updated_volume、history 等卷号/时间线标识，除非原文本身明确出现这些内容且它们是需要提取的术语。
+
+### 已累计规则快照
+{context_json}
+"""
+        return f"{system_prompt.rstrip()}\n{instruction.strip()}\n"
+
+    def _build_incremental_split_context(self, structured_analysis, terms):
+        context = dict(structured_analysis or self._empty_analysis_payload())
+        context["terms"] = self._dedupe_terms_for_context(terms)
+        context["prompt_dictionary_data"] = context["terms"]
+        return {
+            "prompt_dictionary_data": self._trim_existing_rule_value(context.get("prompt_dictionary_data", []), max_items=200, max_chars=12000),
+            "exclusion_list_data": self._trim_existing_rule_value(context.get("exclusion_list_data", []), max_items=120, max_chars=8000),
+            "characterization_data": self._trim_existing_rule_value(context.get("characterization_data", []), max_items=120, max_chars=12000),
+            "world_building_content": self._trim_existing_rule_value(context.get("world_building_content", ""), max_items=0, max_chars=10000),
+            "writing_style_content": self._trim_existing_rule_value(context.get("writing_style_content", ""), max_items=0, max_chars=6000),
+            "translation_example_data": self._trim_existing_rule_value(context.get("translation_example_data", []), max_items=80, max_chars=8000),
+        }
+
+    def _dedupe_terms_for_context(self, terms):
+        result = []
+        by_src = {}
+        for term in terms or []:
+            if not isinstance(term, dict):
+                continue
+            src = self._normalize_glossary_text(term.get("src"))
+            if not src:
+                continue
+            if src not in by_src:
+                item = dict(term)
+                by_src[src] = item
+                result.append(item)
+                continue
+            existing = by_src[src]
+            for key, value in term.items():
+                if key == "src":
+                    continue
+                if self._rule_field_has_content(value):
+                    existing[key] = value
+        return result
+
     def _build_incremental_existing_rules_context(self):
         context = {}
         for key in STRUCTURED_RULE_KEYS:
@@ -712,7 +875,7 @@ class GlossaryAnalyzer:
             return text[:max_chars] + f"\n...({len(text) - max_chars} chars omitted)"
         return text
 
-    def _merge_analysis_payload(self, target, source):
+    def _merge_analysis_payload(self, target, source, fill_existing=False, replace_existing=False):
         if not source:
             return target
 
@@ -725,6 +888,8 @@ class GlossaryAnalyzer:
         self._merge_character_lists(
             target.setdefault("characterization_data", []),
             source.get("characterization_data", []),
+            fill_existing=fill_existing,
+            replace_existing=replace_existing,
         )
         self._extend_unique_dicts(
             target.setdefault("translation_example_data", []),
@@ -2341,6 +2506,89 @@ Additional output requirement:
 
         return max(1, batch_size)
 
+    def _resolve_incremental_split_target_tokens(self, value=None):
+        if value is None:
+            value = self.config.get("glossary_analysis_incremental_split_target_tokens")
+        try:
+            target_tokens = int(value or 0)
+        except (TypeError, ValueError):
+            target_tokens = 0
+        if target_tokens <= 0:
+            target_tokens = DEFAULT_INCREMENTAL_SPLIT_TARGET_TOKENS
+        return min(target_tokens, MAX_INCREMENTAL_SPLIT_TARGET_TOKENS)
+
+    def _split_items_by_estimated_tokens(self, items, target_tokens):
+        batches = []
+        current_batch = []
+        current_tokens = 0
+        target_tokens = self._resolve_incremental_split_target_tokens(target_tokens)
+
+        for item in items or []:
+            text = getattr(item, "source_text", "")
+            item_tokens = max(1, self._estimate_token_count(text))
+            if item_tokens > target_tokens:
+                if current_batch:
+                    batches.append(current_batch)
+                    current_batch = []
+                    current_tokens = 0
+                sentence_chunks = self._split_text_by_sentence_boundaries(text, target_tokens)
+                if len(sentence_chunks) > 1:
+                    for chunk in sentence_chunks:
+                        batches.append([self._clone_cache_item_with_text(item, chunk)])
+                    continue
+            if current_batch and current_tokens + item_tokens > target_tokens:
+                batches.append(current_batch)
+                current_batch = []
+                current_tokens = 0
+            current_batch.append(item)
+            current_tokens += item_tokens
+
+        if current_batch:
+            batches.append(current_batch)
+        return batches or [items]
+
+    def _split_text_by_sentence_boundaries(self, text, target_tokens):
+        text = self._normalize_glossary_text(text)
+        if not text:
+            return []
+
+        sentences = re.findall(r".+?(?:[。！？!?\.]+[”’\"']?|\n+|$)", text, flags=re.S)
+        sentences = [sentence for sentence in (s.strip() for s in sentences) if sentence]
+        if len(sentences) <= 1:
+            return [text]
+
+        chunks = []
+        current = []
+        current_tokens = 0
+        target_tokens = self._resolve_incremental_split_target_tokens(target_tokens)
+
+        for sentence in sentences:
+            sentence_tokens = max(1, self._estimate_token_count(sentence))
+            if current and current_tokens + sentence_tokens > target_tokens:
+                chunks.append("\n".join(current))
+                current = []
+                current_tokens = 0
+            current.append(sentence)
+            current_tokens += sentence_tokens
+
+        if current:
+            chunks.append("\n".join(current))
+        return chunks or [text]
+
+    def _clone_cache_item_with_text(self, item, text):
+        class TextOnlyItem:
+            def __init__(self, source_text):
+                self.source_text = source_text
+
+        try:
+            clone = item.__class__.__new__(item.__class__)
+            if hasattr(item, "__dict__"):
+                clone.__dict__.update(item.__dict__)
+            setattr(clone, "source_text", text)
+            return clone
+        except Exception:
+            return TextOnlyItem(text)
+
     def _estimate_token_count(self, text):
         try:
             from ModuleFolders.Infrastructure.Cache.CacheItem import CacheItem
@@ -2427,7 +2675,11 @@ Additional output requirement:
         mode_label = (
             self._tr("glossary_log_mode_full", "全本/按比例提取（推荐）")
             if analysis_mode == "full"
-            else self._tr("glossary_log_mode_split", "拆分提取（不推荐）")
+            else (
+                self._tr("glossary_log_mode_incremental_split", "超长增量分批")
+                if analysis_mode == "incremental_split"
+                else self._tr("glossary_log_mode_split", "拆分提取（不推荐）")
+            )
         )
         prompt_label = prompt_file or self._tr("glossary_log_default_prompt", "默认")
 

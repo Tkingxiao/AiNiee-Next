@@ -61,7 +61,8 @@ export const Rules: React.FC = () => {
     const [aiInputPath, setAiInputPath] = useState('');
     const [aiPercent, setAiPercent] = useState(30);
     const [aiLines, setAiLines] = useState<number | undefined>(undefined);
-    const [aiAnalysisMode, setAiAnalysisMode] = useState<'full' | 'split'>('full');
+    const [aiAnalysisMode, setAiAnalysisMode] = useState<'full' | 'split' | 'incremental_split'>('full');
+    const [aiIncrementalSplitTargetTokens, setAiIncrementalSplitTargetTokens] = useState<number>(200000);
     const [aiPromptFile, setAiPromptFile] = useState('');
     const [aiStatus, setAiStatus] = useState<any>({ status: 'idle', progress: 0, total: 0, message: '', results: [] });
     const [aiMinFreq, setAiMinFreq] = useState(2);
@@ -711,9 +712,29 @@ export const Rules: React.FC = () => {
     const startAiAnalysis = async () => {
         if (!aiInputPath) { alert('请输入文件路径'); return; }
         try {
+            let analysisModeToStart = aiAnalysisMode;
+            let splitTargetTokensToStart = aiAnalysisMode === 'incremental_split' ? aiIncrementalSplitTargetTokens : undefined;
+            if (aiAnalysisMode === 'full') {
+                const preflight = await DataService.preflightGlossaryAnalysis(aiInputPath, aiPercent, undefined);
+                if (preflight.exceeds_warning) {
+                    const acceptSplit = await nativeConfirm(t(
+                        'ai_glossary_token_warning_confirm',
+                        Number(preflight.estimated_tokens || 0).toLocaleString(),
+                        Number(preflight.warning_threshold || 0).toLocaleString(),
+                        Number(preflight.recommended_split_target_tokens || 200000).toLocaleString(),
+                        Number(preflight.max_split_target_tokens || 256000).toLocaleString()
+                    ));
+                    if (acceptSplit) {
+                        analysisModeToStart = 'incremental_split';
+                        splitTargetTokensToStart = Math.min(256000, Math.max(1000, Number(aiIncrementalSplitTargetTokens) || Number(preflight.recommended_split_target_tokens) || 200000));
+                    }
+                }
+            }
             await DataService.startGlossaryAnalysis(
                 aiInputPath, aiPercent, aiAnalysisMode === 'split' ? aiLines : undefined,
-                aiAnalysisMode, aiPromptFile || undefined,
+                analysisModeToStart,
+                splitTargetTokensToStart,
+                aiPromptFile || undefined,
                 aiUseTempConfig, aiTempPlatform, aiTempApiKey, aiTempApiUrl, aiTempModel, aiTempThreads
             );
             pollAnalysisStatus();
@@ -1457,7 +1478,7 @@ export const Rules: React.FC = () => {
                                         <div className={`p-4 rounded-lg border ${isLightCityTheme ? 'bg-white/40 border-pink-200/50' : 'bg-slate-900/50 border-slate-800'}`}>
                                             <div className="mb-4">
                                                 <label className={`text-sm font-medium ${isLightCityTheme ? 'text-pink-700' : 'text-slate-300'}`}>{t('ai_glossary_mode')}</label>
-                                                <div className="mt-2 grid grid-cols-1 md:grid-cols-2 gap-2">
+                                                <div className="mt-2 grid grid-cols-1 md:grid-cols-3 gap-2">
                                                     <button
                                                         type="button"
                                                         onClick={() => setAiAnalysisMode('full')}
@@ -1475,6 +1496,15 @@ export const Rules: React.FC = () => {
                                                     >
                                                         <div className="text-sm">{t('ai_glossary_mode_split')}</div>
                                                         <div className="text-xs opacity-75 mt-1">{t('ai_glossary_mode_split_desc')}</div>
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setAiAnalysisMode('incremental_split')}
+                                                        className={`text-left px-3 py-2 rounded border transition-all ${aiAnalysisMode === 'incremental_split' ? 'font-bold' : 'text-slate-400 hover:text-slate-200'}`}
+                                                        style={aiAnalysisMode === 'incremental_split' ? { backgroundColor: `${themeColor}20`, color: themeColor, borderColor: `${themeColor}60` } : { borderColor: 'rgb(51 65 85)' }}
+                                                    >
+                                                        <div className="text-sm">{t('ai_glossary_mode_incremental_split')}</div>
+                                                        <div className="text-xs opacity-75 mt-1">{t('ai_glossary_mode_incremental_split_desc')}</div>
                                                     </button>
                                                 </div>
                                             </div>
@@ -1499,6 +1529,14 @@ export const Rules: React.FC = () => {
                                                     </div>
                                                 </div>
                                             </div>
+                                            {(aiAnalysisMode === 'full' || aiAnalysisMode === 'incremental_split') && (
+                                                <div className="mt-4">
+                                                    <label className={`text-sm font-medium ${isLightCityTheme ? 'text-pink-700' : 'text-slate-300'}`}>{t('ai_glossary_incremental_split_target_tokens')}</label>
+                                                    <input type="number" value={aiIncrementalSplitTargetTokens} onChange={(e) => setAiIncrementalSplitTargetTokens(Math.min(256000, Math.max(1000, Number(e.target.value) || 200000)))}
+                                                        className="w-full mt-1 px-3 py-2 bg-slate-950 border border-slate-700 rounded text-sm text-slate-200 focus:border-primary outline-none transition-all" min={1000} max={256000} />
+                                                    <p className="mt-1 text-xs text-slate-500">{t('ai_glossary_incremental_split_hint')}</p>
+                                                </div>
+                                            )}
                                             <div className="mt-4">
                                                 <label className={`text-sm font-medium ${isLightCityTheme ? 'text-pink-700' : 'text-slate-300'}`}>{t('ai_glossary_prompt_file')}</label>
                                                 <input type="text" value={aiPromptFile} onChange={(e) => setAiPromptFile(e.target.value)}

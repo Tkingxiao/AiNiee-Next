@@ -348,6 +348,37 @@ class GlossaryMenu:
             )
             analysis_lines = max(1, analysis_lines)
 
+        incremental_split_target_tokens = None
+        scan_result = self.analyzer.prepare_analysis_scan(selected_path, analysis_percent, analysis_lines)
+        if scan_result is None:
+            Prompt.ask(f"\n{self.i18n.get('msg_press_enter')}")
+            return
+        estimated_tokens = scan_result.get("estimated_tokens", 0)
+        warning_threshold = self.analyzer.get_token_warning_threshold()
+        console.print(f"[green]{self.i18n.get('msg_estimated_tokens') or '预估Token'}: {estimated_tokens:,}[/green]")
+        if analysis_mode == "full" and estimated_tokens > warning_threshold:
+            console.print(Panel(
+                (
+                    f"[bold yellow]{self._tr('msg_glossary_token_warning_title', '所选文本预估 Token 已超过警告阈值')}[/bold yellow]\n"
+                    f"{self._tr('msg_glossary_token_warning_detail', '当前约 {0:,} Token，质量提醒阈值为 {1:,} Token。即使模型标称支持 1M 上下文，长上下文任务也可能出现注意力衰减，漏掉低频术语、早期设定或角色变化。', estimated_tokens, warning_threshold)}\n\n"
+                    f"[cyan]{self._tr('msg_glossary_incremental_split_difference', '接受后会自动走“同一文件内部增量合并”：后一批参考前面累计出的术语和规则；没有明显变化允许返回空，有明确变化必须更新后再合并。自动分批默认每批约 200000 Token，用户自定义时最大不会超过 256000 Token；它不会按 Vol_2、Vol_3 或第几卷写入时间线标识，也不会为了分批截断句子。')}[/cyan]\n"
+                    f"[dim]{self._tr('msg_glossary_token_warning_soft_note', '这是软提示；如果拒绝，将继续按全量单次分析执行。')}[/dim]"
+                ),
+                border_style="yellow",
+            ))
+            if Confirm.ask(
+                self._tr('confirm_glossary_auto_incremental_split', "是否改为自动增量分批分析?"),
+                default=True,
+            ):
+                analysis_mode = "incremental_split"
+                incremental_split_target_tokens = self.analyzer.get_incremental_split_target_tokens()
+                max_incremental_split_target_tokens = self.analyzer.get_incremental_split_target_token_limit()
+                incremental_split_target_tokens = IntPrompt.ask(
+                    self._tr('prompt_glossary_incremental_split_target_tokens', "请输入每批目标 Token"),
+                    default=incremental_split_target_tokens,
+                )
+                incremental_split_target_tokens = max(1, min(incremental_split_target_tokens, max_incremental_split_target_tokens))
+
         prompt_file = self._select_glossary_analysis_prompt()
         if prompt_file is None:
             return
@@ -389,6 +420,7 @@ class GlossaryMenu:
                 replace=incremental_options.get("replace", False),
                 source_label=incremental_options.get("source_label"),
                 source_volume=incremental_options.get("source_volume"),
+                incremental_split_target_tokens=incremental_split_target_tokens,
             )
 
             if analysis_result is None:

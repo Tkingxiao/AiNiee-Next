@@ -1307,11 +1307,30 @@ export const DataService = {
     },
 
     // --- AI Glossary Analysis ---
+    async preflightGlossaryAnalysis(
+        inputPath: string,
+        percent: number,
+        lines?: number
+    ): Promise<any> {
+        const res = await fetch(`${API_BASE}/glossary/analysis/preflight`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                input_path: inputPath,
+                analysis_percent: percent,
+                analysis_lines: lines
+            })
+        });
+        if (!res.ok) throw new Error('Failed to preflight analysis');
+        return await res.json();
+    },
+
     async startGlossaryAnalysis(
         inputPath: string,
         percent: number,
         lines?: number,
         analysisMode?: string,
+        incrementalSplitTargetTokens?: number,
         promptFile?: string,
         useTempConfig?: boolean,
         tempPlatform?: string,
@@ -1328,6 +1347,7 @@ export const DataService = {
                 analysis_percent: percent,
                 analysis_lines: lines,
                 analysis_mode: analysisMode,
+                incremental_split_target_tokens: incrementalSplitTargetTokens,
                 prompt_file: promptFile,
                 use_temp_config: useTempConfig,
                 temp_platform: tempPlatform,

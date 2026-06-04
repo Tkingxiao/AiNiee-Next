@@ -74,3 +74,4 @@ Tools/TauriShell/icons/
 Resource/rules_profiles/default.json
 /Resource/rules_profiles
 /Resource/automation_progress
+Resource/queue_operations.log

@@ -2,6 +2,7 @@
 import os
 import sys
 import json
+import re
 import secrets
 import threading
 import subprocess
@@ -1098,12 +1099,16 @@ async def save_translation_example(items: List[Dict[str, Any]]):
     return {"message": "Translation examples saved."}
 
 # --- AI Glossary Analysis Endpoints ---
+DEFAULT_GLOSSARY_TOKEN_WARNING_THRESHOLD = 256_000
+DEFAULT_INCREMENTAL_SPLIT_TARGET_TOKENS = 200_000
+MAX_INCREMENTAL_SPLIT_TARGET_TOKENS = 256_000
 
 class GlossaryAnalysisRequest(BaseModel):
     input_path: str
     analysis_percent: int = 100
     analysis_lines: Optional[int] = None
     analysis_mode: str = "full"
+    incremental_split_target_tokens: Optional[int] = None
     prompt_file: Optional[str] = None
     translate_during_analysis: bool = False
     use_temp_config: bool = False
@@ -1112,6 +1117,11 @@ class GlossaryAnalysisRequest(BaseModel):
     temp_api_url: Optional[str] = None
     temp_model: Optional[str] = None
     temp_threads: Optional[int] = None
+
+class GlossaryAnalysisPreflightRequest(BaseModel):
+    input_path: str
+    analysis_percent: int = 100
+    analysis_lines: Optional[int] = None
 
 class GlossaryAnalysisStatus(BaseModel):
     status: str  # 'idle', 'running', 'completed', 'error'
@@ -1136,6 +1146,21 @@ _analysis_state = {
 @app.get("/api/glossary/analysis/status")
 async def get_analysis_status():
     return _analysis_state
+
+@app.post("/api/glossary/analysis/preflight")
+async def preflight_glossary_analysis(request: GlossaryAnalysisPreflightRequest):
+    try:
+        config = _load_active_config_payload()
+        return _build_glossary_analysis_preflight(
+            request.input_path,
+            request.analysis_percent,
+            request.analysis_lines,
+            config,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 @app.post("/api/glossary/analysis/start")
 async def start_glossary_analysis(request: GlossaryAnalysisRequest):
@@ -1167,6 +1192,7 @@ async def start_glossary_analysis(request: GlossaryAnalysisRequest):
         target=_run_glossary_analysis,
         args=(request.input_path, request.analysis_percent, request.analysis_lines,
               request.analysis_mode, request.prompt_file,
+              request.incremental_split_target_tokens,
               request.translate_during_analysis,
               request.use_temp_config, request.temp_platform, request.temp_api_key,
               request.temp_api_url, request.temp_model, request.temp_threads)
@@ -1197,6 +1223,131 @@ def _estimate_glossary_tokens(text: str) -> int:
         non_ascii_count = len(text) - ascii_count
         return max(1, int(ascii_count / 4 + non_ascii_count / 1.5))
 
+def _get_glossary_token_warning_threshold(config: Dict[str, Any]) -> int:
+    try:
+        threshold = int(config.get("glossary_analysis_token_warning_threshold") or 0)
+    except (TypeError, ValueError):
+        threshold = 0
+    return threshold if threshold > 0 else DEFAULT_GLOSSARY_TOKEN_WARNING_THRESHOLD
+
+def _get_incremental_split_target_tokens(config: Dict[str, Any], requested: Optional[int] = None) -> int:
+    value = requested if requested is not None else config.get("glossary_analysis_incremental_split_target_tokens")
+    try:
+        target = int(value or 0)
+    except (TypeError, ValueError):
+        target = 0
+    if target <= 0:
+        target = DEFAULT_INCREMENTAL_SPLIT_TARGET_TOKENS
+    return min(target, MAX_INCREMENTAL_SPLIT_TARGET_TOKENS)
+
+def _normalize_glossary_analysis_mode(mode: str) -> str:
+    normalized = str(mode or "").strip().lower()
+    return normalized if normalized in {"full", "split", "incremental_split"} else "full"
+
+def _build_glossary_analysis_preflight(input_path: str, analysis_percent: int, analysis_lines: Optional[int], config: Dict[str, Any]) -> Dict[str, Any]:
+    from ModuleFolders.Domain.FileReader.FileReader import FileReader
+
+    file_reader = FileReader()
+    project_type = config.get("translation_project", "auto")
+    cache_data = file_reader.read_files(project_type, input_path, "")
+    if not cache_data:
+        raise HTTPException(status_code=400, detail="Unable to read file content")
+
+    all_items = list(cache_data.items_iter())
+    total_lines = len(all_items)
+    if total_lines == 0:
+        raise HTTPException(status_code=400, detail="No analyzable text found")
+
+    if analysis_lines:
+        lines_to_analyze = min(analysis_lines, total_lines)
+    else:
+        lines_to_analyze = int(total_lines * analysis_percent / 100)
+    lines_to_analyze = max(1, lines_to_analyze)
+
+    selected_text = "\n".join([item.source_text for item in all_items[:lines_to_analyze]])
+    estimated_tokens = _estimate_glossary_tokens(selected_text)
+    warning_threshold = _get_glossary_token_warning_threshold(config)
+    recommended_split_target_tokens = _get_incremental_split_target_tokens(config)
+    return {
+        "total_lines": total_lines,
+        "lines_to_analyze": lines_to_analyze,
+        "estimated_tokens": estimated_tokens,
+        "warning_threshold": warning_threshold,
+        "recommended_split_target_tokens": recommended_split_target_tokens,
+        "max_split_target_tokens": MAX_INCREMENTAL_SPLIT_TARGET_TOKENS,
+        "exceeds_warning": estimated_tokens > warning_threshold,
+    }
+
+def _split_glossary_items_by_tokens(items: list, target_tokens: int) -> list:
+    batches = []
+    current = []
+    current_tokens = 0
+    target_tokens = max(1, min(int(target_tokens or DEFAULT_INCREMENTAL_SPLIT_TARGET_TOKENS), MAX_INCREMENTAL_SPLIT_TARGET_TOKENS))
+    for item in items or []:
+        text = getattr(item, "source_text", "")
+        item_tokens = max(1, _estimate_glossary_tokens(text))
+        if item_tokens > target_tokens:
+            if current:
+                batches.append(current)
+                current = []
+                current_tokens = 0
+            sentence_chunks = _split_glossary_text_by_sentence_boundaries(text, target_tokens)
+            if len(sentence_chunks) > 1:
+                for chunk in sentence_chunks:
+                    batches.append([_clone_glossary_item_with_text(item, chunk)])
+                continue
+        if current and current_tokens + item_tokens > target_tokens:
+            batches.append(current)
+            current = []
+            current_tokens = 0
+        current.append(item)
+        current_tokens += item_tokens
+    if current:
+        batches.append(current)
+    return batches or [items]
+
+def _split_glossary_text_by_sentence_boundaries(text: str, target_tokens: int) -> list:
+    text = _normalize_glossary_text(text)
+    if not text:
+        return []
+
+    sentences = re.findall(r".+?(?:[。！？!?\.]+[”’\"']?|\n+|$)", text, flags=re.S)
+    sentences = [sentence for sentence in (s.strip() for s in sentences) if sentence]
+    if len(sentences) <= 1:
+        return [text]
+
+    chunks = []
+    current = []
+    current_tokens = 0
+    target_tokens = max(1, min(int(target_tokens or DEFAULT_INCREMENTAL_SPLIT_TARGET_TOKENS), MAX_INCREMENTAL_SPLIT_TARGET_TOKENS))
+
+    for sentence in sentences:
+        sentence_tokens = max(1, _estimate_glossary_tokens(sentence))
+        if current and current_tokens + sentence_tokens > target_tokens:
+            chunks.append("\n".join(current))
+            current = []
+            current_tokens = 0
+        current.append(sentence)
+        current_tokens += sentence_tokens
+
+    if current:
+        chunks.append("\n".join(current))
+    return chunks or [text]
+
+def _clone_glossary_item_with_text(item, text: str):
+    class TextOnlyItem:
+        def __init__(self, source_text):
+            self.source_text = source_text
+
+    try:
+        clone = item.__class__.__new__(item.__class__)
+        if hasattr(item, "__dict__"):
+            clone.__dict__.update(item.__dict__)
+        setattr(clone, "source_text", text)
+        return clone
+    except Exception:
+        return TextOnlyItem(text)
+
 def _resolve_glossary_prompt_file(prompt_file: str = None) -> str:
     if prompt_file and os.path.exists(prompt_file):
         return prompt_file
@@ -1216,6 +1367,7 @@ def _count_glossary_term_occurrences(text: str, term: str) -> int:
 
 def _run_glossary_analysis(input_path: str, analysis_percent: int, analysis_lines: Optional[int],
                            analysis_mode: str = "full", prompt_file: str = None,
+                           incremental_split_target_tokens: Optional[int] = None,
                            translate_during_analysis: bool = False,
                            use_temp: bool = False, temp_platform: str = None, temp_key: str = None,
                            temp_url: str = None, temp_model: str = None, temp_threads: int = None):
@@ -1272,7 +1424,7 @@ def _run_glossary_analysis(input_path: str, analysis_percent: int, analysis_line
         items_to_analyze = all_items[:lines_to_analyze]
         selected_text = "\n".join([item.source_text for item in items_to_analyze])
         estimated_tokens = _estimate_glossary_tokens(selected_text)
-        normalized_mode = "split" if analysis_mode == "split" else "full"
+        normalized_mode = _normalize_glossary_analysis_mode(analysis_mode)
         _analysis_state["estimated_tokens"] = estimated_tokens
         _analysis_state["analysis_mode"] = normalized_mode
         _add_analysis_log_i18n("glossary_log_estimated_tokens_note", "预估Token: {}（仅供参考，实际仍按行数/比例截取）", estimated_tokens)
@@ -1348,7 +1500,7 @@ def _run_glossary_analysis(input_path: str, analysis_percent: int, analysis_line
             except Exception as e:
                 _analysis_state["progress"] = 1
                 _add_analysis_log_i18n("glossary_log_single_error", "单次分析错误: {}", str(e))
-        else:
+        elif normalized_mode == "split":
             batch_size = int(config.get("glossary_analysis_split_lines") or config.get("lines_limit", 20) or 20)
             batch_size = max(1, batch_size)
             batches = [items_to_analyze[i:i+batch_size] for i in range(0, len(items_to_analyze), batch_size)]
@@ -1401,7 +1553,58 @@ def _run_glossary_analysis(input_path: str, analysis_percent: int, analysis_line
             with concurrent.futures.ThreadPoolExecutor(max_workers=thread_count) as executor:
                 batch_infos = list(enumerate(batches))
                 list(executor.map(analyze_batch, batch_infos))
+        else:
+            target_tokens = _get_incremental_split_target_tokens(config, incremental_split_target_tokens)
+            batches = _split_glossary_items_by_tokens(items_to_analyze, target_tokens)
+            _analysis_state["total"] = len(batches)
+            _analysis_state["message"] = _web_tr("glossary_log_incremental_split_prepare", "超长增量分批：准备分析 {} 行文本，共 {} 批次", lines_to_analyze, len(batches), lang=lang)
+            _add_analysis_log_i18n(
+                "glossary_log_incremental_split_mode_detail",
+                "分析模式: 超长增量分批，共 {} 批次，目标每批约 {} Token（单批最大 256000）；后一批参考前面累计结果，只输出新增或变化。",
+                len(batches),
+                target_tokens,
+            )
 
+            for batch_idx, batch in enumerate(batches):
+                text_content = "\n".join([item.source_text for item in batch])
+                batch_context = _build_incremental_split_context(structured_analysis, all_terms)
+                batch_system_prompt = _append_incremental_split_instruction(system_prompt, batch_context, batch_idx, len(batches))
+                messages = [{"role": "user", "content": text_content}]
+                terms = []
+                try:
+                    requester = LLMRequester()
+                    skip, _, response, _, _ = requester.sent_request(messages, batch_system_prompt, platform_config)
+                    if not skip and response:
+                        parsed = _parse_glossary_response(response)
+                        terms = parsed.get("terms", [])
+                        all_terms.extend(terms)
+                        _merge_glossary_analysis_payload(
+                            structured_analysis,
+                            parsed,
+                            fill_existing=True,
+                            replace_existing=True,
+                        )
+                    _analysis_state["progress"] += 1
+                    _analysis_state["message"] = _web_tr(
+                        "glossary_log_batch_progress",
+                        "已完成 {}/{} 批次",
+                        _analysis_state["progress"],
+                        _analysis_state["total"],
+                        lang=lang,
+                    )
+                    _add_analysis_log_i18n(
+                        "glossary_log_incremental_batch_done",
+                        "增量分批 {}/{} 完成，新增/变化候选术语 {} 个",
+                        batch_idx + 1,
+                        len(batches),
+                        len(terms),
+                    )
+                except Exception as e:
+                    _analysis_state["progress"] += 1
+                    _add_analysis_log_i18n("glossary_log_single_error", "单次分析错误: {}", str(e))
+
+        if normalized_mode == "incremental_split":
+            all_terms = _dedupe_glossary_terms(all_terms)
         structured_analysis = _finalize_glossary_analysis_payload(structured_analysis, all_terms)
 
         # Calculate frequency
@@ -1438,12 +1641,17 @@ def _empty_glossary_analysis_payload() -> dict:
         "translation_example_data": [],
     }
 
-def _merge_glossary_analysis_payload(target: dict, source: dict) -> dict:
+def _merge_glossary_analysis_payload(target: dict, source: dict, fill_existing: bool = False, replace_existing: bool = False) -> dict:
     if not source:
         return target
     target.setdefault("terms", []).extend(source.get("terms", []))
     _extend_unique_dicts(target.setdefault("exclusion_list_data", []), source.get("exclusion_list_data", []), ("markers", "regex"))
-    _merge_character_lists(target.setdefault("characterization_data", []), source.get("characterization_data", []))
+    _merge_character_lists(
+        target.setdefault("characterization_data", []),
+        source.get("characterization_data", []),
+        fill_existing=fill_existing,
+        replace_existing=replace_existing,
+    )
     _extend_unique_dicts(target.setdefault("translation_example_data", []), source.get("translation_example_data", []), ("src", "dst"))
     target["world_building_content"] = _append_text_block(target.get("world_building_content", ""), source.get("world_building_content", ""))
     target["writing_style_content"] = _append_text_block(target.get("writing_style_content", ""), source.get("writing_style_content", ""))
@@ -1454,6 +1662,69 @@ def _finalize_glossary_analysis_payload(payload: dict, terms: list) -> dict:
     if not _normalize_glossary_text(payload.get("world_building_content")):
         payload["world_building_content"] = _derive_world_building_from_terms(terms)
     return payload
+
+def _append_incremental_split_instruction(system_prompt: str, accumulated_context: dict, batch_index: int, total_batches: int) -> str:
+    context_json = json.dumps(accumulated_context or {}, ensure_ascii=False, indent=2)
+    instruction = f"""
+
+## 超长文本增量分批模式
+当前文本因预估 Token 过高被顺序拆分分析。你正在分析第 {batch_index + 1}/{total_batches} 批。
+
+请遵守以下规则：
+- 先阅读“已累计规则快照”，再阅读当前批文本。
+- 当前批只输出新增项，或相对已累计快照有明确变化、补充、纠错价值的条目。
+- 如果某个术语、角色、世界观或文风信息已经存在且当前批没有提供新证据，不要重复输出。
+- 如果当前批揭示了同一术语/角色/设定的新含义、身份反转、称呼变化、语气变化、用途变化或更准确描述，可以输出更新后的条目，程序会按当前最新结果合并。
+- 这是同一文件内部的分批，不是系列卷号增量；不要输出 Vol_2、Vol_3、第2卷、第3卷、volume、updated_volume、history 等卷号/时间线标识，除非原文本身明确出现这些内容且它们是需要提取的术语。
+- 如果当前批没有新增或变化，对应字段返回空数组或空字符串。
+
+### 已累计规则快照
+{context_json}
+"""
+    return f"{system_prompt.rstrip()}\n{instruction.strip()}\n"
+
+def _build_incremental_split_context(structured_analysis: dict, terms: list) -> dict:
+    return {
+        "prompt_dictionary_data": _trim_glossary_context_value(_dedupe_glossary_terms(terms), max_items=200, max_chars=12000),
+        "exclusion_list_data": _trim_glossary_context_value((structured_analysis or {}).get("exclusion_list_data", []), max_items=120, max_chars=8000),
+        "characterization_data": _trim_glossary_context_value((structured_analysis or {}).get("characterization_data", []), max_items=120, max_chars=12000),
+        "world_building_content": _trim_glossary_context_value((structured_analysis or {}).get("world_building_content", ""), max_items=0, max_chars=10000),
+        "writing_style_content": _trim_glossary_context_value((structured_analysis or {}).get("writing_style_content", ""), max_items=0, max_chars=6000),
+        "translation_example_data": _trim_glossary_context_value((structured_analysis or {}).get("translation_example_data", []), max_items=80, max_chars=8000),
+    }
+
+def _trim_glossary_context_value(value, max_items: int = 300, max_chars: int = 12000):
+    if isinstance(value, list):
+        trimmed = value[:max_items]
+        if len(value) > max_items:
+            trimmed = [*trimmed, {"_truncated": f"{len(value) - max_items} more items omitted"}]
+        return trimmed
+    text = _normalize_glossary_text(value)
+    if len(text) > max_chars:
+        return text[:max_chars] + f"\n...({len(text) - max_chars} chars omitted)"
+    return text
+
+def _dedupe_glossary_terms(terms: list) -> list:
+    result = []
+    by_src = {}
+    for term in terms or []:
+        if not isinstance(term, dict):
+            continue
+        src = _normalize_glossary_text(term.get("src"))
+        if not src:
+            continue
+        if src not in by_src:
+            item = dict(term)
+            by_src[src] = item
+            result.append(item)
+            continue
+        existing = by_src[src]
+        for key, value in term.items():
+            if key == "src":
+                continue
+            if _rule_field_has_content(value):
+                existing[key] = value
+    return result
 
 def _parse_glossary_response(response: str) -> dict:
     import re
@@ -1687,20 +1958,29 @@ def _extend_unique_dicts(target: list, incoming: list, key_fields: tuple) -> lis
         seen.add(key)
     return target
 
-def _merge_character_lists(target: list, incoming: list) -> list:
-    seen = {
-        _normalize_glossary_text(item.get("original_name"))
+def _merge_character_lists(target: list, incoming: list, fill_existing: bool = False, replace_existing: bool = False) -> list:
+    by_name = {
+        _normalize_glossary_text(item.get("original_name")): item
         for item in target
-        if isinstance(item, dict)
+        if isinstance(item, dict) and _normalize_glossary_text(item.get("original_name"))
     }
     for item in incoming or []:
         if not isinstance(item, dict):
             continue
         name = _normalize_glossary_text(item.get("original_name"))
-        if not name or name in seen:
+        if not name:
+            continue
+        existing = by_name.get(name)
+        if existing:
+            if fill_existing or replace_existing:
+                for key, value in item.items():
+                    if not _rule_field_has_content(value):
+                        continue
+                    if replace_existing or not _rule_field_has_content(existing.get(key)):
+                        existing[key] = value
             continue
         target.append(item)
-        seen.add(name)
+        by_name[name] = item
     return target
 
 def _derive_characters_from_terms(terms: list) -> list:
@@ -1757,6 +2037,13 @@ def _normalize_glossary_text(value, default: str = "") -> str:
         return default
     text = str(value).strip()
     return text if text else default
+
+def _rule_field_has_content(value) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, (list, tuple, set)):
+        return any(_normalize_glossary_text(item) for item in value)
+    return bool(_normalize_glossary_text(value))
 
 def _normalize_glossary_info(item: dict) -> str:
     for key in ("info", "description", "desc"):
