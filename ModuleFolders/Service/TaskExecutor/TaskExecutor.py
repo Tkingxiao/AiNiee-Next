@@ -30,6 +30,15 @@ def _safe_int(value, default=0):
         return default
 
 
+def _halve_line_limit(current_limit, min_limit):
+    current_limit = max(1, _safe_int(current_limit, 1))
+    min_limit = max(1, _safe_int(min_limit, 1))
+
+    if current_limit <= min_limit:
+        return current_limit
+    return max(min_limit, int(current_limit / 2))
+
+
 # 翻译器
 class TaskExecutor(Base):
 
@@ -770,7 +779,10 @@ class TaskExecutor(Base):
                         if hasattr(self.config, 'tokens_limit'):
                             self.config.tokens_limit = max(100, int(self.config.tokens_limit / 2))
                     else:
-                        self.config.lines_limit = max(1, int(self.config.lines_limit / 2))
+                        self.config.lines_limit = _halve_line_limit(
+                            self.config.lines_limit,
+                            getattr(self.config, 'retry_split_min_lines', 15)
+                        )
 
                 # 生成缓存数据条目片段的合集列表，原文列表与上文列表一一对应
                 chunks, previous_chunks, file_paths, source_context_chunks = self.cache_manager.generate_item_chunks(
@@ -779,7 +791,9 @@ class TaskExecutor(Base):
                     self.config.pre_line_counts,
                     TaskType.TRANSLATION,
                     getattr(self.config, 'enable_context_enhancement', False),
-                    self.config.pre_line_counts
+                    self.config.pre_line_counts,
+                    getattr(self.config, 'chunk_soft_limit_extra_lines', 0),
+                    getattr(self.config, 'line_split_optimization_mode', 'off')
                 )
 
                 # 生成翻译任务合集列表
@@ -1077,7 +1091,10 @@ class TaskExecutor(Base):
                         if hasattr(self.config, 'tokens_limit'):
                             self.config.tokens_limit = max(100, int(self.config.tokens_limit / 2))
                     else:
-                        self.config.lines_limit = max(1, int(self.config.lines_limit / 2))
+                        self.config.lines_limit = _halve_line_limit(
+                            self.config.lines_limit,
+                            getattr(self.config, 'retry_split_min_lines', 15)
+                        )
 
                 # 生成缓存数据条目片段的合集列表
                 if self.config.polishing_mode_selection == "source_text_polish":
@@ -1087,7 +1104,9 @@ class TaskExecutor(Base):
                         self.config.polishing_pre_line_counts,
                         TaskType.TRANSLATION,
                         False,  # 润色模式不需要上下文增强
-                        0
+                        0,
+                        getattr(self.config, 'chunk_soft_limit_extra_lines', 0),
+                        getattr(self.config, 'line_split_optimization_mode', 'off')
                     )
                 elif self.config.polishing_mode_selection == "translated_text_polish":
                     chunks, previous_chunks, file_paths, source_context_chunks = self.cache_manager.generate_item_chunks(
@@ -1096,7 +1115,9 @@ class TaskExecutor(Base):
                         self.config.polishing_pre_line_counts,
                         TaskType.POLISH,
                         False,  # 润色模式不需要上下文增强
-                        0
+                        0,
+                        getattr(self.config, 'chunk_soft_limit_extra_lines', 0),
+                        getattr(self.config, 'line_split_optimization_mode', 'off')
                     )
 
                 # 生成润色任务合集列表

@@ -394,6 +394,8 @@ export const Settings: React.FC = () => {
     };
 
   const isConsistencyEnabled = !!config.translation_consistency_enhancement;
+  const showLineSplitOptimization = (config.chunk_soft_limit_extra_lines ?? 10) > 0;
+  const lineSplitOptimizationMode = config.line_split_optimization_mode ?? 'off';
   const deepSeekRecommendedModels = ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-chat', 'deepseek-reasoner'];
   const activePlatformKey = config.target_platform || '';
   const activePlatformConfig = config.platforms?.[activePlatformKey] || {};
@@ -1020,6 +1022,55 @@ export const Settings: React.FC = () => {
                   <p className="text-[10px] text-slate-500 mb-1">{t('desc_pre_lines') || 'Number of previous translated lines to include as context for AI.'}</p>
                   <input type="number" value={config.pre_line_counts ?? 3} onChange={(e) => handleChange('pre_line_counts', parseInt(e.target.value) || 0)}
                     className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-slate-200 focus:border-primary text-sm" />
+               </div>
+
+               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4 pt-4 border-t border-slate-700">
+                 <div className="space-y-2">
+                   <label className="text-xs font-semibold text-slate-400 uppercase">{t('setting_chunk_soft_limit_extra_lines')}</label>
+                   <p className="text-[10px] text-slate-500 mb-1">{t('setting_chunk_soft_limit_extra_lines_desc')}</p>
+                   <input
+                     type="number"
+                     min={0}
+                     max={50}
+                     value={config.chunk_soft_limit_extra_lines ?? 10}
+                     onChange={(e) => handleChange('chunk_soft_limit_extra_lines', parseInt(e.target.value) || 0)}
+                     className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-slate-200 focus:border-primary text-sm"
+                   />
+                 </div>
+                 {showLineSplitOptimization && (
+                   <div className="space-y-2">
+                     <label className="text-xs font-semibold text-slate-400 uppercase">{t('setting_line_split_optimization_mode')}</label>
+                     <p className="text-[10px] text-slate-500 mb-1">
+                       {lineSplitOptimizationMode === 'tail'
+                         ? t('setting_line_split_optimization_mode_tail_desc')
+                         : t('setting_line_split_optimization_mode_desc')}
+                     </p>
+                     <div className="grid grid-cols-3 gap-1 bg-slate-900 rounded-lg p-1 border border-slate-700">
+                       {(['off', 'dynamic', 'tail'] as const).map((mode) => (
+                         <button
+                           key={mode}
+                           type="button"
+                           onClick={() => handleChange('line_split_optimization_mode', mode)}
+                           className={`px-2 py-2 text-xs rounded-md transition-all ${lineSplitOptimizationMode === mode ? 'bg-primary text-slate-900 font-bold shadow' : 'text-slate-400 hover:text-slate-200'}`}
+                         >
+                           {t(`choice_${mode}`)}
+                         </button>
+                       ))}
+                     </div>
+                   </div>
+                 )}
+                 <div className="space-y-2">
+                   <label className="text-xs font-semibold text-slate-400 uppercase">{t('setting_retry_split_min_lines')}</label>
+                   <p className="text-[10px] text-slate-500 mb-1">{t('setting_retry_split_min_lines_desc')}</p>
+                   <input
+                     type="number"
+                     min={1}
+                     max={100}
+                     value={config.retry_split_min_lines ?? 15}
+                     onChange={(e) => handleChange('retry_split_min_lines', parseInt(e.target.value) || 15)}
+                     className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-slate-200 focus:border-primary text-sm"
+                   />
+                 </div>
                </div>
 
                {isConsistencyEnabled && !config.tokens_limit_switch && (

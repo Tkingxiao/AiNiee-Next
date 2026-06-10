@@ -446,9 +446,116 @@ class CacheManager(Base):
 
         return all_items[from_idx:to_idx]
 
+    def _merge_small_tail_line_chunks(
+            self,
+            chunks: List[List[CacheItem]],
+            limit_count: int,
+            extra_lines: int
+    ) -> List[List[CacheItem]]:
+        try:
+            limit_count = int(limit_count)
+            extra_lines = int(extra_lines)
+        except (TypeError, ValueError):
+            return chunks
+
+        if len(chunks) < 2 or limit_count <= 0 or extra_lines <= 0:
+            return chunks
+
+        tail_chunk = chunks[-1]
+        if not tail_chunk or len(tail_chunk) > extra_lines:
+            return chunks
+
+        soft_limit = limit_count + extra_lines
+        previous_chunk = chunks[-2]
+        combined_chunk = previous_chunk + tail_chunk
+        if len(combined_chunk) % limit_count == 0:
+            split_chunks = [
+                combined_chunk[index:index + limit_count]
+                for index in range(0, len(combined_chunk), limit_count)
+            ]
+            return chunks[:-2] + split_chunks
+
+        if len(previous_chunk) + len(tail_chunk) > soft_limit:
+            return chunks
+
+        return chunks[:-2] + [combined_chunk]
+
+    def _optimize_line_chunks_near_tail(
+            self,
+            chunks: List[List[CacheItem]],
+            limit_count: int,
+            extra_lines: int,
+            mode: str
+    ) -> List[List[CacheItem]]:
+        try:
+            limit_count = int(limit_count)
+            extra_lines = int(extra_lines)
+        except (TypeError, ValueError):
+            return chunks
+
+        if len(chunks) < 2 or limit_count <= 0 or extra_lines <= 0:
+            return chunks
+
+        mode = str(mode or "off").strip().lower()
+        if mode not in {"dynamic", "tail"}:
+            return chunks
+
+        tail_chunk = chunks[-1]
+        tail_count = len(tail_chunk)
+        if tail_count == 0 or tail_count > extra_lines + 2:
+            return chunks
+
+        if mode == "tail":
+            overflow = tail_count - extra_lines
+            if overflow <= 0:
+                return chunks
+
+            candidates = chunks[:-1]
+            if len(candidates) < 2:
+                return chunks
+
+            optimized = [list(chunk) for chunk in candidates]
+            tail = list(tail_chunk)
+            index = len(optimized) - 2
+            while overflow > 0 and index >= 0:
+                room = max(0, (limit_count + 2) - len(optimized[index]))
+                take_count = min(2, room, overflow, len(tail))
+                if take_count > 0:
+                    optimized[index].extend(tail[:take_count])
+                    tail = tail[take_count:]
+                    overflow -= take_count
+                index -= 1
+
+            if overflow == 0 and len(tail) <= extra_lines:
+                return optimized + [tail]
+            return chunks
+
+        absorb_count = tail_count
+        candidates = chunks[:-1]
+        if not candidates:
+            return chunks
+
+        optimized = [list(chunk) for chunk in candidates]
+        tail = list(tail_chunk)
+        index = len(optimized) - 1
+        while absorb_count > 0 and index >= 0:
+            room = max(0, (limit_count + 2) - len(optimized[index]))
+            take_count = min(2, room, absorb_count, len(tail))
+            if take_count > 0:
+                optimized[index].extend(tail[:take_count])
+                tail = tail[take_count:]
+                absorb_count -= take_count
+            index -= 1
+
+        if absorb_count == 0:
+            return optimized
+        return chunks
+
     # 生成待翻译片段
     def generate_item_chunks(self, limit_type: str, limit_count: int, previous_line_count: int, task_mode,
-                              enable_context_enhancement: bool = False, context_line_count: int = 5) -> \
+                              enable_context_enhancement: bool = False, context_line_count: int = 5,
+                              chunk_soft_limit_extra_lines: int = 0,
+                              line_split_optimization_mode: str = "off") -> \
             Tuple[List[List[CacheItem]], List[List[CacheItem]], List[str], List[List[CacheItem]]]:
         chunks, previous_chunks, file_paths, source_context_chunks = [], [], [], []
 
@@ -464,41 +571,17 @@ class CacheManager(Base):
             if not items:
                 continue
 
+            file_chunks = []
             current_chunk, current_length = [], 0
-            # 记录当前 chunk 的第一个条目，用于在原始列表中定位上下文
-            first_item_in_chunk = None
 
             # 3. 使用 enumerate 获取条目
             for i, item in enumerate(items):
                 item_length = item.get_token_count(item.source_text) if limit_type == "token" else 1
 
-                # 当一个新 chunk 开始时，记录它的第一个条目
-                if not current_chunk:
-                    first_item_in_chunk = item
-
                 # 如果当前 chunk 满了，提交它
                 if current_chunk and (current_length + item_length > limit_count):
-                    chunks.append(current_chunk)
-
-                    # 关键修复：从原始完整列表 (file.items) 中获取真实的上文
-                    # 这样即便断点续传，AI 也能看到前一页已经翻译过的内容
-                    real_idx = file.index_of(first_item_in_chunk.text_index)
-                    previous_chunks.append(
-                        self.generate_previous_chunks(file.items, previous_line_count, real_idx)
-                    )
-                    file_paths.append(file.storage_path)
-
-                    # 上下文增强：获取当前chunk之前的原文上下文
-                    if enable_context_enhancement:
-                        source_context_chunks.append(
-                            self.generate_source_context(file.items, real_idx, context_line_count)
-                        )
-                    else:
-                        source_context_chunks.append([])
-
-                    # 重置，为下一个 chunk 做准备
+                    file_chunks.append(current_chunk)
                     current_chunk, current_length = [], 0
-                    first_item_in_chunk = item
 
                 # 添加当前条目到 chunk
                 current_chunk.append(item)
@@ -506,13 +589,33 @@ class CacheManager(Base):
 
             # 处理循环结束后剩余的最后一个 chunk
             if current_chunk:
+                file_chunks.append(current_chunk)
+
+            if limit_type == "line":
+                file_chunks = self._optimize_line_chunks_near_tail(
+                    file_chunks,
+                    limit_count,
+                    chunk_soft_limit_extra_lines,
+                    line_split_optimization_mode
+                )
+                file_chunks = self._merge_small_tail_line_chunks(
+                    file_chunks,
+                    limit_count,
+                    chunk_soft_limit_extra_lines
+                )
+
+            for current_chunk in file_chunks:
                 chunks.append(current_chunk)
-                # 同样从原始列表中获取上下文
+                first_item_in_chunk = current_chunk[0]
+
+                # 关键修复：从原始完整列表 (file.items) 中获取真实的上文
+                # 这样即便断点续传，AI 也能看到前一页已经翻译过的内容
                 real_idx = file.index_of(first_item_in_chunk.text_index)
                 previous_chunks.append(
                     self.generate_previous_chunks(file.items, previous_line_count, real_idx)
                 )
                 file_paths.append(file.storage_path)
+
                 # 上下文增强：获取当前chunk之前的原文上下文
                 if enable_context_enhancement:
                     source_context_chunks.append(

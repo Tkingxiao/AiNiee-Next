@@ -99,7 +99,18 @@ def is_dependency_met(key: str, config: dict) -> bool:
         return True
     # 检查依赖的配置项是否启用
     dep_value = config.get(item.depends_on, False)
+    if isinstance(dep_value, (int, float)) and not isinstance(dep_value, bool):
+        return dep_value > 0
     return bool(dep_value)
+
+
+def get_config_desc_key(key: str, config: dict, item) -> str:
+    """获取配置项当前状态对应的描述键。"""
+    if key == "line_split_optimization_mode":
+        value = config.get(key, item.default)
+        if value == "tail":
+            return "setting_line_split_optimization_mode_tail_desc"
+    return item.i18n_desc_key
 
 
 def _format_manga_engine_value(key: str, value, default: str) -> str:
@@ -197,9 +208,10 @@ class SettingsMenuBuilder:
             name += get_online_only_suffix(item, self.i18n)
 
             # 获取描述（如果有）
-            if item.i18n_desc_key:
-                desc = self.i18n.get(item.i18n_desc_key)
-                if desc and desc != item.i18n_desc_key:
+            desc_key = get_config_desc_key(key, self.config, item)
+            if desc_key:
+                desc = self.i18n.get(desc_key)
+                if desc and desc != desc_key:
                     name += f"\n  [dim]{desc}[/dim]"
 
             # 获取当前值

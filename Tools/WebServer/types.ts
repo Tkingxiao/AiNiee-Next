@@ -276,6 +276,9 @@ export interface AppConfig {
   // --- Limits ---
   tokens_limit_switch: boolean;
   lines_limit: number;
+  chunk_soft_limit_extra_lines?: number;
+  line_split_optimization_mode?: 'off' | 'dynamic' | 'tail';
+  retry_split_min_lines?: number;
   tokens_limit?: number;
   pre_line_counts: number;
 

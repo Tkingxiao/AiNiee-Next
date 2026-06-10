@@ -190,6 +190,42 @@ register_config(ConfigItem(
 ))
 
 register_config(ConfigItem(
+    key="chunk_soft_limit_extra_lines",
+    default=10,
+    level=ConfigLevel.USER,
+    config_type=ConfigType.INT,
+    i18n_key="setting_chunk_soft_limit_extra_lines",
+    i18n_desc_key="setting_chunk_soft_limit_extra_lines_desc",
+    min_value=0,
+    max_value=50,
+    category="translation"
+))
+
+register_config(ConfigItem(
+    key="line_split_optimization_mode",
+    default="off",
+    level=ConfigLevel.USER,
+    config_type=ConfigType.CHOICE,
+    i18n_key="setting_line_split_optimization_mode",
+    i18n_desc_key="setting_line_split_optimization_mode_desc",
+    choices=["off", "dynamic", "tail"],
+    depends_on="chunk_soft_limit_extra_lines",
+    category="translation"
+))
+
+register_config(ConfigItem(
+    key="retry_split_min_lines",
+    default=15,
+    level=ConfigLevel.USER,
+    config_type=ConfigType.INT,
+    i18n_key="setting_retry_split_min_lines",
+    i18n_desc_key="setting_retry_split_min_lines_desc",
+    min_value=1,
+    max_value=100,
+    category="translation"
+))
+
+register_config(ConfigItem(
     key="tokens_limit",
     default=512,
     level=ConfigLevel.ADVANCED,
