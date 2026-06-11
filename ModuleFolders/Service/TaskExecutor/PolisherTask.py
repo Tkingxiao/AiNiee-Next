@@ -93,11 +93,12 @@ class PolisherTask(Base):
 
     # 单请求翻译任务
     def unit_translation_task(self) -> dict:
+        session_id = getattr(self, "task_session_id", Base.current_task_session())
         
         wait_start_time = time.time()
         while True:
             # 检测是否收到停止翻译事件
-            if Base.work_status == Base.STATUS.STOPING:
+            if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active(session_id):
                 return {}
 
             # 检查 RPM 和 TPM 限制，如果符合条件，则继续
@@ -116,7 +117,7 @@ class PolisherTask(Base):
         task_start_time = time.time()
 
         # Log source text for UI feedback (Moved to after rate limit)
-        if Base.work_status != Base.STATUS.STOPING:
+        if Base.work_status != Base.STATUS.STOPING and Base.is_task_session_active(session_id):
             source_preview = list(self.source_text_dict.values())
             if source_preview:
                 preview_text = source_preview[0][:50] + "..." if len(source_preview[0]) > 50 else source_preview[0]
@@ -145,7 +146,7 @@ class PolisherTask(Base):
                     wait_start = time.time()
                     
                     while True:
-                        if Base.work_status == Base.STATUS.STOPING:
+                        if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active(session_id):
                             user_response = False
                             break
                             
@@ -171,6 +172,7 @@ class PolisherTask(Base):
                     
                     if not user_response:
                         # Stop task if user cancels
+                        Base.cancel_active_task_session()
                         Base.work_status = Base.STATUS.STOPING
                         return {}
                     
@@ -187,7 +189,7 @@ class PolisherTask(Base):
 
         while True:
             # 0. 检查停止信号
-            if Base.work_status == Base.STATUS.STOPING:
+            if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active(session_id):
                 return {"check_result": False, "row_count": 0, "prompt_tokens": 0, "completion_tokens": 0}
 
             # 1. 获取最新配置
@@ -203,12 +205,15 @@ class PolisherTask(Base):
                 platform_config
             )
 
+            if not Base.is_task_session_active(session_id):
+                return {}
+
             # 3. 处理失败
             if skip:
                 self.request_tokens_consume = p_tokens if p_tokens else self.request_tokens_consume
 
                 # 如果是用户停止，直接静默返回
-                if status_tag == "STOPPED" or Base.work_status == Base.STATUS.STOPING:
+                if status_tag == "STOPPED" or Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active(session_id):
                     return {}
 
                 # Failover logic
@@ -241,9 +246,12 @@ class PolisherTask(Base):
                         "row_count": 0,
                         "prompt_tokens": self.request_tokens_consume,
                         "completion_tokens": 0,
+                        "task_session_id": session_id,
                     }
 
             # 4. 处理成功
+            if not Base.is_task_session_active(session_id):
+                return {}
             self.emit(Base.EVENT.SYSTEM_STATUS_UPDATE, {"status": "normal"})
             self.emit(Base.EVENT.TASK_API_STATUS_REPORT, {"is_success": True})
             response_content = error_msg 
@@ -253,7 +261,7 @@ class PolisherTask(Base):
             break
 
         # 0.5 检查停止信号
-        if Base.work_status == Base.STATUS.STOPING:
+        if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active(session_id):
             return {"check_result": False, "row_count": 0, "prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens}
 
         # ---------------------------------------------------------
@@ -281,7 +289,11 @@ class PolisherTask(Base):
                 "row_count": 0,
                 "prompt_tokens": self.request_tokens_consume,
                 "completion_tokens": 0,
+                "task_session_id": session_id,
             }
+
+        if not Base.is_task_session_active(session_id):
+            return {}
 
         # 根据润色模式调整文本对象
         if self.config.polishing_mode_selection == "source_text_polish":
@@ -294,6 +306,9 @@ class PolisherTask(Base):
         # 提取回复内容
         response_dict = ResponseExtractor.text_extraction(self, text_dict, response_content)
 
+        if not Base.is_task_session_active(session_id):
+            return {}
+
         # 检查回复内容
         check_result, error_content = ResponseChecker.check_polish_response_content(
             self,
@@ -302,6 +317,9 @@ class PolisherTask(Base):
             response_dict,
             text_dict
         )
+
+        if not Base.is_task_session_active(session_id):
+            return {}
 
         # 去除回复内容的数字序号
         response_dict = ResponseExtractor.remove_numbered_prefix(self, response_dict)
@@ -340,20 +358,27 @@ class PolisherTask(Base):
             restore_response_dict = copy.copy(response_dict)
             restore_response_dict = self.text_processor.restore_all(self.config, restore_response_dict)
 
+        if not Base.is_task_session_active(session_id):
+            return {}
+
         # 2. 强制发送 TUI 数据 (双通道)
-        if restore_response_dict or self.source_text_dict:
+        if Base.is_task_session_active(session_id) and (restore_response_dict or self.source_text_dict):
             all_res = "\n".join(restore_response_dict.values()) if restore_response_dict else "[Error: No Data]"
             source_preview = list(self.source_text_dict.values())
             all_source = "\n".join(source_preview) if source_preview else ""
 
             # 通道1: 事件总线 (用于宿主进程/监控模式)
             self.emit(Base.EVENT.TUI_RESULT_DATA, {"source": all_source, "data": all_res})
+            if not Base.is_task_session_active(session_id):
+                return {}
 
             # 通道2: 网页端同步
             import os as system_os
             try:
                 webserver_port = getattr(self.config, "webserver_port", 8000)
                 internal_api_base = system_os.environ.get("AINIEE_INTERNAL_API_URL", f"http://127.0.0.1:{webserver_port}")
+                if not Base.is_task_session_active(session_id):
+                    return {}
                 requests.post(
                     f"{internal_api_base}/api/internal/update_comparison",
                     json={"source": all_source, "translation": all_res},
@@ -363,15 +388,21 @@ class PolisherTask(Base):
                 pass
 
             # 更新译文结果到缓存数据中
+            if not Base.is_task_session_active(session_id):
+                return {}
             for item, response in zip(self.items, restore_response_dict.values()):
+                if not Base.is_task_session_active(session_id):
+                    return {}
                 with item.atomic_scope():
+                    if not Base.is_task_session_active(session_id):
+                        return {}
                     item.model = self.config.model
                     item.polished_text = response
                     item.translation_status = TranslationStatus.POLISHED
 
 
             # 打印任务结果
-            if Base.work_status != Base.STATUS.STOPING:
+            if Base.work_status != Base.STATUS.STOPING and Base.is_task_session_active(session_id):
                 self.print(f"[bold green]√ [{self.task_id}] Done! ({self.row_count} lines processed) | {(time.time() - task_start_time):.2f}s | {prompt_tokens}+{completion_tokens}T[/bold green]")
                 # 对照模式下隐藏详细表格以节省空间
                 if self.is_debug() and not self.config.show_detailed_logs:
@@ -397,7 +428,8 @@ class PolisherTask(Base):
                 "row_count": 0,
                 "prompt_tokens": self.request_tokens_consume,
                 "completion_tokens": 0,
-                "extra_info": getattr(self, "extra_info", {})
+                "extra_info": getattr(self, "extra_info", {}),
+                "task_session_id": session_id,
             }
         else:
             return {
@@ -405,7 +437,8 @@ class PolisherTask(Base):
                 "row_count": self.row_count,
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": completion_tokens,
-                "extra_info": getattr(self, "extra_info", {})
+                "extra_info": getattr(self, "extra_info", {}),
+                "task_session_id": session_id,
             }
 
 

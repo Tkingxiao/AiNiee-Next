@@ -9,6 +9,9 @@ class CohereRequester(Base):
 
     # 发起请求
     def request_cohere(self, messages, system_prompt, platform_config) -> tuple[bool, str, str, int, int]:
+        if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
+            return True, "STOPPED", "Task stopped by user", 0, 0
+
         try:
             model_name = platform_config.get("model_name")
             temperature = platform_config.get("temperature", 1.0)
@@ -40,9 +43,14 @@ class CohereRequester(Base):
                 safety_mode="NONE",
             )
 
+            if not Base.is_task_session_active():
+                return True, "STOPPED", "Task stopped by user", 0, 0
+
             # 提取回复的文本内容
             response_content = response.message.content[0].text
         except Exception as e:
+            if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
+                return True, "STOPPED", "Task stopped by user", 0, 0
             self.error(f"请求任务错误 ... {e}", e if self.is_debug() else None)
             return True, None, None, None, None
 

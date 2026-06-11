@@ -41,6 +41,9 @@ class AmazonbedrockRequester(Base):
 
     # 发起请求
     def request_amazonbedrock(self, messages, system_prompt, platform_config) -> tuple[bool, str, str, int, int]:
+        if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
+            return True, "STOPPED", "Task stopped by user", 0, 0
+
         model_name = platform_config.get("model_name")
         if "anthropic" in model_name:
             return self.request_amazonbedrock_anthropic(messages, system_prompt, platform_config)
@@ -49,6 +52,9 @@ class AmazonbedrockRequester(Base):
 
     # 发起请求
     def request_amazonbedrock_anthropic(self, messages, system_prompt, platform_config) -> tuple[bool, str, str, int, int]:
+        if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
+            return True, "STOPPED", "Task stopped by user", 0, 0
+
         model_name: str = platform_config.get("model_name")
         request_timeout = platform_config.get("request_timeout", 60)
         temperature = platform_config.get("temperature", 1.0)
@@ -77,12 +83,17 @@ class AmazonbedrockRequester(Base):
                 timeout=request_timeout,
                 max_tokens=ModelConfigHelper.get_claude_max_output_tokens(model_name),
             )
+            if not Base.is_task_session_active():
+                return True, "STOPPED", "Task stopped by user", 0, 0
             response_content = response.content[0].text
         except Exception as e:
+            if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
+                return True, "STOPPED", "Task stopped by user", 0, 0
             # 如果启用了缓存且是缓存相关错误，尝试禁用缓存重试
             if use_cache and self._is_cache_error(e):
                 self._disable_cache_for_api(platform_config)
-                self.warning("检测到API不支持上下文缓存功能，已自动关闭，将使用普通模式重试...")
+                if Base.is_task_session_active():
+                    self.warning("检测到API不支持上下文缓存功能，已自动关闭，将使用普通模式重试...")
 
                 try:
                     response = client.messages.create(
@@ -94,8 +105,12 @@ class AmazonbedrockRequester(Base):
                         timeout=request_timeout,
                         max_tokens=ModelConfigHelper.get_claude_max_output_tokens(model_name),
                     )
+                    if not Base.is_task_session_active():
+                        return True, "STOPPED", "Task stopped by user", 0, 0
                     response_content = response.content[0].text
                 except Exception as retry_e:
+                    if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
+                        return True, "STOPPED", "Task stopped by user", 0, 0
                     self.error(f"请求任务错误 ... {retry_e}", retry_e if self.is_debug() else None)
                     return True, None, None, None, None
             else:
@@ -118,6 +133,9 @@ class AmazonbedrockRequester(Base):
 
     # 发起请求
     def request_amazonbedrock_boto3(self, messages, system_prompt, platform_config) -> tuple[bool, str, str, int, int]:
+        if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
+            return True, "STOPPED", "Task stopped by user", 0, 0
+
         try:
             model_name = platform_config.get("model_name")
             _request_timeout = platform_config.get("request_timeout")
@@ -142,9 +160,14 @@ class AmazonbedrockRequester(Base):
                 inferenceConfig={"maxTokens": 4096, "temperature": temperature, "topP": top_p},
             )
 
+            if not Base.is_task_session_active():
+                return True, "STOPPED", "Task stopped by user", 0, 0
+
             # 提取回复的文本内容
             response_content = response["output"]["message"]["content"][0]["text"]
         except Exception as e:
+            if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
+                return True, "STOPPED", "Task stopped by user", 0, 0
             self.error(f"请求任务错误 ... {e}", e if self.is_debug() else None)
             return True, None, None, None, None
 

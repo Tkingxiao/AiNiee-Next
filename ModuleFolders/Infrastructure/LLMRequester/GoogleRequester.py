@@ -29,6 +29,9 @@ class GoogleRequester(Base):
 
     def _get_or_create_cache(self, client, model_name: str, system_prompt: str, platform_config: dict):
         """获取或创建缓存内容"""
+        if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
+            return None
+
         import hashlib
         from google.genai import caching
 
@@ -52,9 +55,13 @@ class GoogleRequester(Base):
                     ttl="3600s",
                 )
             )
+            if not Base.is_task_session_active():
+                return None
             self._cached_content_store[cache_key] = cached_content
             return cached_content
         except Exception as e:
+            if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
+                return None
             # 缓存创建失败，禁用此API的缓存功能
             self._disable_cache_for_api(platform_config)
             self.warning(f"检测到API不支持上下文缓存功能，已自动关闭: {e}")
@@ -62,6 +69,9 @@ class GoogleRequester(Base):
 
     # 发起请求
     def request_google(self, messages, system_prompt, platform_config) -> tuple[bool, str, str, int, int]:
+        if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
+            return True, "STOPPED", "Task stopped by user", 0, 0
+
         try:
             model_name = platform_config.get("model_name")
             temperature = platform_config.get("temperature", 1.0)
@@ -97,6 +107,8 @@ class GoogleRequester(Base):
             use_cache = enable_caching and self._is_cache_supported(platform_config)
             if use_cache and system_prompt:
                 cached_content = self._get_or_create_cache(client, model_name, system_prompt, platform_config)
+                if not Base.is_task_session_active():
+                    return True, "STOPPED", "Task stopped by user", 0, 0
 
             # 构建基础配置
             gen_config = types.GenerateContentConfig(
@@ -134,6 +146,9 @@ class GoogleRequester(Base):
 
             response = client.models.generate_content(**generate_params)
 
+            if not Base.is_task_session_active():
+                return True, "STOPPED", "Task stopped by user", 0, 0
+
             # 初始化思考内容和回复内容
             response_think = ""
             response_content = ""
@@ -157,6 +172,8 @@ class GoogleRequester(Base):
                 response_content = response.text
 
         except Exception as e:
+            if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
+                return True, "STOPPED", "Task stopped by user", 0, 0
             self.error(f"请求任务错误 ... {e}", e if self.is_debug() else None)
             return True, None, None, None, None
 

@@ -96,7 +96,7 @@ class CLIMenu:
         self._config_experience = None
         self._recent_projects_menu = None
         self._rule_preview_menu = None
-        
+
         self.config = {}
         self.root_config = {}
         self.active_profile_name = "default"
@@ -677,9 +677,6 @@ class CLIMenu:
 
             console.print("\n[yellow]Stopping task... (Press Ctrl+C again to force quit)[/yellow]")
             self.stop_requested = True
-
-            # Immediately set status to stop threads faster
-            Base.work_status = Base.STATUS.STOPING
 
             from ModuleFolders.Base.EventManager import EventManager
             EventManager.get_singleton().emit(Base.EVENT.TASK_STOP, {})
@@ -1401,7 +1398,7 @@ class CLIMenu:
 
         # 确保 TaskExecutor 的配置与 CLIMenu 的配置同步
         self.task_executor.config.load_config_from_dict(self.config)
-        
+
         if self.input_listener.disabled and not web_mode and not automation_progress:
             self.ui.log("[bold yellow]Warning: Keyboard listener failed to initialize (no TTY found). Hotkeys will be disabled.[/bold yellow]")
 
@@ -1429,7 +1426,7 @@ class CLIMenu:
                 file_id = hashlib.md5(os.path.abspath(target_path).encode('utf-8')).hexdigest()[:8]
                 log_name = f"session_{file_id}_{time.strftime('%Y%m%d')}.log"
                 log_path = os.path.join(log_dir, log_name)
-                
+
                 # 如果是断点续传且日志已存在，先读取历史日志到 TUI
                 if continue_status and os.path.exists(log_path) and not web_mode and not automation_progress:
                     try:
@@ -1461,11 +1458,13 @@ class CLIMenu:
                 self.parent = parent
                 self._local.is_writing = False
 
-            def write(self, msg): 
+            def write(self, msg):
                 if hasattr(self._local, 'is_writing') and self._local.is_writing:
                     return
 
                 if not msg or msg == '\n': return
+                if Base.should_suppress_task_output():
+                    return
                 msg_str = str(msg)
                 
                 # 网页模式下的统计数据行，必须直接通过真正的 stdout 发送
@@ -1678,7 +1677,7 @@ class CLIMenu:
                                 self.ui.log(f"[yellow]{i18n.get('msg_resume_cache_load_failed_rebuild').format(e)}[/yellow]")
                         else:
                             self.ui.log(f"[yellow]{i18n.get('msg_resume_cache_missing_rebuild')}[/yellow]")
-                    
+
                     if not cache_loaded:
                         if resume_mode:
                             resume_mode = False
@@ -1701,9 +1700,9 @@ class CLIMenu:
 
                 # --- 3. 启动任务 ---
                 EventManager.get_singleton().emit(
-                    Base.EVENT.TASK_START, 
+                    Base.EVENT.TASK_START,
                     {
-                        "continue_status": resume_mode, 
+                        "continue_status": resume_mode,
                         "current_mode": task_mode,
                         "session_input_path": current_target_path,
                         "session_output_path": opath
@@ -1840,6 +1839,7 @@ class CLIMenu:
                                 if self._show_diagnostic_hint or self._api_error_count >= 3:
                                     self.ui.log(f"[bold cyan]{i18n.get('msg_entering_diagnostic')}[/bold cyan]")
                                     # 强制停止
+                                    Base.cancel_active_task_session()
                                     Base.work_status = Base.STATUS.STOPING
                                     finished.set()
                                     # 设置标志，退出后进入诊断菜单
@@ -1895,7 +1895,7 @@ class CLIMenu:
             if not web_mode and not automation_progress:
                 self.input_listener.stop()
             if log_file: log_file.close()
-            
+
             # --- Ensure Takeover Mode is disabled before UI cleanup ---
             if self._is_task_ui_instance():
                 with self.ui._lock:
@@ -2074,7 +2074,7 @@ class CLIMenu:
                         pass
                     except:
                         print("\a")
-            
+
             if not non_interactive and not web_mode and not automation_progress and not from_queue:
                 Prompt.ask(f"\n{i18n.get('msg_task_ended')}")
 
@@ -2113,7 +2113,7 @@ class CLIMenu:
             skip_preflight=True,
         ):
             return
-        
+
         # 2. Check stop signal
         if Base.work_status == Base.STATUS.STOPING:
              return
@@ -2314,7 +2314,7 @@ def main():
     # 核心任务参数
     parser.add_argument('task', nargs='?', choices=['translate', 'manga', 'polish', 'export', 'all_in_one', 'queue', 'mcp'], help=i18n.get('help_task'))
     parser.add_argument('input_path', nargs='?', help=i18n.get('help_input'))
-    
+
     # 路径与环境
     parser.add_argument('-o', '--output', dest='output_path', help=i18n.get('help_output'))
     parser.add_argument('-p', '--profile', dest='profile', help=i18n.get('help_profile'))
@@ -2323,7 +2323,7 @@ def main():
     parser.add_argument('-s', '--source', dest='source_lang', help=i18n.get('help_source'))
     parser.add_argument('-t', '--target', dest='target_lang', help=i18n.get('help_target'))
     parser.add_argument('--type', dest='project_type', help="Project type (Txt, Epub, MTool, RenPy, etc.)")
-    
+
     # 运行策略
     parser.add_argument('-r', '--resume', action='store_true', help=i18n.get('help_resume'))
     parser.add_argument('-y', '--yes', action='store_true', dest='non_interactive', help=i18n.get('help_yes'))
@@ -2340,7 +2340,7 @@ def main():
     parser.add_argument('--think-depth', help="Reasoning depth (minimal/low/medium/high/xhigh/max or 0-10000)")
     parser.add_argument('--thinking-budget', type=int, help="Thinking budget limit")
     parser.add_argument('--failover', choices=['on', 'off'], help="Enable or disable API failover")
-    
+
     parser.add_argument('--web-mode', action='store_true', help="Enable Web Server compatible output mode")
     parser.add_argument('--manga', action='store_true', help="Enable the MangaCore batch bootstrap pipeline for manga/image sources")
     parser.add_argument(

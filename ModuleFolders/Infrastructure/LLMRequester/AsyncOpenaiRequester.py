@@ -13,6 +13,7 @@
 """
 
 import asyncio
+import contextvars
 import hashlib
 import json
 from typing import Optional, Dict, Any, Tuple
@@ -188,6 +189,9 @@ class AsyncOpenaiRequester(Base):
         use_stream: bool
     ) -> Tuple[bool, str, str, int, int]:
         """执行异步HTTP请求"""
+        if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
+            return True, "STOPPED", "Task stopped by user", 0, 0
+
         request_body["stream"] = use_stream
         if use_stream:
             request_body["stream_options"] = {"include_usage": True}
@@ -209,11 +213,16 @@ class AsyncOpenaiRequester(Base):
             headers=headers,
             timeout=timeout
         ) as resp:
+            if not Base.is_task_session_active():
+                return True, "STOPPED", "Task stopped by user", 0, 0
+
             if resp.status != 200:
                 error_text = await resp.text()
                 raise Exception(f"HTTP {resp.status}: {error_text}")
 
             raw_text = await resp.text()
+            if not Base.is_task_session_active():
+                return True, "STOPPED", "Task stopped by user", 0, 0
             raw_text = raw_text.strip()
 
             if raw_text.startswith("data:"):
@@ -228,7 +237,8 @@ class AsyncOpenaiRequester(Base):
         self, platform_config: dict, request_body: dict, request_timeout: int
     ) -> Tuple[bool, str, str, int, int]:
         """通过 OpenAI SDK 执行异步请求（在线程池中运行同步SDK调用）"""
-        import functools
+        if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
+            return True, "STOPPED", "Task stopped by user", 0, 0
 
         client = LLMClientFactory().get_openai_client(platform_config)
 
@@ -239,7 +249,10 @@ class AsyncOpenaiRequester(Base):
             )
 
         loop = asyncio.get_event_loop()
-        response = await loop.run_in_executor(None, _sync_call)
+        context = contextvars.copy_context()
+        response = await loop.run_in_executor(None, context.run, _sync_call)
+        if not Base.is_task_session_active():
+            return True, "STOPPED", "Task stopped by user", 0, 0
 
         message = response.choices[0].message
         response_content = message.content or ""
@@ -264,6 +277,9 @@ class AsyncOpenaiRequester(Base):
         platform_config: dict
     ) -> Tuple[bool, str, str, int, int]:
         """异步发起 OpenAI 请求"""
+        if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
+            return True, "STOPPED", "Task stopped by user", 0, 0
+
         try:
             # 获取配置
             model_name = platform_config.get("model_name")
@@ -340,6 +356,8 @@ class AsyncOpenaiRequester(Base):
                             result = await self._do_request_async(
                                 api_url, api_key, request_body.copy(), request_timeout, True
                             )
+                            if not Base.is_task_session_active():
+                                return True, "STOPPED", "Task stopped by user", 0, 0
                             self._set_stream_support_status(api_url, model_name, True)
                             return result
                         except Exception as stream_error:
@@ -350,6 +368,8 @@ class AsyncOpenaiRequester(Base):
                                     result = await self._do_request_async(
                                         api_url, api_key, request_body.copy(), request_timeout, False
                                     )
+                                    if not Base.is_task_session_active():
+                                        return True, "STOPPED", "Task stopped by user", 0, 0
                                     self._set_stream_support_status(api_url, model_name, False)
                                     return result
                                 except Exception as non_stream_error:
@@ -362,6 +382,9 @@ class AsyncOpenaiRequester(Base):
                     )
 
         except Exception as e:
+            if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
+                return True, "STOPPED", "Task stopped by user", 0, 0
+
             error_str = str(e)
             error_type_enum, reason = ErrorClassifier.classify(error_str)
 

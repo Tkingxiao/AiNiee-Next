@@ -11,6 +11,7 @@
 """
 
 import asyncio
+import contextvars
 import json
 from typing import Tuple, Optional
 
@@ -103,7 +104,11 @@ class AsyncLLMRequester(Base):
 
         while current_retry < max_retries:
             # 检查停止信号
-            if Base.work_status == Base.STATUS.STOPING or await signal_hub.check_stop():
+            if (
+                Base.work_status == Base.STATUS.STOPING
+                or await signal_hub.check_stop()
+                or not Base.is_task_session_active()
+            ):
                 return True, "STOPPED", "Task stopped by user", 0, 0
 
             # 检查暂停信号
@@ -130,6 +135,8 @@ class AsyncLLMRequester(Base):
                     result = await requester.request_openai_async(messages, system_prompt, platform_config)
 
                 skip, think, content, pt, ct = result
+                if not Base.is_task_session_active():
+                    return True, "STOPPED", "Task stopped by user", 0, 0
                 if not skip:
                     return result
 
@@ -140,6 +147,9 @@ class AsyncLLMRequester(Base):
                     return result
 
             except Exception as e:
+                if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
+                    return True, "STOPPED", "Task stopped by user", 0, 0
+
                 error_str = str(e)
                 error_type, _ = ErrorClassifier.classify(error_str)
 
@@ -151,7 +161,7 @@ class AsyncLLMRequester(Base):
 
             current_retry += 1
             if current_retry < max_retries:
-                if Base.work_status == Base.STATUS.STOPING:
+                if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
                     return True, "STOPPED", "Task stopped by user", 0, 0
                 self.print(f"[[yellow]RETRY[/]] Async request failed. Retrying in {backoff_delay}s... ({current_retry}/{max_retries-1})")
                 await asyncio.sleep(backoff_delay)
@@ -167,18 +177,26 @@ class AsyncLLMRequester(Base):
     ) -> Tuple[bool, str, str, int, int]:
         """异步 Anthropic 请求"""
         try:
+            if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
+                return True, "STOPPED", "Task stopped by user", 0, 0
+
             if is_anthropic_sdk_mode(platform_config):
                 from ModuleFolders.Infrastructure.LLMRequester.AnthropicRequester import AnthropicRequester
 
                 loop = asyncio.get_event_loop()
                 requester = AnthropicRequester()
-                return await loop.run_in_executor(
+                context = contextvars.copy_context()
+                result = await loop.run_in_executor(
                     None,
+                    context.run,
                     requester.request_anthropic,
                     messages,
                     system_prompt,
                     platform_config,
                 )
+                if not Base.is_task_session_active():
+                    return True, "STOPPED", "Task stopped by user", 0, 0
+                return result
 
             model_name = platform_config.get("model_name")
             api_url = platform_config.get("api_url", "https://api.anthropic.com").rstrip('/')
@@ -221,11 +239,17 @@ class AsyncLLMRequester(Base):
             timeout = aiohttp.ClientTimeout(total=request_timeout)
 
             async with session.post(api_url, json=request_body, headers=headers, timeout=timeout) as resp:
+                if not Base.is_task_session_active():
+                    return True, "STOPPED", "Task stopped by user", 0, 0
+
                 if resp.status != 200:
                     error_text = await resp.text()
                     raise Exception(f"HTTP {resp.status}: {error_text}")
 
                 response_json = await resp.json()
+
+            if not Base.is_task_session_active():
+                return True, "STOPPED", "Task stopped by user", 0, 0
 
             # 解析响应
             content_blocks = response_json.get("content", [])
@@ -245,6 +269,8 @@ class AsyncLLMRequester(Base):
             return False, response_think, response_content, prompt_tokens, completion_tokens
 
         except Exception as e:
+            if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
+                return True, "STOPPED", "Task stopped by user", 0, 0
             error_str = str(e)
             error_type, _ = ErrorClassifier.classify(error_str)
             return True, error_type.value.upper(), error_str, 0, 0
@@ -257,6 +283,9 @@ class AsyncLLMRequester(Base):
     ) -> Tuple[bool, str, str, int, int]:
         """异步 Google Gemini 请求"""
         try:
+            if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
+                return True, "STOPPED", "Task stopped by user", 0, 0
+
             model_name = platform_config.get("model_name")
             api_key = platform_config.get("api_key")
             request_timeout = platform_config.get("request_timeout", 120)
@@ -292,11 +321,17 @@ class AsyncLLMRequester(Base):
             timeout = aiohttp.ClientTimeout(total=request_timeout)
 
             async with session.post(api_url, json=request_body, headers=headers, timeout=timeout) as resp:
+                if not Base.is_task_session_active():
+                    return True, "STOPPED", "Task stopped by user", 0, 0
+
                 if resp.status != 200:
                     error_text = await resp.text()
                     raise Exception(f"HTTP {resp.status}: {error_text}")
 
                 response_json = await resp.json()
+
+            if not Base.is_task_session_active():
+                return True, "STOPPED", "Task stopped by user", 0, 0
 
             # 解析响应
             candidates = response_json.get("candidates", [])
@@ -314,6 +349,8 @@ class AsyncLLMRequester(Base):
             return False, "", response_content, prompt_tokens, completion_tokens
 
         except Exception as e:
+            if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
+                return True, "STOPPED", "Task stopped by user", 0, 0
             error_str = str(e)
             error_type, _ = ErrorClassifier.classify(error_str)
             return True, error_type.value.upper(), error_str, 0, 0

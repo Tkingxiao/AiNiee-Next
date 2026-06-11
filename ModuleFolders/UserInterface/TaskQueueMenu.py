@@ -471,6 +471,7 @@ class TaskQueueMenu:
             while queue_manager.is_running:
                 time.sleep(1)
         except KeyboardInterrupt:
+            Base.cancel_active_task_session()
             Base.work_status = Base.STATUS.STOPING
             console.print("\n[bold red]Queue stopped by user.[/bold red]")
         finally:

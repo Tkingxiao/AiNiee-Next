@@ -260,11 +260,12 @@ class TranslatorTask(Base):
 
     # 单请求翻译任务
     def unit_translation_task(self) -> dict:
+        session_id = getattr(self, "task_session_id", Base.current_task_session())
         
         wait_start_time = time.time()
         while True:
             # 检测是否收到停止翻译事件
-            if Base.work_status == Base.STATUS.STOPING:
+            if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active(session_id):
                 return {}
 
             # 检查 RPM 和 TPM 限制，如果符合条件，则继续
@@ -283,7 +284,7 @@ class TranslatorTask(Base):
         task_start_time = time.time()
 
         # Log source text for UI feedback (Moved to after rate limit)
-        if Base.work_status != Base.STATUS.STOPING:
+        if Base.work_status != Base.STATUS.STOPING and Base.is_task_session_active(session_id):
             source_preview = list(self.source_text_dict.values())
             if source_preview:
                 preview_text = source_preview[0][:50] + "..." if len(source_preview[0]) > 50 else source_preview[0]
@@ -314,7 +315,7 @@ class TranslatorTask(Base):
                     wait_start = time.time()
                     
                     while True:
-                        if Base.work_status == Base.STATUS.STOPING:
+                        if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active(session_id):
                             user_response = False
                             break
                             
@@ -340,6 +341,7 @@ class TranslatorTask(Base):
                     
                     if not user_response:
                         # Stop task if user cancels
+                        Base.cancel_active_task_session()
                         Base.work_status = Base.STATUS.STOPING
                         return {}
                     
@@ -356,7 +358,7 @@ class TranslatorTask(Base):
 
         while True:
             # 0. 检查停止信号
-            if Base.work_status == Base.STATUS.STOPING:
+            if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active(session_id):
                 return {"check_result": False, "row_count": 0, "prompt_tokens": 0, "completion_tokens": 0}
 
             # 1. 获取最新配置 (以防 API 已切换)
@@ -415,13 +417,16 @@ class TranslatorTask(Base):
                     platform_config
                 )
 
+            if not Base.is_task_session_active(session_id):
+                return {}
+
             # 3. 处理失败
             if skip:
                 # 记录 Token 消耗 (即使失败也可能消耗了)
                 self.request_tokens_consume = p_tokens if p_tokens else self.request_tokens_consume
 
                 # 如果是用户停止，直接静默返回
-                if status_tag == "STOPPED" or Base.work_status == Base.STATUS.STOPING:
+                if status_tag == "STOPPED" or Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active(session_id):
                     return {}
 
                 # 判断是否为 API 错误且允许重试
@@ -463,6 +468,8 @@ class TranslatorTask(Base):
                     }
 
             # 4. 处理成功
+            if not Base.is_task_session_active(session_id):
+                return {}
             # 上报成功，触发 TUI 状态恢复
             self.emit(Base.EVENT.SYSTEM_STATUS_UPDATE, {"status": "normal"})
             self.emit(Base.EVENT.TASK_API_STATUS_REPORT, {"is_success": True})
@@ -475,7 +482,7 @@ class TranslatorTask(Base):
             break 
         
         # 0.5 检查停止信号
-        if Base.work_status == Base.STATUS.STOPING:
+        if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active(session_id):
             return {"check_result": False, "row_count": 0, "prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens}
 
         # ---------------------------------------------------------
@@ -487,8 +494,14 @@ class TranslatorTask(Base):
              # Logic same as above for generic error
              return { "check_result": False, "row_count": 0, "prompt_tokens": prompt_tokens, "completion_tokens": 0 }
 
+        if not Base.is_task_session_active(session_id):
+            return {}
+
         # 提取回复内容
         response_dict = ResponseExtractor.text_extraction(self, self.source_text_dict, response_content)
+
+        if not Base.is_task_session_active(session_id):
+            return {}
 
         # 获取漏翻检测重试次数（从第一个item的extra中获取）
         untranslated_retry_count = 0
@@ -507,6 +520,9 @@ class TranslatorTask(Base):
             untranslated_retry_count
         )
 
+        if not Base.is_task_session_active(session_id):
+            return {}
+
         # 去除回复内容的数字序号
         response_dict = ResponseExtractor.remove_numbered_prefix(self, response_dict)
 
@@ -524,14 +540,19 @@ class TranslatorTask(Base):
                 self.error(f"[{self.task_id}] Post-processing error: {e}")
                 restore_response_dict = response_dict
 
+        if not Base.is_task_session_active(session_id):
+            return {}
+
         # 2. 强制发送 TUI 数据 (双通道)
-        if restore_response_dict or self.source_text_dict:
+        if Base.is_task_session_active(session_id) and (restore_response_dict or self.source_text_dict):
             all_trans = "\n".join(restore_response_dict.values()) if restore_response_dict else "[Error: No Data]"
             source_preview = list(self.source_text_dict.values())
             all_source = "\n".join(source_preview) if source_preview else ""
 
             # 通道1: 事件总线 (用于宿主进程/监控模式)
             self.emit(Base.EVENT.TUI_RESULT_DATA, {"source": all_source, "data": all_trans})
+            if not Base.is_task_session_active(session_id):
+                return {}
             
             # 通道2: 网页端同步 (直接调用 WebServer 内部接口)
             import os as system_os
@@ -539,6 +560,8 @@ class TranslatorTask(Base):
                 # 动态获取父进程传递的 WebServer 地址
                 webserver_port = getattr(self.config, "webserver_port", 8000)
                 internal_api_base = system_os.environ.get("AINIEE_INTERNAL_API_URL", f"http://127.0.0.1:{webserver_port}")
+                if not Base.is_task_session_active(session_id):
+                    return {}
                 requests.post(
                     f"{internal_api_base}/api/internal/update_comparison",
                     json={"source": all_source, "translation": all_trans},
@@ -560,7 +583,11 @@ class TranslatorTask(Base):
             # 如果是漏翻检测失败，增加重试计数
             if "漏翻检测" in error_content:
                 for item in self.items:
+                    if not Base.is_task_session_active(session_id):
+                        return {}
                     with item.atomic_scope():
+                        if not Base.is_task_session_active(session_id):
+                            return {}
                         current_count = item.extra.get('untranslated_retry_count', 0)
                         item.extra['untranslated_retry_count'] = current_count + 1
 
@@ -587,15 +614,25 @@ class TranslatorTask(Base):
                 "row_count": 0,
                 "prompt_tokens": self.request_tokens_consume,
                 "completion_tokens": 0,
-                "extra_info": getattr(self, "extra_info", {})
+                "extra_info": getattr(self, "extra_info", {}),
+                "task_session_id": session_id,
             }
         else:
+            if not Base.is_task_session_active(session_id):
+                return {}
             # 更新译文结果到缓存数据中
             for item, response in zip(self.items, restore_response_dict.values()):
+                if not Base.is_task_session_active(session_id):
+                    return {}
                 with item.atomic_scope():
+                    if not Base.is_task_session_active(session_id):
+                        return {}
                     item.model = self.config.model
                     item.translated_text = response
                     item.translation_status = TranslationStatus.TRANSLATED
+
+            if not Base.is_task_session_active(session_id):
+                return {}
 
             if self._pending_consistency_update and callable(self.consistency_state_updater):
                 try:
@@ -607,7 +644,7 @@ class TranslatorTask(Base):
                     self.warning(f"[{self.task_id}] Failed to update consistency memory: {e}")
 
             # 打印成功日志
-            if Base.work_status != Base.STATUS.STOPING:
+            if Base.work_status != Base.STATUS.STOPING and Base.is_task_session_active(session_id):
                 self.print(f"[bold green]√ [{self.task_id}] Done! ({self.row_count} lines processed) | {(time.time() - task_start_time):.2f}s | {prompt_tokens}+{completion_tokens}T[/bold green]")
                 # 在对照模式下，不打印详细的表格日志，避免 TUI 日志区过于拥挤
                 if self.is_debug() and not self.config.show_detailed_logs:
@@ -630,7 +667,8 @@ class TranslatorTask(Base):
                 "row_count": self.row_count,
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": completion_tokens,
-                "extra_info": getattr(self, "extra_info", {})
+                "extra_info": getattr(self, "extra_info", {}),
+                "task_session_id": session_id,
             }
 
 

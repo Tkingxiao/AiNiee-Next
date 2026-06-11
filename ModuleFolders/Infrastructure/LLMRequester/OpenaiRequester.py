@@ -132,6 +132,9 @@ class OpenaiRequester(Base):
         """执行实际的HTTP请求"""
         import httpx
 
+        if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
+            return True, "STOPPED", "Task stopped by user", 0, 0
+
         request_body["stream"] = use_stream
         if use_stream:
             request_body["stream_options"] = {"include_usage": True}
@@ -144,6 +147,9 @@ class OpenaiRequester(Base):
 
         with httpx.Client(timeout=request_timeout) as http_client:
             resp = http_client.post(api_url, json=request_body, headers=auth_headers)
+
+            if not Base.is_task_session_active():
+                return True, "STOPPED", "Task stopped by user", 0, 0
 
             if resp.status_code != 200:
                 raise Exception(f"HTTP {resp.status_code}: {resp.text}")
@@ -162,10 +168,15 @@ class OpenaiRequester(Base):
     def _do_request_sdk(self, client, request_body: dict,
                         request_timeout: int) -> tuple[bool, str, str, int, int]:
         """通过 OpenAI SDK 执行请求"""
+        if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
+            return True, "STOPPED", "Task stopped by user", 0, 0
+
         response = client.chat.completions.create(
             timeout=request_timeout,
             **request_body
         )
+        if not Base.is_task_session_active():
+            return True, "STOPPED", "Task stopped by user", 0, 0
 
         message = response.choices[0].message
         response_content = message.content or ""
@@ -258,6 +269,9 @@ class OpenaiRequester(Base):
     ) -> tuple[bool, str, dict, int, int]:
         import httpx
 
+        if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
+            return True, "STOPPED", {}, 0, 0
+
         auth_headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
@@ -266,6 +280,9 @@ class OpenaiRequester(Base):
 
         with httpx.Client(timeout=request_timeout) as http_client:
             resp = http_client.post(api_url, json=request_body, headers=auth_headers)
+
+            if not Base.is_task_session_active():
+                return True, "STOPPED", {}, 0, 0
 
             if resp.status_code != 200:
                 raise Exception(f"HTTP {resp.status_code}: {resp.text}")
@@ -279,6 +296,9 @@ class OpenaiRequester(Base):
 
     # 发起请求
     def request_openai(self, messages, system_prompt, platform_config) -> tuple[bool, str, str, int, int]:
+        if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
+            return True, "STOPPED", "Task stopped by user", 0, 0
+
         try:
             # 获取具体配置
             model_name = platform_config.get("model_name")
@@ -352,6 +372,8 @@ class OpenaiRequester(Base):
                     else:
                         try:
                             result = self._do_request(api_url, api_key, request_body.copy(), request_timeout, True)
+                            if not Base.is_task_session_active():
+                                return True, "STOPPED", "Task stopped by user", 0, 0
                             self._set_stream_support_status(api_url, model_name, True)
                             return result
                         except Exception as stream_error:
@@ -360,6 +382,8 @@ class OpenaiRequester(Base):
                             if any(k in error_str for k in stream_error_keywords):
                                 try:
                                     result = self._do_request(api_url, api_key, request_body.copy(), request_timeout, False)
+                                    if not Base.is_task_session_active():
+                                        return True, "STOPPED", "Task stopped by user", 0, 0
                                     self._set_stream_support_status(api_url, model_name, False)
                                     self.debug(f"API不支持流式，已标记并切换到非流式模式: {api_url}")
                                     return result
@@ -371,6 +395,9 @@ class OpenaiRequester(Base):
                     return self._do_request(api_url, api_key, request_body, request_timeout, False)
 
         except Exception as e:
+            if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
+                return True, "STOPPED", "Task stopped by user", 0, 0
+
             error_str = str(e)
             error_type_enum, reason = ErrorClassifier.classify(error_str)
 
@@ -392,8 +419,6 @@ class OpenaiRequester(Base):
                 model_name = platform_config.get("model_name", "Unknown Model")
                 self.error(f"Request error ({error_type}) [URL: {api_url}, Model: {model_name}] ... {e}",
                           e if self.is_debug() else None)
-            else:
-                self.print(f"[dim]Request aborted due to stop signal: {e}[/dim]")
 
             return True, error_type, str(e), 0, 0
 
@@ -405,6 +430,9 @@ class OpenaiRequester(Base):
         tools: list[dict],
         tool_name: str,
     ) -> tuple[bool, str, dict | str, int, int]:
+        if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
+            return True, "STOPPED", "Task stopped by user", 0, 0
+
         try:
             model_name = platform_config.get("model_name")
             request_timeout = platform_config.get("request_timeout", 60)
@@ -459,6 +487,8 @@ class OpenaiRequester(Base):
                     timeout=request_timeout,
                     **request_body,
                 )
+                if not Base.is_task_session_active():
+                    return True, "STOPPED", "Task stopped by user", 0, 0
 
                 response_think, tool_payload = self._parse_tool_call_response_sdk(response, tool_name)
                 prompt_tokens = response.usage.prompt_tokens if response.usage else 0
@@ -472,6 +502,9 @@ class OpenaiRequester(Base):
             return self._do_tool_call_request(api_url, api_key, request_body, request_timeout, tool_name)
 
         except Exception as e:
+            if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
+                return True, "STOPPED", "Task stopped by user", 0, 0
+
             error_str = str(e)
             error_type_enum, _ = ErrorClassifier.classify(error_str)
             if error_type_enum == ErrorType.HARD_ERROR:

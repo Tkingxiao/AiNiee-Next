@@ -99,6 +99,8 @@ class AnthropicRequester(Base):
 
         with create_httpx_client(timeout=request_timeout) as http_client:
             response = http_client.post(api_url, json=request_body, headers=headers)
+            if not Base.is_task_session_active():
+                return True, "STOPPED", "Task stopped by user", 0, 0
             if response.status_code != 200:
                 raise Exception(f"HTTP {response.status_code}: {response.text}")
             response_think, response_content, prompt_tokens, completion_tokens = self._parse_response_json(response.json())
@@ -107,11 +109,16 @@ class AnthropicRequester(Base):
     def _do_request_sdk(self, base_params: dict, platform_config: dict) -> tuple[bool, str, str, int, int]:
         client = LLMClientFactory().get_anthropic_client(platform_config)
         response = client.messages.create(**base_params)
+        if not Base.is_task_session_active():
+            return True, "STOPPED", "Task stopped by user", 0, 0
         response_think, response_content, prompt_tokens, completion_tokens = self._parse_sdk_response(response)
         return False, response_think, response_content, prompt_tokens, completion_tokens
 
     # 发起请求
     def request_anthropic(self, messages, system_prompt, platform_config) -> tuple[bool, str, str, int, int]:
+        if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
+            return True, "STOPPED", "Task stopped by user", 0, 0
+
         enable_caching = platform_config.get("enable_prompt_caching", False)
 
         # 检查缓存是否被禁用（之前请求失败过）
@@ -130,17 +137,23 @@ class AnthropicRequester(Base):
         try:
             return request_func(base_params.copy(), platform_config)
         except Exception as e:
+            if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
+                return True, "STOPPED", "Task stopped by user", 0, 0
+
             error_str = str(e)
             # 如果启用了缓存且是缓存相关错误，尝试禁用缓存重试
             if use_cache and ErrorClassifier.is_cache_related_error(error_str):
                 self._disable_cache_for_api(platform_config, error_str)
-                self.warning("Cache not supported by this API, disabled automatically. Retrying...")
+                if Base.is_task_session_active():
+                    self.warning("Cache not supported by this API, disabled automatically. Retrying...")
 
                 # 使用普通模式重试
                 base_params["system"] = system_prompt
                 try:
                     return request_func(base_params.copy(), platform_config)
                 except Exception as retry_e:
+                    if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
+                        return True, "STOPPED", "Task stopped by user", 0, 0
                     error_type, _ = ErrorClassifier.classify(str(retry_e))
                     self.error(f"Request error ({error_type.value}) ... {retry_e}", retry_e if self.is_debug() else None)
                     return True, error_type.value.upper(), str(retry_e), 0, 0

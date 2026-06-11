@@ -3,6 +3,7 @@ import logging
 import threading
 import traceback
 import queue
+import contextvars
 
 import rapidjson as json
 from rich import print as rich_print
@@ -51,6 +52,10 @@ class TUIHandler(logging.Handler):
 
     def emit(self, record):
         try:
+            base_cls = globals().get("Base")
+            if base_cls is not None and base_cls.should_suppress_task_output():
+                return
+
             # 检查是否是 rich 可渲染对象（如 Table, Panel 等）
             if isinstance(record.msg, RenderableType) and not isinstance(record.msg, str):
                 # 直接用 rich_print 渲染，不转成字符串
@@ -172,9 +177,75 @@ class Base():
 
     # 类线程锁
     CONFIG_FILE_LOCK = threading.Lock()
+    TASK_SESSION_LOCK = threading.Lock()
+
+    _active_task_session_id = 0
+    _cancelled_task_session_ids = set()
+    _task_session_var = contextvars.ContextVar("ainiee_task_session", default=None)
 
     # 全局输入队列 (用于 TUI 交互)
     global_input_queue = queue.Queue()
+
+    @classmethod
+    def begin_task_session(cls) -> int:
+        with cls.TASK_SESSION_LOCK:
+            cls._active_task_session_id += 1
+            cls._cancelled_task_session_ids.clear()
+            cls._cancelled_task_session_ids.discard(cls._active_task_session_id)
+            return cls._active_task_session_id
+
+    @classmethod
+    def cancel_active_task_session(cls):
+        with cls.TASK_SESSION_LOCK:
+            session_id = cls._active_task_session_id
+            if session_id:
+                cls._cancelled_task_session_ids.add(session_id)
+            return session_id
+
+    @classmethod
+    def set_task_session(cls, session_id):
+        return cls._task_session_var.set(session_id)
+
+    @classmethod
+    def reset_task_session(cls, token) -> None:
+        cls._task_session_var.reset(token)
+
+    @classmethod
+    def current_task_session(cls):
+        return cls._task_session_var.get()
+
+    @classmethod
+    def is_current_task_session(cls, session_id) -> bool:
+        if session_id is None:
+            return False
+        with cls.TASK_SESSION_LOCK:
+            return session_id == cls._active_task_session_id
+
+    @classmethod
+    def is_task_session_cancelled(cls, session_id=None) -> bool:
+        if session_id is None:
+            session_id = cls.current_task_session()
+        if session_id is None:
+            return False
+        with cls.TASK_SESSION_LOCK:
+            return session_id in cls._cancelled_task_session_ids
+
+    @classmethod
+    def is_task_session_active(cls, session_id=None) -> bool:
+        if session_id is None:
+            session_id = cls.current_task_session()
+        if session_id is None:
+            return True
+        with cls.TASK_SESSION_LOCK:
+            return (
+                session_id == cls._active_task_session_id
+                and session_id not in cls._cancelled_task_session_ids
+            )
+
+    @classmethod
+    def should_suppress_task_output(cls) -> bool:
+        session_id = cls.current_task_session()
+        return session_id is not None and not cls.is_task_session_active(session_id)
 
     # UI文本翻译
     @classmethod
@@ -219,10 +290,14 @@ class Base():
 
     # PRINT (保留兼容性，内部转发到 logger)
     def print(self, msg: str) -> None:
+        if Base.should_suppress_task_output():
+            return
         Base.get_logger().info(msg)
 
     # DEBUG
     def debug(self, msg: str, e: Exception = None) -> None:
+        if Base.should_suppress_task_output():
+            return
         if self.is_debug() is False:
             return None
 
@@ -233,10 +308,14 @@ class Base():
 
     # INFO
     def info(self, msg: str) -> None:
+        if Base.should_suppress_task_output():
+            return
         Base.get_logger().info(msg)
 
     # ERROR
     def error(self, msg: str, e: Exception = None) -> None:
+        if Base.should_suppress_task_output():
+            return
         if e is None:
             Base.get_logger().error(msg)
         else:
@@ -244,6 +323,8 @@ class Base():
 
     # WARNING
     def warning(self, msg: str) -> None:
+        if Base.should_suppress_task_output():
+            return
         Base.get_logger().warning(msg)
 
     def get_parent_window(self):
@@ -313,6 +394,8 @@ class Base():
 
     # 触发事件
     def emit(self, event: int, data: dict) -> None:
+        if Base.should_suppress_task_output():
+            return
         EventManager.get_singleton().emit(event, data)
 
     # 订阅事件

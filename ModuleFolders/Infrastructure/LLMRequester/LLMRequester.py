@@ -69,7 +69,7 @@ class LLMRequester:
         completion_tokens = 0
 
         while current_retry < max_retries:
-            if Base.work_status == Base.STATUS.STOPING:
+            if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
                 return True, "STOPPED", "Task stopped by user", 0, 0
 
             target_platform = platform_config.get("target_platform")
@@ -158,6 +158,9 @@ class LLMRequester:
                     platform_config,
                 )
 
+            if not Base.is_task_session_active():
+                return True, "STOPPED", "Task stopped by user", 0, 0
+
             if not skip:
                 return skip, response_think, response_content, prompt_tokens, completion_tokens
 
@@ -167,17 +170,18 @@ class LLMRequester:
             effective_max_retries = max(1, min(max_retries, policy_max_retries))
 
             if current_retry < effective_max_retries:
-                if Base.work_status == Base.STATUS.STOPING:
+                if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
                     return True, "STOPPED", "Task stopped by user", 0, 0
 
                 import time
                 from rich import print
 
                 backoff_delay = initial_delay * (delay_multiplier ** (current_retry - 1))
-                print(
-                    f"[[yellow]RETRY-{failure_type.upper()}[/]] Request failed. "
-                    f"Retrying in {backoff_delay:.1f}s... ({current_retry}/{effective_max_retries-1})"
-                )
+                if not Base.should_suppress_task_output():
+                    print(
+                        f"[[yellow]RETRY-{failure_type.upper()}[/]] Request failed. "
+                        f"Retrying in {backoff_delay:.1f}s... ({current_retry}/{effective_max_retries-1})"
+                    )
                 time.sleep(backoff_delay)
             else:
                 break

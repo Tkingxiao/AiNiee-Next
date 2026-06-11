@@ -324,6 +324,7 @@ class CommandModeRunner:
             while queue_manager.is_running:
                 time.sleep(1)
         except KeyboardInterrupt:
+            Base.cancel_active_task_session()
             Base.work_status = Base.STATUS.STOPING
         finally:
             self.host.stop_queue_log_monitor()

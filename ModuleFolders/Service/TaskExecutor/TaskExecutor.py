@@ -79,17 +79,29 @@ class TaskExecutor(Base):
         }
         self.translation_memory_index = {}
         self._translation_memory_lock = threading.RLock()
-        
+
         # Concurrency Control for Mission Control
         self._concurrency_lock = threading.Lock()
         self._current_active = 0
         self.executor = None
+        self._task_session_id = None
+
+    def _run_with_task_session(self, session_id, target, *args) -> None:
+        token = Base.set_task_session(session_id)
+        try:
+            target(*args)
+        finally:
+            Base.reset_task_session(token)
+
+    def _mark_task_session_stopped(self, session_id) -> None:
+        if Base.is_current_task_session(session_id):
+            Base.work_status = Base.STATUS.TASKSTOPPED
 
     # API 状态报告事件处理
     def on_api_status_report(self, event: int, data: dict) -> None:
         is_success = data.get("is_success", False)
         force_switch = data.get("force_switch", False)
-        
+
         if force_switch:
             with self._api_error_lock:
                 self._switch_api()
@@ -101,7 +113,7 @@ class TaskExecutor(Base):
                 self.consecutive_errors = 0
             else:
                 self.consecutive_errors += 1
-                
+
                 # Check for critical error threshold
                 threshold = self.config.critical_error_threshold or 5
                 if self.consecutive_errors >= threshold:
@@ -128,35 +140,50 @@ class TaskExecutor(Base):
 
     def _gated_run(self, task):
         """指挥中心：动态门禁控制"""
-        while True:
-            if Base.work_status == Base.STATUS.STOPING: return None
-            with self._concurrency_lock:
-                # 实时检查配置中的线程限制
-                if self._current_active < self.config.actual_thread_counts:
-                    self._current_active += 1
-                    break
-            time.sleep(0.01)
-        
-        if Base.work_status == Base.STATUS.STOPING:
-            with self._concurrency_lock: self._current_active -= 1
-            return {}
-
+        session_id = getattr(task, "task_session_id", self._task_session_id)
+        token = Base.set_task_session(session_id)
+        slot_acquired = False
         try:
+            while True:
+                if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active(session_id):
+                    return None
+                with self._concurrency_lock:
+                    # 实时检查配置中的线程限制
+                    if self._current_active < self.config.actual_thread_counts:
+                        self._current_active += 1
+                        slot_acquired = True
+                        break
+                time.sleep(0.01)
+
+            if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active(session_id):
+                return {}
+
             with self._skip_lock:
                 if hasattr(task, 'file_path_full') and task.file_path_full in self.skipped_files:
                     return None # Skip execution
             self._emit_task_progress_info(task)
-            return task.start()
+            result = task.start()
+            if not Base.is_task_session_active(session_id):
+                return None
+            if isinstance(result, dict):
+                result.setdefault("task_session_id", session_id)
+            return result
         finally:
-            with self._concurrency_lock:
-                self._current_active -= 1
+            if slot_acquired:
+                with self._concurrency_lock:
+                    self._current_active -= 1
+            Base.reset_task_session(token)
 
     def _push_web_comparison(self, source_text: str, translated_text: str) -> None:
         """Push comparison snapshot to event bus and WebServer internal API."""
+        if not Base.is_task_session_active():
+            return
         if not source_text and not translated_text:
             return
 
         self.emit(Base.EVENT.TUI_RESULT_DATA, {"source": source_text, "data": translated_text})
+        if not Base.is_task_session_active():
+            return
 
         try:
             import requests
@@ -337,9 +364,11 @@ class TaskExecutor(Base):
             import time as time_module
             task_start = time_module.time()
             slot_acquired = False
+            session_id = getattr(task, "task_session_id", executor_self._task_session_id)
+            token = Base.set_task_session(session_id)
 
             try:
-                if Base.work_status == Base.STATUS.STOPING:
+                if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active(session_id):
                     return None
 
                 # 等待暂停恢复
@@ -347,7 +376,11 @@ class TaskExecutor(Base):
 
                 # 统一并发槽控制，支持运行中热调整并发
                 slot_acquired = await signal_hub.acquire_slot()
-                if Base.work_status == Base.STATUS.STOPING or await signal_hub.check_stop():
+                if (
+                    Base.work_status == Base.STATUS.STOPING
+                    or await signal_hub.check_stop()
+                    or not Base.is_task_session_active(session_id)
+                ):
                     return None
 
                 # 检查是否跳过
@@ -374,6 +407,8 @@ class TaskExecutor(Base):
                 )
 
                 elapsed = time_module.time() - task_start
+                if not Base.is_task_session_active(session_id):
+                    return None
 
                 if skip:
                     # 上报错误状态
@@ -392,6 +427,7 @@ class TaskExecutor(Base):
                         "completion_tokens": ct,
                         "error_type": error_type,
                         "extra_info": getattr(task, "extra_info", {}),
+                        "task_session_id": session_id,
                     }
 
                 # 上报成功状态
@@ -402,16 +438,31 @@ class TaskExecutor(Base):
                     from ModuleFolders.Domain.ResponseExtractor.ResponseExtractor import ResponseExtractor
                     response_dict = ResponseExtractor.text_extraction(task, task.source_text_dict, content)
 
+                    if not Base.is_task_session_active(session_id):
+                        return None
+
                     if response_dict:
+                        if not Base.is_task_session_active(session_id):
+                            return None
                         for item, response in zip(task.items, response_dict.values()):
+                            if not Base.is_task_session_active(session_id):
+                                return None
                             with item.atomic_scope():
+                                if not Base.is_task_session_active(session_id):
+                                    return None
                                 item.model = executor_self.config.model
                                 item.translated_text = response
                                 item.translation_status = TranslationStatus.TRANSLATED
 
+                        if not Base.is_task_session_active(session_id):
+                            return None
+
                         source_snapshot = "\n".join(str(v) for v in task.source_text_dict.values()) if getattr(task, "source_text_dict", None) else ""
                         translated_snapshot = "\n".join(str(v) for v in response_dict.values())
                         executor_self._push_web_comparison(source_snapshot, translated_snapshot)
+
+                        if not Base.is_task_session_active(session_id):
+                            return None
 
                         # 打印成功日志
                         executor_self.print(f"[green]√ [{task_id}] Done ({len(task.items)} lines) | {elapsed:.2f}s | {pt}+{ct}T[/green]")
@@ -421,7 +472,8 @@ class TaskExecutor(Base):
                             "row_count": len(task.items),
                             "prompt_tokens": pt,
                             "completion_tokens": ct,
-                            "extra_info": getattr(task, "extra_info", {})
+                            "extra_info": getattr(task, "extra_info", {}),
+                            "task_session_id": session_id,
                         }
 
                 return {
@@ -430,10 +482,12 @@ class TaskExecutor(Base):
                     "prompt_tokens": pt,
                     "completion_tokens": ct,
                     "extra_info": getattr(task, "extra_info", {}),
+                    "task_session_id": session_id,
                 }
             finally:
                 if slot_acquired:
                     signal_hub.release_slot()
+                Base.reset_task_session(token)
 
         async def run_all_tasks():
             """运行所有异步任务"""
@@ -446,7 +500,8 @@ class TaskExecutor(Base):
             # 处理结果
             for result in results:
                 if isinstance(result, Exception):
-                    self.error(f"Async task error: {result}")
+                    if Base.is_task_session_active():
+                        self.error(f"Async task error: {result}")
                 elif result:
                     self._process_async_result(result)
 
@@ -459,6 +514,8 @@ class TaskExecutor(Base):
     def _process_async_result(self, result):
         """处理异步任务结果"""
         if not result or not isinstance(result, dict):
+            return
+        if not Base.is_task_session_active(result.get("task_session_id")):
             return
 
         with self.project_status_data.atomic_scope():
@@ -500,9 +557,9 @@ class TaskExecutor(Base):
             # Rotate pipeline
             self.current_api_index = (self.current_api_index + 1) % len(self.api_pipeline)
             new_api = self.api_pipeline[self.current_api_index]
-            
+
             self.print(f"[bold yellow]↺ Switching API to: {new_api}[/bold yellow]")
-            
+
             # Update Config safely
             # Note: TaskConfig is shared, but we need to ensure atomic update if possible
             # Or just rely on Python's GIL for dict updates
@@ -510,10 +567,10 @@ class TaskExecutor(Base):
                 self.config.api_settings["translate"] = new_api
             elif self.current_mode == TaskType.POLISH:
                 self.config.api_settings["polish"] = new_api
-            
+
             # Re-prepare configuration (updates base_url, keys, models, etc.)
             self.config.prepare_for_translation(self.current_mode)
-            
+
             # Update limiter with new limits
             self.request_limiter.set_limit(
                 self.config.tpm_limit, self.config.rpm_limit,
@@ -521,14 +578,15 @@ class TaskExecutor(Base):
                 getattr(self.config, 'custom_rpm_limit', 0),
                 getattr(self.config, 'custom_tpm_limit', 0)
             )
-            
+
             self.info(f"Successfully switched to {new_api}. New Model: {self.config.model}")
-            
+
         except Exception as e:
             self.error(f"Failed to switch API: {e}")
 
     # 应用关闭事件
     def app_shut_down(self, event: int, data: dict) -> None:
+        Base.cancel_active_task_session()
         Base.work_status = Base.STATUS.STOPING
 
     # 手动导出事件
@@ -540,7 +598,7 @@ class TaskExecutor(Base):
 
         # 获取配置信息，此时 config 是一个字典，后面需要使用get
         config = self.load_config()
-        
+
         output_path = data.get("export_path")
         inpput_path = config.get("label_input_path")
 
@@ -579,8 +637,8 @@ class TaskExecutor(Base):
         self.file_writer.output_translated_content(
             self.cache_manager.project,
             output_path,
-            inpput_path, 
-            output_config, 
+            inpput_path,
+            output_config,
             task_config
         )
 
@@ -590,7 +648,15 @@ class TaskExecutor(Base):
 
     # 任务停止事件
     def task_stop(self, event: int, data: dict) -> None:
-        # 如果已经是停止中或已停止，则跳过
+        cancelled_session_id = Base.cancel_active_task_session()
+
+        try:
+            from ModuleFolders.Infrastructure.LLMRequester.AsyncSignalHub import get_signal_hub
+            get_signal_hub().stop()
+        except Exception:
+            pass
+
+        # 如果已经是停止中或已停止，则只补齐取消信号，不重复启动停止等待线程
         if Base.work_status in [Base.STATUS.STOPING, Base.STATUS.TASKSTOPPED]:
             return
 
@@ -604,7 +670,7 @@ class TaskExecutor(Base):
                 self.cache_manager.flush_pending_save()
         except Exception as e:
             self.warning(f"Failed to flush cache on stop: {e}")
-        
+
         # 如果存在执行器，尝试停止接收新任务
         if self.executor:
             try:
@@ -617,7 +683,9 @@ class TaskExecutor(Base):
             while True:
                 time.sleep(0.5)
                 if Base.work_status == Base.STATUS.TASKSTOPPED or time.time() - start_wait > 30:
-                    if Base.work_status != Base.STATUS.TASKSTOPPED:
+                    if not Base.is_current_task_session(cancelled_session_id):
+                        break
+                    if Base.work_status != Base.STATUS.TASKSTOPPED and Base.is_current_task_session(cancelled_session_id):
                          Base.work_status = Base.STATUS.TASKSTOPPED
                     self.print("")
                     self.info("翻译任务已停止 ...")
@@ -634,7 +702,10 @@ class TaskExecutor(Base):
         if Base.work_status == Base.STATUS.STOPING:
             self.warning("系统正在停止中，无法开始新任务。")
             return
-            
+
+        session_id = Base.begin_task_session()
+        self._task_session_id = session_id
+
         # Reset error counter at the very beginning of a new task
         self.consecutive_errors = 0
         if not data.get("silent", False): # Don't reset status on silent resume
@@ -655,15 +726,15 @@ class TaskExecutor(Base):
         # 翻译任务
         if current_mode == TaskType.TRANSLATION:
             threading.Thread(
-                target = self.translation_start_target,
-                args = (continue_status,),
+                target = self._run_with_task_session,
+                args = (session_id, self.translation_start_target, continue_status),
             ).start()
-        
+
         # 润色任务
         elif current_mode == TaskType.POLISH:
             threading.Thread(
-                target = self.polish_start_target,
-                args = (continue_status,),
+                target = self._run_with_task_session,
+                args = (session_id, self.polish_start_target, continue_status),
             ).start()
 
         else:
@@ -676,6 +747,8 @@ class TaskExecutor(Base):
     def translation_start_target(self, continue_status: bool) -> None:
         try:
             # 设置翻译状态为正在翻译状态
+            if not Base.is_task_session_active():
+                return None
             Base.work_status = Base.STATUS.TASKING
 
             # Initialize failover before preparing translation
@@ -713,7 +786,7 @@ class TaskExecutor(Base):
                 self.project_status_data.total_line = self.cache_manager.get_item_count()
                 self.project_status_data.start_time = time.time() # 重置开始时间
                 self.project_status_data.total_completion_tokens = 0 # 重置完成的token数量
-                
+
                 # --- Fix RPM/TPM calculation for resumed tasks ---
                 # We need to offset the lines/tokens already processed in previous sessions
                 # so that the current session's RPM/TPM is calculated based on current session's delta.
@@ -743,10 +816,10 @@ class TaskExecutor(Base):
             # 根据最大轮次循环
             for current_round in range(self.config.round_limit + 1):
                 # 检测是否需要停止任务
-                if Base.work_status == Base.STATUS.STOPING:
+                if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
                     # 循环次数比实际最大轮次要多一轮，当触发停止翻译的事件时，最后都会从这里退出任务
                     # 执行到这里说明停止任意的任务已经执行完毕，可以重置内部状态了
-                    Base.work_status = Base.STATUS.TASKSTOPPED
+                    self._mark_task_session_stopped(Base.current_task_session())
                     return None
 
                 # 获取 待翻译 状态的条目数量
@@ -800,7 +873,7 @@ class TaskExecutor(Base):
                 tasks_list = []
                 self.print("")
                 self.info(f"正在生成翻译任务 ...")
-                
+
                 # Pre-calculate file stats for UI
                 unique_files = list(dict.fromkeys(file_paths))
                 file_info_map = {path: {"name": os.path.basename(path), "index": i} for i, path in enumerate(unique_files, 1)}
@@ -818,8 +891,9 @@ class TaskExecutor(Base):
 
                     task = TranslatorTask(self.config, self.plugin_manager, self.request_limiter, file_source_lang)  # 实例化
                     task.task_id = f"{current_round + 1:02d}-{i:03d}"
+                    task.task_session_id = Base.current_task_session()
                     task.file_path_full = file_path
-                    
+
                     # Store file info in task for callback
                     f_info = file_info_map.get(file_path)
                     task.extra_info = {
@@ -861,12 +935,12 @@ class TaskExecutor(Base):
                     self.info(f"项目类型 - {self.config.translation_project}")
                     self.info(f"原文语言 - {self.config.source_language}")
                     self.info(f"译文语言 - {self.config.target_language}")
-                    
+
                     platform_name = self.config.platforms.get(self.config.target_platform, {}).get('name', '未知')
                     self.info(f"接口名称 - {platform_name}")
                     self.info(f"接口地址 - {self.config.base_url}")
                     self.info(f"模型名称 - {self.config.model}")
-                    
+
                     self.info(f"RPM 限额 - {self.config.rpm_limit}")
                     self.info(f"TPM 限额 - {self.config.tpm_limit}")
 
@@ -880,7 +954,7 @@ class TaskExecutor(Base):
                         system = PromptBuilder.build_system(self.config, s_lang)
                     else:
                         system = self.config.translation_prompt_selection["prompt_content"]
-                    
+
                     self.info(f"并发请求 - {self.config.actual_thread_counts} 线程")
 
                     # 高并发时建议使用异步模式
@@ -894,6 +968,8 @@ class TaskExecutor(Base):
 
                 self.info(f"即将开始执行任务，预计任务总数为 {len(tasks_list)}，请注意保持网络通畅 ...")
                 time.sleep(3)
+                if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
+                    return None
                 self.print("")
 
                 # 根据配置选择同步或异步执行模式
@@ -908,19 +984,26 @@ class TaskExecutor(Base):
                     try:
                         with self.executor as executor:
                             for task in tasks_list:
-                                if Base.work_status == Base.STATUS.STOPING: break
+                                if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
+                                    break
                                 future = executor.submit(self._gated_run, task)
                                 future.add_done_callback(self.task_done_callback)  # 为future对象添加一个回调函数，当任务完成时会被调用，更新数据
                     finally:
                         self.executor = None
 
             # Ensure latest progress is persisted before post-processing/output.
+            if not Base.is_task_session_active():
+                return None
             self.cache_manager.flush_pending_save()
 
             # 触发插件事件
+            if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
+                return None
             self.plugin_manager.broadcast_event("postprocess_text", self.config, self.cache_manager.project)
 
             # 如果开启了转换简繁开关功能，则进行文本转换
+            if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
+                return None
             if self.config.response_conversion_toggle:
 
                 self.print("")
@@ -930,10 +1013,15 @@ class TaskExecutor(Base):
                 converter = opencc.OpenCC(self.config.opencc_preset)
                 cache_list = self.cache_manager.project.items_iter()
                 for item in cache_list:
+                    if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
+                        return None
                     if item.translation_status == TranslationStatus.TRANSLATED:
                         item.translated_text = converter.convert(item.translated_text)
                     if item.translation_status == TranslationStatus.POLISHED:
                         item.polished_text = converter.convert(item.polished_text)
+
+            if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
+                return None
 
             # 输出配置包
             output_config = {
@@ -944,6 +1032,8 @@ class TaskExecutor(Base):
             }
 
             # 写入文件
+            if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
+                return None
             self.file_writer.output_translated_content(
                 self.cache_manager.project,
                 self.session_output_path,
@@ -956,7 +1046,7 @@ class TaskExecutor(Base):
             self.print("")
 
             # 重置内部状态（正常完成翻译）
-            Base.work_status = Base.STATUS.TASKSTOPPED
+            self._mark_task_session_stopped(Base.current_task_session())
 
             # 触发翻译停止完成的事件
             self.plugin_manager.broadcast_event("translation_completed", self.config, self.cache_manager.project)
@@ -964,9 +1054,10 @@ class TaskExecutor(Base):
             # 触发翻译完成事件
             self.emit(Base.EVENT.TASK_COMPLETED, {})
         except Exception as e:
-            self.error(f"翻译任务异常终止: {e}", e)
-            Base.work_status = Base.STATUS.TASKSTOPPED
-            self.emit(Base.EVENT.TASK_STOP_DONE, {})
+            if Base.is_task_session_active():
+                self.error(f"翻译任务异常终止: {e}", e)
+                self._mark_task_session_stopped(Base.current_task_session())
+                self.emit(Base.EVENT.TASK_STOP_DONE, {})
 
     def _initialize_failover(self):
         self.consecutive_errors = 0
@@ -976,12 +1067,12 @@ class TaskExecutor(Base):
             primary_api = self.config.api_settings.get("translate")
             if primary_api:
                 self.api_pipeline.append(primary_api)
-            
+
             backup_apis = self.config.backup_apis or []
             for api in backup_apis:
                 if api not in self.api_pipeline:
                     self.api_pipeline.append(api)
-            
+
             if len(self.api_pipeline) > 1:
                 self.info(f"API Failover enabled. Pipeline: {' -> '.join(self.api_pipeline)}")
 
@@ -989,6 +1080,8 @@ class TaskExecutor(Base):
     def polish_start_target(self, continue_status: bool, silent: bool = False) -> None:
         try:
             # 设置翻译状态为正在翻译状态
+            if not Base.is_task_session_active():
+                return None
             Base.work_status = Base.STATUS.TASKING
 
 
@@ -1045,10 +1138,10 @@ class TaskExecutor(Base):
             # 根据最大轮次循环
             for current_round in range(self.config.round_limit + 1):
                 # 检测是否需要停止任务
-                if Base.work_status == Base.STATUS.STOPING:
+                if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
                     # 循环次数比实际最大轮次要多一轮，当触发停止翻译的事件时，最后都会从这里退出任务
                     # 执行到这里说明停止任意的任务已经执行完毕，可以重置内部状态了
-                    Base.work_status = Base.STATUS.TASKSTOPPED
+                    self._mark_task_session_stopped(Base.current_task_session())
                     return None
 
                 # 根据润色模式，获取可润色的条目数量
@@ -1128,11 +1221,12 @@ class TaskExecutor(Base):
                 for i, (chunk, previous_chunk, file_path, _) in enumerate(zip(chunks, previous_chunks, file_paths, source_context_chunks), 1):
                     task = PolisherTask(self.config, self.plugin_manager, self.request_limiter)  # 实例化
                     task.task_id = f"{current_round + 1:02d}-{i:03d}"
+                    task.task_session_id = Base.current_task_session()
                     task.set_items(chunk)  # 传入该任务待润色文
                     task.set_previous_items(previous_chunk)  # 传入该任务待润色文的上文
                     task.prepare()  # 预先构建消息列表
                     tasks_list.append(task)
-                
+
                 if not silent:
                     self.info(f"已经生成全部润色任务 ...")
                     self.print("")
@@ -1158,10 +1252,12 @@ class TaskExecutor(Base):
                         system = self.config.polishing_prompt_selection["prompt_content"]
                     self.print("")
                     if system:
-                        self.info(f"本次任务使用以下基础提示词：\n{system}\n") 
+                        self.info(f"本次任务使用以下基础提示词：\n{system}\n")
 
                     self.info(f"即将开始执行润色任务，预计任务总数为 {len(tasks_list)}, 同时执行的任务数量为 {self.config.actual_thread_counts}，请注意保持网络通畅 ...")
                     time.sleep(3)
+                    if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
+                        return None
                     self.print("")
 
                 # 重置并发计数器，防止上一轮异常退出后卡死
@@ -1172,14 +1268,20 @@ class TaskExecutor(Base):
                 try:
                     with self.executor as executor:
                         for task in tasks_list:
-                            if Base.work_status == Base.STATUS.STOPING: break
+                            if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
+                                break
                             future = executor.submit(self._gated_run, task)
                             future.add_done_callback(self.task_done_callback)  # 为future对象添加一个回调函数，当任务完成时会被调用，更新数据
                 finally:
                     self.executor = None
 
             # Ensure latest progress is persisted before post-processing/output.
+            if not Base.is_task_session_active():
+                return None
             self.cache_manager.flush_pending_save()
+
+            if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
+                return None
 
             # 输出配置包
             output_config = {
@@ -1190,6 +1292,8 @@ class TaskExecutor(Base):
             }
 
             # 写入文件
+            if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
+                return None
             self.file_writer.output_translated_content(
                 self.cache_manager.project,
                 self.config.polishing_output_path,
@@ -1202,15 +1306,16 @@ class TaskExecutor(Base):
             self.print("")
 
             # 重置内部状态
-            Base.work_status = Base.STATUS.TASKSTOPPED
+            self._mark_task_session_stopped(Base.current_task_session())
 
             # 触发事件
             self.plugin_manager.broadcast_event("polish_completed", self.config, self.cache_manager.project)
             self.emit(Base.EVENT.TASK_COMPLETED, {})     # 翻译完成事件
         except Exception as e:
-            self.error(f"润色任务异常终止: {e}", e)
-            Base.work_status = Base.STATUS.TASKSTOPPED
-            self.emit(Base.EVENT.TASK_STOP_DONE, {})
+            if Base.is_task_session_active():
+                self.error(f"润色任务异常终止: {e}", e)
+                self._mark_task_session_stopped(Base.current_task_session())
+                self.emit(Base.EVENT.TASK_STOP_DONE, {})
 
 
 
@@ -1225,6 +1330,8 @@ class TaskExecutor(Base):
             # 确保 result 是字典类型
             if not isinstance(result, dict):
                 return
+            if not Base.is_task_session_active(result.get("task_session_id")):
+                return
 
             with self.project_status_data.atomic_scope():
                 self.project_status_data.total_requests += 1
@@ -1236,10 +1343,10 @@ class TaskExecutor(Base):
                 self.project_status_data.total_completion_tokens += result.get("completion_tokens", 0)
                 self.project_status_data.time = time.time() - self.project_status_data.start_time
                 stats_dict = self.project_status_data.to_dict()
-                
+
                 if "extra_info" in result:
                     stats_dict.update(result["extra_info"])
-                
+
                 # Add session-specific metrics for correct Rate calculation (Resume Fix)
                 stats_dict['session_token'] = self.project_status_data.token - self.project_status_data.resume_offset_token
                 stats_dict['session_requests'] = self.project_status_data.total_requests - self.project_status_data.resume_offset_requests

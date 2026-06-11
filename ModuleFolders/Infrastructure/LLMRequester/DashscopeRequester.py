@@ -9,6 +9,9 @@ class DashscopeRequester(Base):
 
     # 发起请求
     def request_openai(self, messages, system_prompt, platform_config) -> tuple[bool, str, str, int, int]:
+        if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
+            return True, "STOPPED", "Task stopped by user", 0, 0
+
         try:
             # 获取具体配置
             model_name = platform_config.get("model_name")
@@ -70,6 +73,9 @@ class DashscopeRequester(Base):
             # 发起请求
             response = client.chat.completions.create(**base_params)
 
+            if not Base.is_task_session_active():
+                return True, "STOPPED", "Task stopped by user", 0, 0
+
             # 提取回复内容
             message = response.choices[0].message
 
@@ -88,6 +94,8 @@ class DashscopeRequester(Base):
                 response_content = message.content
 
         except Exception as e:
+            if Base.work_status == Base.STATUS.STOPING or not Base.is_task_session_active():
+                return True, "STOPPED", "Task stopped by user", 0, 0
             self.error(f"请求任务错误 ... {e}", e if self.is_debug() else None)
             return True, None, None, None, None
 
