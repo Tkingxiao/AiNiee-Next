@@ -7,6 +7,7 @@ from collections import defaultdict
 import opencc
 
 from ModuleFolders.Base.Base import Base
+from ModuleFolders.Base.EventManager import EventManager
 from ModuleFolders.Infrastructure.Cache.CacheItem import TranslationStatus
 from ModuleFolders.Infrastructure.Cache.CacheManager import CacheManager
 from ModuleFolders.Infrastructure.Cache.CacheProject import CacheProjectStatistics
@@ -85,6 +86,8 @@ class TaskExecutor(Base):
         self._current_active = 0
         self.executor = None
         self._task_session_id = None
+        self._stop_lock = threading.Lock()
+        self._stop_reason = "stop"
 
     def _run_with_task_session(self, session_id, target, *args) -> None:
         token = Base.set_task_session(session_id)
@@ -119,7 +122,7 @@ class TaskExecutor(Base):
                 if self.consecutive_errors >= threshold:
                     self.error(f"Critical error threshold ({threshold}) reached. Pausing task.")
                     self.emit(Base.EVENT.SYSTEM_STATUS_UPDATE, {"status": "critical_error"})
-                    self.emit(Base.EVENT.TASK_STOP, {})
+                    self.emit(Base.EVENT.TASK_STOP, {"reason": "critical_error", "status": "critical_error"})
                     self.consecutive_errors = 0 # Reset after triggering
                     return # Stop further processing to avoid conflict with failover
 
@@ -648,6 +651,8 @@ class TaskExecutor(Base):
 
     # 任务停止事件
     def task_stop(self, event: int, data: dict) -> None:
+        data = data if isinstance(data, dict) else {}
+        requested_reason = data.get("reason") or "stop"
         cancelled_session_id = Base.cancel_active_task_session()
 
         try:
@@ -657,8 +662,21 @@ class TaskExecutor(Base):
             pass
 
         # 如果已经是停止中或已停止，则只补齐取消信号，不重复启动停止等待线程
-        if Base.work_status in [Base.STATUS.STOPING, Base.STATUS.TASKSTOPPED]:
+        if Base.work_status == Base.STATUS.STOPING:
+            if requested_reason != "pause":
+                with self._stop_lock:
+                    self._stop_reason = requested_reason
             return
+        if Base.work_status == Base.STATUS.TASKSTOPPED:
+            if requested_reason != "pause":
+                EventManager.get_singleton().emit(
+                    Base.EVENT.TASK_STOP_DONE,
+                    {"reason": requested_reason, "task_session_id": cancelled_session_id},
+                )
+            return
+
+        with self._stop_lock:
+            self._stop_reason = requested_reason
 
         # 设置运行状态为停止中
         Base.work_status = Base.STATUS.STOPING
@@ -687,10 +705,18 @@ class TaskExecutor(Base):
                         break
                     if Base.work_status != Base.STATUS.TASKSTOPPED and Base.is_current_task_session(cancelled_session_id):
                          Base.work_status = Base.STATUS.TASKSTOPPED
+                    with self._stop_lock:
+                        stop_reason = self._stop_reason or requested_reason
                     self.print("")
-                    self.info("翻译任务已停止 ...")
+                    if stop_reason == "pause":
+                        self.info("翻译任务已暂停 ...")
+                    else:
+                        self.info("翻译任务已停止 ...")
                     self.print("")
-                    self.emit(Base.EVENT.TASK_STOP_DONE, {})
+                    EventManager.get_singleton().emit(
+                        Base.EVENT.TASK_STOP_DONE,
+                        {"reason": stop_reason, "task_session_id": cancelled_session_id},
+                    )
                     break
 
         # 子线程循环检测停止状态
@@ -1057,7 +1083,7 @@ class TaskExecutor(Base):
             if Base.is_task_session_active():
                 self.error(f"翻译任务异常终止: {e}", e)
                 self._mark_task_session_stopped(Base.current_task_session())
-                self.emit(Base.EVENT.TASK_STOP_DONE, {})
+                self.emit(Base.EVENT.TASK_STOP_DONE, {"reason": "error"})
 
     def _initialize_failover(self):
         self.consecutive_errors = 0
@@ -1315,7 +1341,7 @@ class TaskExecutor(Base):
             if Base.is_task_session_active():
                 self.error(f"润色任务异常终止: {e}", e)
                 self._mark_task_session_stopped(Base.current_task_session())
-                self.emit(Base.EVENT.TASK_STOP_DONE, {})
+                self.emit(Base.EVENT.TASK_STOP_DONE, {"reason": "error"})
 
 
 

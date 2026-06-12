@@ -142,7 +142,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         # 2. 停止任务
         elif path == '/api/stop':
             service.info(f"收到 HTTP 指令: 停止任务 (Client: {self.client_address[0]})")
-            service.emit(Base.EVENT.TASK_STOP, {})
+            service.emit(Base.EVENT.TASK_STOP, {"reason": "stop"})
             response_data = {"status": "success", "message": "Stop signal sent"}
             status_code = 200
             

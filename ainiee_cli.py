@@ -679,7 +679,7 @@ class CLIMenu:
             self.stop_requested = True
 
             from ModuleFolders.Base.EventManager import EventManager
-            EventManager.get_singleton().emit(Base.EVENT.TASK_STOP, {})
+            EventManager.get_singleton().emit(Base.EVENT.TASK_STOP, {"reason": "stop"})
         elif getattr(self, "web_server_active", False) or getattr(self, "mcp_server_active", False):
             # WebServer / MCP 运行时，抛出 KeyboardInterrupt 让对应流程自行清理并返回菜单或退出
             raise KeyboardInterrupt
@@ -1504,7 +1504,7 @@ class CLIMenu:
             self.input_listener.clear()
 
         # 定义完成事件
-        self.task_running = True; finished = threading.Event(); success = threading.Event()
+        self.task_running = True; finished = threading.Event(); success = threading.Event(); pause_stop_completed = threading.Event()
 
         from ModuleFolders.Base.EventManager import EventManager
 
@@ -1545,6 +1545,13 @@ class CLIMenu:
         def on_stop(e, d):
             # 只有在收到明确的任务停止完成事件时才记录日志
             if e == Base.EVENT.TASK_STOP_DONE:
+                stop_reason = d.get("reason") if isinstance(d, dict) else None
+                if stop_reason == "pause":
+                    pause_stop_completed.set()
+                    self.ui.update_status(None, {"status": "paused"})
+                    self.ui.log("[bold yellow]Task paused. Press r to resume or q to stop.[/bold yellow]")
+                    return
+
                 self.ui.log(f"[bold yellow]{i18n.get('msg_task_stopped')}[/bold yellow]")
                 finished.set()  # 任务停止完成，设置finished事件
 
@@ -1727,12 +1734,18 @@ class CLIMenu:
                             elif key == 'p':
                                 if Base.work_status == Base.STATUS.TASKING:
                                     self.ui.log("[bold yellow]Pausing System (Stopping processes)...[/bold yellow]")
-                                    # 更新状态通知 TaskExecutor 停止
-                                    EventManager.get_singleton().emit(Base.EVENT.TASK_STOP, {})
+                                    pause_stop_completed.clear()
                                     self.ui.update_status(None, {"status": "paused"})
+                                    # 更新状态通知 TaskExecutor 停止
+                                    EventManager.get_singleton().emit(Base.EVENT.TASK_STOP, {"reason": "pause"})
                                     is_paused = True
                             elif key == 'r':
                                 if is_paused:
+                                    if Base.work_status == Base.STATUS.STOPING and not pause_stop_completed.is_set():
+                                        self.ui.log("[bold yellow]Still waiting for in-flight requests to stop before resuming...[/bold yellow]")
+                                        self.ui.update_status(None, {"status": "paused"})
+                                        continue
+
                                     self.ui.log("[bold green]Resuming System...[/bold green]")
                                     # 使用 continue_status=True 和 silent=True 重新启动
                                     EventManager.get_singleton().emit(

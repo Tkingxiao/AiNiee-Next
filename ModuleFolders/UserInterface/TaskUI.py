@@ -31,6 +31,8 @@ class TaskUI:
         self.web_task_manager = None
         self.last_error = ""
         self.log_file = None  # 实时的日志文件句柄
+        self._progress_paused = False
+        self._progress_pause_started_at = None
 
         # 实时对照内容存储 (仅在详细模式使用)
         self.current_source = Text("Waiting...", style="dim")
@@ -127,6 +129,35 @@ class TaskUI:
             return f"提示: 当前进度不包含语言过滤内容，此文件全 {file_raw_total} 行。"
         return f"提示: 当前进度不包含语言过滤内容，此次任务全 {raw_total} 行。"
 
+    def _pause_progress_timer(self):
+        if self._progress_paused:
+            return
+
+        self._progress_paused = True
+        self._progress_pause_started_at = self.progress.get_time()
+        self.progress.stop_task(self.task_id)
+
+    def _resume_progress_timer(self):
+        if not self._progress_paused:
+            return
+
+        paused_started_at = self._progress_pause_started_at
+        current_time = self.progress.get_time()
+        paused_duration = 0
+        if paused_started_at is not None:
+            paused_duration = max(0, current_time - paused_started_at)
+
+        with self.progress._lock:
+            task = self.progress._tasks[self.task_id]
+            if task.start_time is None:
+                task.start_time = current_time
+            else:
+                task.start_time += paused_duration
+            task.stop_time = None
+
+        self._progress_paused = False
+        self._progress_pause_started_at = None
+
     def refresh_layout(self):
         """刷新 TUI 渲染内容"""
         with self._lock:
@@ -176,6 +207,10 @@ class TaskUI:
             self.current_status_key = status_key_map.get(status, "label_status_normal")
             self.current_status_color = color_map.get(status, "green")
             self.current_border_color = self.current_status_color
+            if status == "paused":
+                self._pause_progress_timer()
+            elif status == "normal":
+                self._resume_progress_timer()
             self.update_progress(None, {})
 
     def _is_error_log(self, log_item: Text):
@@ -403,6 +438,7 @@ class TaskUI:
                     pass
 
             if self.web_task_manager:
+                web_status = "paused" if self.current_status_key == "label_status_paused" else "running"
                 self.web_task_manager.push_stats({
                     "rpm": rpm,
                     "tpm": tpm_k,
@@ -410,7 +446,7 @@ class TaskUI:
                     "completedProgress": completed,
                     "totalTokens": tokens,
                     "currentFile": current_file,
-                    "status": "running",
+                    "status": web_status,
                     "successRate": s_rate,
                     "errorRate": e_rate
                 })
@@ -448,6 +484,8 @@ class TaskUI:
 
             is_start = data.get('is_start') if isinstance(data, dict) else False
             if is_start:
+                self._progress_paused = False
+                self._progress_pause_started_at = None
                 self.progress.reset(self.task_id, total=total, completed=completed, action=self._get_i18n('label_processing'))
             else:
                 self.progress.update(self.task_id, total=total, completed=completed, action=self._get_i18n('label_processing'))
