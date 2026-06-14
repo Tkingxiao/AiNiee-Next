@@ -16,6 +16,7 @@ from ModuleFolders.Domain.FileOutputer.BaseWriter import (
     PreWriteMetadata,
     BilingualOrder,
 )
+from ModuleFolders.Domain.FileOutputer.JapaneseQuoteNormalizer import normalize_japanese_quotes
 
 
 class EpubWriter(BaseBilingualWriter, BaseTranslatedWriter):
@@ -32,6 +33,7 @@ class EpubWriter(BaseBilingualWriter, BaseTranslatedWriter):
     def __init__(self, output_config: OutputConfig):
         super().__init__(output_config)
         self.file_accessor = EpubAccessor()
+        self._normalize_japanese_quotes = False
 
     def on_write_bilingual(
         self, translation_file_path: Path, cache_file: CacheFile,
@@ -48,10 +50,14 @@ class EpubWriter(BaseBilingualWriter, BaseTranslatedWriter):
         pre_write_metadata: PreWriteMetadata,
         source_file_path: Path = None,
     ):
-        self._write_translation_file(
-            translation_file_path, cache_file,
-            source_file_path, self._rebuild_translated_tag
-        )
+        self._normalize_japanese_quotes = pre_write_metadata.normalize_japanese_quotes
+        try:
+            self._write_translation_file(
+                translation_file_path, cache_file,
+                source_file_path, self._rebuild_translated_tag
+            )
+        finally:
+            self._normalize_japanese_quotes = False
 
     def _write_translation_file(
         self, translation_file_path: Path, cache_file: CacheFile,
@@ -101,6 +107,8 @@ class EpubWriter(BaseBilingualWriter, BaseTranslatedWriter):
 
         original_text = original_tag.get_text()
         processed_translated = self._copy_leading_spaces(original_text, translated_text)
+        if self._normalize_japanese_quotes:
+            processed_translated = normalize_japanese_quotes(processed_translated)
 
         new_tag = soup.new_tag(original_tag.name)
         new_tag.attrs = original_tag.attrs.copy()

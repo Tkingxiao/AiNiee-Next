@@ -11,11 +11,13 @@ from ModuleFolders.Domain.FileOutputer.BaseWriter import (
     PreWriteMetadata,
     BilingualOrder,
 )
+from ModuleFolders.Domain.FileOutputer.JapaneseQuoteNormalizer import normalize_japanese_quotes
 
 
 class TxtWriter(BaseBilingualWriter, BaseTranslatedWriter):
     def __init__(self, output_config: OutputConfig):
         super().__init__(output_config)
+        self._normalize_japanese_quotes = False
 
     def on_write_bilingual(
         self, translation_file_path: Path, cache_file: CacheFile,
@@ -29,7 +31,11 @@ class TxtWriter(BaseBilingualWriter, BaseTranslatedWriter):
         pre_write_metadata: PreWriteMetadata,
         source_file_path: Path = None,
     ):
-        self._write_translation_file(translation_file_path, cache_file, pre_write_metadata, self._item_to_translated_line)
+        self._normalize_japanese_quotes = pre_write_metadata.normalize_japanese_quotes
+        try:
+            self._write_translation_file(translation_file_path, cache_file, pre_write_metadata, self._item_to_translated_line)
+        finally:
+            self._normalize_japanese_quotes = False
 
     def _write_translation_file(
         self, translation_file_path: Path, cache_file: CacheFile,
@@ -64,8 +70,11 @@ class TxtWriter(BaseBilingualWriter, BaseTranslatedWriter):
     # 译文版构建
     def _item_to_translated_line(self, item: CacheItem):
         line_break = "\n" * (item.require_extra("line_break") + 1)
+        final_text = item.final_text
+        if self._normalize_japanese_quotes:
+            final_text = normalize_japanese_quotes(final_text)
 
-        return f"{item.final_text}{line_break}"
+        return f"{final_text}{line_break}"
 
     @classmethod
     def get_project_type(self):

@@ -416,6 +416,16 @@ register_config(ConfigItem(
     category="feature"
 ))
 
+register_config(ConfigItem(
+    key="japanese_text_quote_style_switch",
+    default=True,
+    level=ConfigLevel.USER,
+    config_type=ConfigType.BOOL,
+    i18n_key="setting_japanese_text_quote_style",
+    i18n_desc_key="setting_japanese_text_quote_style_desc",
+    category="utility"
+))
+
 # --- 提示词功能开关 (USER) ---
 register_config(ConfigItem(
     key="pre_translation_switch",

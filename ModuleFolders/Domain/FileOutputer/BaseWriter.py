@@ -8,6 +8,7 @@ import rich
 
 from ModuleFolders.Infrastructure.Cache.CacheFile import CacheFile
 from ModuleFolders.Infrastructure.TaskConfig.TaskConfig import TaskConfig
+from ModuleFolders.Domain.FileOutputer.JapaneseQuoteNormalizer import should_normalize_japanese_quotes
 
 
 def can_encode_text(text: str, encoding: str) -> bool:
@@ -56,6 +57,7 @@ class WriterInitParams(TypedDict):
 @dataclass
 class PreWriteMetadata:
     encoding: str = "utf-8"
+    normalize_japanese_quotes: bool = False
 
 
 class BaseTranslationWriter(ABC):
@@ -128,7 +130,11 @@ class BaseTranslatedWriter(BaseTranslationWriter):
         else:
             encoding = "utf-8"
 
-        return PreWriteMetadata(encoding=encoding)
+        project_type = cache_file.file_project_type or self.get_project_type()
+        return PreWriteMetadata(
+            encoding=encoding,
+            normalize_japanese_quotes=should_normalize_japanese_quotes(task_config, cache_file, project_type),
+        )
 
     @abstractmethod
     def on_write_translated(

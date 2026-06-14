@@ -79,6 +79,7 @@ DEFAULT_CONFIG = {
     "cache_backup_limit": 10,
     "enable_cache_backup": True,
     "enable_auto_restore_ebook": True,
+    "japanese_text_quote_style_switch": True,
     "enable_dry_run": False,
     "enable_retry_backoff": True,
     "enable_session_logging": True,

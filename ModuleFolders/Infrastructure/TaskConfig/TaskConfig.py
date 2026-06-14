@@ -149,6 +149,7 @@ class TaskConfig(Base):
         self.cache_backup_limit = 10
         self.enable_cache_backup = True
         self.enable_auto_restore_ebook = True
+        self.japanese_text_quote_style_switch = True
         self.enable_dry_run = False
         self.enable_retry_backoff = True
         self.enable_session_logging = True

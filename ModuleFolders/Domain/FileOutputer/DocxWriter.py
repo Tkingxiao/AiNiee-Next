@@ -8,6 +8,7 @@ from ModuleFolders.Domain.FileOutputer.BaseWriter import (
     OutputConfig,
     PreWriteMetadata
 )
+from ModuleFolders.Domain.FileOutputer.JapaneseQuoteNormalizer import normalize_japanese_quotes
 
 
 class DocxWriter(BaseTranslatedWriter):
@@ -30,7 +31,10 @@ class DocxWriter(BaseTranslatedWriter):
                 # 在翻译结果中查找是否存在原文，存在则替换并右移开始下标
                 for content_index in range(start_index, len(items)):
                     if match.string == items[content_index].source_text:
-                        match.string = items[content_index].final_text
+                        final_text = items[content_index].final_text
+                        if pre_write_metadata.normalize_japanese_quotes:
+                            final_text = normalize_japanese_quotes(final_text)
+                        match.string = final_text
                         start_index = content_index + 1
                         break
         self.file_accessor.write_content(

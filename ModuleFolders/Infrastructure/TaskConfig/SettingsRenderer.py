@@ -157,6 +157,7 @@ class SettingsMenuBuilder:
             ("automation", "label_category_automation"),
             ("manga", "label_category_manga"),
             ("advanced", "label_category_advanced"),
+            ("utility", "label_category_utility"),
             ("project_general", "label_category_project_general"),
         ]
 
