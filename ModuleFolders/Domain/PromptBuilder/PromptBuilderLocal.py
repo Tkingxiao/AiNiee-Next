@@ -4,7 +4,7 @@ from ModuleFolders.Base.Base import Base
 from ModuleFolders.Service.TaskExecutor import TranslatorUtil
 from ModuleFolders.Infrastructure.TaskConfig.TaskConfig import TaskConfig
 from ModuleFolders.Domain.PromptBuilder.PromptBuilder import PromptBuilder
-from ModuleFolders.Domain.PromptBuilder.DynamicGlossary import apply_dynamic_glossary
+from ModuleFolders.Domain.PromptBuilder.DynamicGlossary import apply_dynamic_glossary, filter_legacy_references_for_prompt
 
 class PromptBuilderLocal(Base):
 
@@ -63,6 +63,7 @@ class PromptBuilderLocal(Base):
     def build_glossary_prompt(config: TaskConfig, input_dict: dict) -> str:
         if getattr(config, "dynamic_glossary_switch", False):
             apply_dynamic_glossary(config, getattr(config, "dynamic_glossary_volume", None))
+        filter_legacy_references_for_prompt(config)
 
         # 将输入字典中的所有值合并为一个字符串，方便正则全局匹配
         full_text = "\n".join(input_dict.values())

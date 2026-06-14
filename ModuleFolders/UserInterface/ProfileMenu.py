@@ -83,9 +83,7 @@ class ProfileMenu:
             return False
 
         selected_profile = profiles[selected_index - 1]
-        self.host.root_config["active_profile"] = selected_profile
-        self.host.save_config(save_root=True)
-        self.host.load_config()
+        self.host.switch_active_profile(selected_profile)
         console.print(f"[green]{self.i18n.get('msg_active_platform').format(selected_profile)}[/green]")
         time.sleep(1)
         return True
@@ -124,9 +122,7 @@ class ProfileMenu:
 
         if new_name and not os.path.exists(new_path):
             os.rename(active_path, new_path)
-            self.host.active_profile_name = new_name
-            self.host.root_config["active_profile"] = new_name
-            self.host.save_config(save_root=True)
+            self.host.switch_active_profile(new_name)
             console.print(f"[green]{self.i18n.get('msg_profile_renamed').format(new_name)}[/green]")
         else:
             console.print(f"[red]{self.i18n.get('msg_profile_invalid')}[/red]")

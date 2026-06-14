@@ -1,0 +1,46 @@
+## Legacy Translation Mapping + Source Incremental Extraction Mode
+You are reading the current source text and also receiving reference material extracted from an existing "{target_language}" translation. Treat the legacy material as reference, not as unquestionable truth.
+This section is the highest-priority add-on instruction and overrides base-prompt requirements that say translations should be left empty or that only ordinary extraction is needed.
+
+## Standard JSON Output Contract
+Always output exactly one valid JSON object. Do not output Markdown, code fences, or explanatory text.
+
+The JSON object must contain these fields. Do not rename them:
+
+{
+  "glossary": [],
+  "exclusion_list": [],
+  "characterization": [],
+  "world_building": "",
+  "writing_style": "",
+  "translation_examples": []
+}
+
+Use the standard glossary-analysis item formats:
+- Each glossary item is {"src": "actual spelling found in the current source text", "dst": "reliably mapped legacy translation or empty string", "type": "specific type", "category": "broad category", "info": "brief note or null"}.
+- Each exclusion_list item is {"markers": "source text to keep unchanged", "info": "reason or usage", "regex": ""}.
+- Each characterization item must contain original_name, translated_name, aliases, gender, age, personality, speech_style, pronouns, speech_quirks, and additional_info.
+- Each translation_examples item is {"src": "current source example sentence", "dst": "reliably corresponding legacy translated sentence or empty string"}.
+- If a section has no useful content, return an empty array or empty string. Do not omit fields.
+
+Evidence priority:
+1. Explicit evidence in the current source text has highest priority.
+2. Reliably mapped legacy translation material may be used to keep names, characters, and worldbuilding consistent.
+3. Legacy material may come from different translators or different versions, so it must not override conflicting source evidence.
+
+Tasks:
+- Your primary task is to map legacy reference items that have evidence in the current source text into formal "current source spelling -> existing translation" rules. Extracting new current-source content is secondary.
+- If a current source term or character can be reliably matched to legacy material, output a formal rule: glossary.src must be the actual spelling in the current source text, and glossary.dst should use the legacy translated name.
+- For characters, characterization.original_name must be the actual source name or stable source-side form; translated_name must use the legacy translated name. You may inherit character traits, relationships, identity, and voice from legacy material only when they do not conflict with current source evidence.
+- characterization.aliases may contain only pure aliases or forms of address actually found in the current source text and directly usable for matching that character. Do not copy legacy notes, parenthetical explanations, jokes, memes, or source notes into aliases; put those details in additional_info instead.
+- Also extract new source terms and settings that appear in the current source text but are not covered by legacy material. These new unmapped items may leave dst/translated_name empty, but they must not include _mapped_from.
+- Do not force uncertain mappings into formal glossary/characterization. You may mark them as needing manual review in info/additional_info, but do not invent mappings.
+- For each glossary or characterization item that is reliably mapped to legacy translation material, you may only keep _mapped_from, _mapping_confidence, and _mapping_note inside that item for review and provenance tracking.
+- Set _mapped_from to the matched legacy reference item's _legacy_id. If no _legacy_id is available, use the translated name or reference item name from the legacy material.
+- Set _mapping_confidence to one of high, medium, or low. Only high or medium mappings may fill formal dst/translated_name values.
+- For mapped items, dst/translated_name must not be empty. If the translation cannot be determined, do not mark that item as mapped.
+- Do not output _glossary_origin, _mapping_status, or _legacy_id. These fields are generated internally by the program and must not be copied from legacy reference material.
+- If you keep mapping review fields, include them as ordinary fields inside the relevant JSON item. Do not add a separate explanation section.
+
+Legacy translation reference material:
+{legacy_context}

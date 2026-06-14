@@ -468,6 +468,9 @@ class ProfileSwitchRequest(BaseModel):
 class RulesProfileSwitchRequest(BaseModel):
     profile: str
 
+class RulesProfileDeleteRequest(BaseModel):
+    profile: str
+
 class ProfileCreateRequest(BaseModel):
     name: str
     base: Optional[str] = None
@@ -2371,6 +2374,32 @@ async def switch_rules_profile(request: RulesProfileSwitchRequest, http_request:
         return await get_config(http_request)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/rules_profiles/delete")
+async def delete_rules_profile(request: RulesProfileDeleteRequest):
+    global _config_cache
+    try:
+        profile_name = sanitize_profile_name(request.profile, allow_none=True)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    if profile_name == "None":
+        raise HTTPException(status_code=400, detail="Cannot delete the None rules profile")
+
+    root_config = load_root_config()
+    if root_config.get("active_rules_profile", "default") == profile_name:
+        raise HTTPException(status_code=400, detail="Cannot delete the active rules profile")
+
+    profile_path, profile_name = resolve_profile_path(RULES_PROFILES_PATH, profile_name, allow_none=True)
+    if not os.path.exists(profile_path):
+        raise HTTPException(status_code=404, detail="Rules profile not found")
+
+    try:
+        os.remove(profile_path)
+        _config_cache.clear()
+        return {"message": f"Rules profile '{profile_name}' deleted."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete rules profile: {e}")
 
 @app.post("/api/profiles/switch")
 async def switch_profile(request: ProfileSwitchRequest, http_request: Request):

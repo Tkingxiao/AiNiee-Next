@@ -81,10 +81,19 @@ class GlossaryMenu:
     def i18n(self):
         return self.cli.i18n
 
-    def _tr(self, key, fallback):
+    def _tr(self, key, fallback=None, *args):
         value = self.i18n.get(key)
         if not value or value == key:
-            return fallback
+            value = fallback if fallback is not None else key
+        if args:
+            try:
+                return value.format(*args)
+            except Exception:
+                fallback_value = fallback if fallback is not None else key
+                try:
+                    return fallback_value.format(*args)
+                except Exception:
+                    return value
         return value
 
     @property
@@ -262,7 +271,7 @@ class GlossaryMenu:
             elif choice == "13":
                 self.run_prompt_test()
 
-    def run_glossary_analysis_task(self, incremental_defaults=None, assume_series=False):
+    def run_glossary_analysis_task(self, incremental_defaults=None, assume_series=False, legacy_mode_default="normal_extract"):
         """AI自动分析术语表功能入口"""
         self.display_banner()
         console.print(Panel(f"[bold]{self.i18n.get('menu_ai_glossary_analysis') or 'AI自动分析术语表'}[/bold]"))
@@ -379,14 +388,22 @@ class GlossaryMenu:
                 )
                 incremental_split_target_tokens = max(1, min(incremental_split_target_tokens, max_incremental_split_target_tokens))
 
+        legacy_mode = self._resolve_glossary_legacy_mode(scan_result, legacy_mode_default)
+
         prompt_file = self._select_glossary_analysis_prompt()
         if prompt_file is None:
             return
 
-        translate_during_analysis = Confirm.ask(
-            self.i18n.get('confirm_glossary_analysis_translate_direct') or "是否让 LLM 在分析时直接输出译名和中文注释?",
-            default=True,
-        )
+        if legacy_mode == "legacy_translation_extract":
+            translate_during_analysis = False
+            console.print(
+                f"[dim]{self._tr('msg_legacy_translation_translate_disabled')}[/dim]"
+            )
+        else:
+            translate_during_analysis = Confirm.ask(
+                self._tr('confirm_glossary_analysis_translate_direct'),
+                default=True,
+            )
 
         # 选择API配置
         console.print(f"\n[cyan]{self.i18n.get('prompt_select_api_config') or '请选择API配置:'}[/cyan]")
@@ -421,6 +438,7 @@ class GlossaryMenu:
                 source_label=incremental_options.get("source_label"),
                 source_volume=incremental_options.get("source_volume"),
                 incremental_split_target_tokens=incremental_split_target_tokens,
+                legacy_mode=legacy_mode,
             )
 
             if analysis_result is None:
@@ -453,6 +471,8 @@ class GlossaryMenu:
                 temp_platform_config,
                 save_result.get('structured_rules'),
                 save_result.get('incremental_options'),
+                save_result.get('legacy_mode'),
+                save_result.get('legacy_mapping_stats'),
             )
 
         except Exception as e:
@@ -461,6 +481,60 @@ class GlossaryMenu:
             traceback.print_exc()
 
         Prompt.ask(f"\n{self.i18n.get('msg_press_enter')}")
+
+    def _resolve_glossary_legacy_mode(self, scan_result, default_mode="normal_extract"):
+        """根据扫描结果和既有 legacy 标记决定本次旧译文处理模式。"""
+        default_mode = self.analyzer.normalize_legacy_mode(default_mode)
+        is_target_language = self.analyzer.scan_is_target_language(scan_result)
+        has_legacy_refs = self.analyzer.has_legacy_translation_references()
+
+        if default_mode == "legacy_translation_extract":
+            if not is_target_language and not Confirm.ask(
+                self._tr('confirm_legacy_translation_language_mismatch'),
+                default=False,
+            ):
+                return "normal_extract"
+            console.print(f"[cyan]{self._tr('msg_legacy_translation_extract_note')}[/cyan]")
+            return "legacy_translation_extract"
+
+        if default_mode == "legacy_mapping_extract":
+            if not has_legacy_refs:
+                console.print(
+                    f"[yellow]{self._tr('msg_legacy_mapping_no_references')}[/yellow]"
+                )
+                return "normal_extract"
+            if is_target_language and not Confirm.ask(
+                self._tr('confirm_legacy_mapping_language_mismatch'),
+                default=False,
+            ):
+                if Confirm.ask(
+                    self._tr('confirm_legacy_target_language_extract'),
+                    default=True,
+                ):
+                    console.print(f"[cyan]{self._tr('msg_legacy_translation_extract_note')}[/cyan]")
+                    return "legacy_translation_extract"
+                return "normal_extract"
+            console.print(f"[cyan]{self._tr('msg_legacy_mapping_after_extract_hint')}[/cyan]")
+            return "legacy_mapping_extract"
+
+        if is_target_language:
+            if Confirm.ask(
+                self._tr('confirm_legacy_target_language_extract'),
+                default=True,
+            ):
+                console.print(f"[cyan]{self._tr('msg_legacy_translation_extract_note')}[/cyan]")
+                return "legacy_translation_extract"
+            return "normal_extract"
+
+        if has_legacy_refs:
+            if Confirm.ask(
+                self._tr('confirm_legacy_mapping_extract'),
+                default=True,
+            ):
+                console.print(f"[cyan]{self._tr('msg_legacy_mapping_after_extract_hint')}[/cyan]")
+                return "legacy_mapping_extract"
+
+        return "normal_extract"
 
     def _prompt_incremental_glossary_options(self, defaults=None, assume_series=False):
         """询问是否按系列作启用增量术语提取。"""
@@ -533,13 +607,13 @@ class GlossaryMenu:
         console.print(f"\n[cyan]{self.i18n.get('prompt_select_prompt_template') or '请选择要测试的提示词模板:'}[/cyan]")
         prompt_dir = os.path.join(self.cli.PROJECT_ROOT, "Resource", "Prompt", "Translate")
         if not os.path.exists(prompt_dir):
-            console.print(f"[red]{self.i18n.get('err_prompt_dir_not_found') or '错误: 提示词目录不存在'}[/red]")
+            console.print(f"[red]{self._tr('err_prompt_dir_not_found')}[/red]")
             Prompt.ask(f"\n{self.i18n.get('msg_press_enter')}")
             return
 
         files = [f for f in os.listdir(prompt_dir) if f.endswith(".txt")]
         if not files:
-            console.print(f"[red]{self.i18n.get('err_no_prompt_files') or '错误: 没有可用的提示词文件'}[/red]")
+            console.print(f"[red]{self._tr('err_no_prompt_files')}[/red]")
             Prompt.ask(f"\n{self.i18n.get('msg_press_enter')}")
             return
 
@@ -760,7 +834,7 @@ class GlossaryMenu:
                 files = sorted(f for f in os.listdir(prompt_dir) if f.endswith(".txt"))
 
             if not files:
-                console.print(f"[yellow]{self.i18n.get('err_no_prompt_files') or '错误: 没有可用的提示词文件'}[/yellow]")
+                console.print(f"[yellow]{self._tr('err_no_prompt_files')}[/yellow]")
                 return ""
 
             file_table = Table(show_header=False, box=None)
@@ -813,9 +887,13 @@ class GlossaryMenu:
         temp_config=None,
         structured_rules=None,
         incremental_options=None,
+        legacy_mode="normal_extract",
+        legacy_mapping_stats=None,
     ):
         """显示术语表操作菜单"""
         incremental_options = incremental_options or {}
+        legacy_mode = self.analyzer.normalize_legacy_mode(legacy_mode)
+        legacy_mapping_stats = legacy_mapping_stats or {}
         while True:
             console.print(f"\n[cyan]{self.i18n.get('prompt_select_action') or '请选择操作:'}[/cyan]")
             table = Table(show_header=False, box=None)
@@ -828,20 +906,26 @@ class GlossaryMenu:
             table.add_row("[cyan]7.[/]", (self.i18n.get('option_multi_translate') or "多翻译选择") + " " + (self.i18n.get('label_temp_api') or "(临时API)"))
             table.add_row("[cyan]8.[/]", (self.i18n.get('option_set_rounds') or "设置轮询次数") + " " + (self.i18n.get('label_current_config') or "(当前配置)"))
             table.add_row("[cyan]9.[/]", (self.i18n.get('option_set_rounds') or "设置轮询次数") + " " + (self.i18n.get('label_temp_api') or "(临时API)"))
-            table.add_row("[cyan]10.[/]", self._tr('option_continue_series_glossary_analysis', "继续为该系列作品提取术语表"))
+            if legacy_mode == "legacy_translation_extract":
+                table.add_row("[cyan]10.[/]", self._tr('option_continue_legacy_mapping_analysis'))
+            else:
+                table.add_row("[cyan]10.[/]", self._tr('option_continue_series_glossary_analysis'))
             console.print(table)
             console.print(f"\n[dim]0. {self.i18n.get('menu_back')}[/dim]")
 
+            default_action = 1 if incremental_options.get("enabled") or legacy_mode != "normal_extract" else 2
             choice = IntPrompt.ask(
                 self.i18n.get('prompt_select'),
                 choices=[str(i) for i in range(11)],
                 show_choices=False,
-                default=2
+                default=default_action
             )
 
             if choice == 0:
                 return
             elif choice == 1:
+                if not self._confirm_legacy_mapping_import(legacy_mode, legacy_mapping_stats):
+                    continue
                 if structured_rules:
                     self.analyzer.save_structured_rules_directly(
                         structured_rules,
@@ -857,12 +941,16 @@ class GlossaryMenu:
                         merge_options=incremental_options,
                     )
             elif choice == 2:
+                if not self._confirm_legacy_mapping_import(legacy_mode, legacy_mapping_stats):
+                    continue
                 if not structured_rules:
                     console.print(f"[yellow]{self.i18n.get('msg_no_structured_rules_for_profile') or '没有可写入规则配置的分类结果。'}[/yellow]")
                     continue
                 self._create_rules_profile_from_analysis(structured_rules)
                 return
             elif choice == 3:
+                if not self._confirm_legacy_mapping_import(legacy_mode, legacy_mapping_stats):
+                    continue
                 self.analyzer.save_glossary_directly(
                     glossary_data,
                     save_mode="import",
@@ -885,7 +973,8 @@ class GlossaryMenu:
                 self.analyzer.multi_translate_and_select(
                     filtered_terms, None, rounds,
                     save_mode=save_mode,
-                    base_glossary_path=glossary_path
+                    base_glossary_path=glossary_path,
+                    merge_options=incremental_options,
                 )
                 return
             elif choice == 7:
@@ -899,7 +988,8 @@ class GlossaryMenu:
                     self.analyzer.multi_translate_and_select(
                         filtered_terms, translate_config, rounds,
                         save_mode=save_mode,
-                        base_glossary_path=glossary_path
+                        base_glossary_path=glossary_path,
+                        merge_options=incremental_options,
                     )
                     return
             elif choice == 8:
@@ -913,7 +1003,7 @@ class GlossaryMenu:
                 self.save_config()
                 # 先保存原文术语表
                 self.analyzer.save_glossary_directly(glossary_data, save_mode="standalone", base_glossary_path=glossary_path)
-                self._ask_translate_mode_and_run(filtered_terms, None, rounds, glossary_path)
+                self._ask_translate_mode_and_run(filtered_terms, None, rounds, glossary_path, incremental_options)
                 return
             elif choice == 9:
                 # 设置轮询次数（临时API）
@@ -928,9 +1018,11 @@ class GlossaryMenu:
                     self.save_config()
                     # 先保存原文术语表
                     self.analyzer.save_glossary_directly(glossary_data, save_mode="standalone", base_glossary_path=glossary_path)
-                    self._ask_translate_mode_and_run(filtered_terms, translate_config, rounds, glossary_path)
+                    self._ask_translate_mode_and_run(filtered_terms, translate_config, rounds, glossary_path, incremental_options)
                     return
             elif choice == 10:
+                if not self._confirm_legacy_mapping_import(legacy_mode, legacy_mapping_stats):
+                    continue
                 if structured_rules:
                     self.analyzer.save_structured_rules_directly(
                         structured_rules,
@@ -938,6 +1030,14 @@ class GlossaryMenu:
                         base_glossary_path=glossary_path,
                         merge_options=incremental_options,
                     )
+                    if legacy_mode == "legacy_translation_extract":
+                        console.print(f"[cyan]{self._tr('msg_legacy_mapping_after_extract_hint')}[/cyan]")
+                        self.run_glossary_analysis_task(
+                            incremental_defaults=incremental_options,
+                            assume_series=bool(incremental_options.get("enabled")),
+                            legacy_mode_default="legacy_mapping_extract",
+                        )
+                        return
                 else:
                     self.analyzer.save_glossary_directly(
                         glossary_data,
@@ -945,6 +1045,14 @@ class GlossaryMenu:
                         base_glossary_path=glossary_path,
                         merge_options=incremental_options,
                     )
+                    if legacy_mode == "legacy_translation_extract":
+                        console.print(f"[cyan]{self._tr('msg_legacy_mapping_after_extract_hint')}[/cyan]")
+                        self.run_glossary_analysis_task(
+                            incremental_defaults=incremental_options,
+                            assume_series=bool(incremental_options.get("enabled")),
+                            legacy_mode_default="legacy_mapping_extract",
+                        )
+                        return
                 next_defaults = dict(incremental_options or {})
                 next_defaults["enabled"] = True
                 try:
@@ -958,6 +1066,29 @@ class GlossaryMenu:
                 next_defaults.setdefault("replace", True)
                 self.run_glossary_analysis_task(incremental_defaults=next_defaults, assume_series=True)
                 return
+
+    def _confirm_legacy_mapping_import(self, legacy_mode, legacy_mapping_stats):
+        if self.analyzer.normalize_legacy_mode(legacy_mode) != "legacy_mapping_extract":
+            return True
+        stats = legacy_mapping_stats or {}
+        if stats.get("mapped_total", 0) > 0:
+            return True
+        glossary_total = stats.get("glossary_total", 0)
+        character_total = stats.get("character_total", 0)
+        console.print(
+            "[yellow]"
+            + self._tr(
+                "msg_legacy_mapping_no_reliable_results",
+                "旧译文映射结果没有检测到可靠 mapped 条目（术语 {}，角色 {}）。本次结果更像普通抽取；导入当前配置前会要求再次确认。",
+                glossary_total,
+                character_total,
+            )
+            + "[/yellow]"
+        )
+        return Confirm.ask(
+            self._tr("confirm_import_unmapped_legacy_result"),
+            default=False,
+        )
 
     def _create_rules_profile_from_analysis(self, structured_rules):
         """提示用户输入 rules_profile 名称，并创建后切换。"""
@@ -979,7 +1110,7 @@ class GlossaryMenu:
                 console.print(f"[red]{(self.i18n.get('msg_create_rules_profile_failed') or '创建规则配置失败: {}').format(e)}[/red]")
                 return
 
-    def _ask_translate_mode_and_run(self, filtered_terms, temp_config, rounds, glossary_path=None):
+    def _ask_translate_mode_and_run(self, filtered_terms, temp_config, rounds, glossary_path=None, merge_options=None):
         """询问翻译模式并执行"""
         console.print(f"\n[cyan]{self.i18n.get('msg_translate_mode_select')}[/cyan]")
         table = Table(show_header=False, box=None)
@@ -994,13 +1125,15 @@ class GlossaryMenu:
             self.analyzer.multi_translate_and_select(
                 filtered_terms, temp_config, rounds,
                 save_mode=save_mode,
-                base_glossary_path=glossary_path
+                base_glossary_path=glossary_path,
+                merge_options=merge_options,
             )
         else:
             self.analyzer.batch_translate_and_select(
                 filtered_terms, temp_config,
                 save_mode=save_mode,
-                base_glossary_path=glossary_path
+                base_glossary_path=glossary_path,
+                merge_options=merge_options,
             )
 
     def _prompt_glossary_save_mode(self, default_mode="import"):
@@ -1037,6 +1170,7 @@ class GlossaryMenu:
             console.print(p_table)
 
             console.print(f"\n[cyan]A.[/] {self.i18n.get('menu_profile_create')}")
+            console.print(f"[red]D.[/] {self.i18n.get('menu_profile_delete')}")
             console.print(f"[dim]0. {self.i18n.get('menu_back')}[/dim]")
 
             choice_str = Prompt.ask(self.i18n.get('prompt_select')).upper()
@@ -1060,19 +1194,55 @@ class GlossaryMenu:
                         time.sleep(1)
                         continue
                     atomic_write_json(path, default_rules_payload())
-                    console.print(f"[green]Rules Profile '{new_name}' created.[/green]")
+                    console.print(f"[green]{self.i18n.get('msg_profile_created').format(new_name)}[/green]")
                     time.sleep(1)
+            elif choice_str == 'D':
+                self._delete_rules_profile()
             elif choice_str.isdigit():
                 sel_idx = int(choice_str)
                 if 1 <= sel_idx <= len(all_options):
                     sel = all_options[sel_idx - 1]
-                    self.cli.active_rules_profile_name = sel
-                    self.cli.root_config["active_rules_profile"] = sel
-                    self.cli.save_config(save_root=True)
-                    self.cli.load_config() # Reload everything to merge correctly
-                    console.print(f"[green]Switched to Rules Profile: {sel}[/green]")
+                    self.cli.switch_active_rules_profile(sel)
+                    console.print(f"[green]{self.i18n.get('msg_rules_profile_switched').format(sel)}[/green]")
                     time.sleep(1)
                     break
+
+    def _delete_rules_profile(self):
+        """删除未激活的规则配置文件。"""
+        profile_names = list_profile_names(self.cli.rules_profiles_dir, include_none=False)
+        delete_candidates = [
+            name for name in profile_names
+            if name != self.active_rules_profile_name and name != "None"
+        ]
+        if len(profile_names) <= 1 or not delete_candidates:
+            console.print(f"[red]{self.i18n.get('msg_cannot_delete_last')}[/red]")
+            time.sleep(1)
+            return
+
+        console.print(Panel(f"{self.i18n.get('menu_profile_delete')}"))
+        delete_table = Table(show_header=False, box=None)
+        for index, profile_name in enumerate(delete_candidates):
+            delete_table.add_row(f"[cyan]{index + 1}.[/]", profile_name)
+        console.print(delete_table)
+        console.print(f"\n[dim]0. {self.i18n.get('menu_cancel')}[/dim]")
+
+        selected_index = IntPrompt.ask(
+            self.i18n.get("prompt_select"),
+            choices=[str(i) for i in range(len(delete_candidates) + 1)],
+            show_choices=False,
+        )
+        if selected_index == 0:
+            return
+
+        selected_profile = delete_candidates[selected_index - 1]
+        if Confirm.ask(f"[bold red]{self.i18n.get('msg_profile_delete_confirm').format(selected_profile)}[/bold red]"):
+            target_path, _ = resolve_profile_path(self.cli.rules_profiles_dir, selected_profile)
+            if os.path.exists(target_path):
+                os.remove(target_path)
+            console.print(f"[green]{self.i18n.get('msg_profile_deleted').format(selected_profile)}[/green]")
+        else:
+            console.print(f"[yellow]{self.i18n.get('msg_delete_cancel')}[/yellow]")
+        time.sleep(1)
 
     def manage_text_rule(self, switch_key, data_key, title):
         """管理文本规则（术语表/排除列表）"""
@@ -1298,6 +1468,12 @@ class GlossaryMenu:
             elif c == 3:
                 if Confirm.ask(self.i18n.get("menu_clear_data") + "?"):
                     self.config[data_key] = [] if is_list else ""
+                    history_key = {
+                        "world_building_content": "world_building_history",
+                        "writing_style_content": "writing_style_history",
+                    }.get(data_key)
+                    if history_key:
+                        self.config[history_key] = []
                     console.print(f"[yellow]{self.i18n.get('msg_data_cleared')}[/yellow]")
             self.save_config()
 

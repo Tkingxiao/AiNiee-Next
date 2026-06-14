@@ -50,6 +50,7 @@ from ModuleFolders.Infrastructure.TaskConfig.ConfigProfileService import (
     list_profile_names,
     load_effective_config,
     load_root_config,
+    sanitize_profile_name,
     save_effective_config,
     save_root_config,
 )
@@ -523,6 +524,9 @@ class CLIMenu:
         self.active_rules_profile_name = active_rules_profile_name or self.root_config.get("active_rules_profile", "default")
 
         self._migrate_and_load_profiles()
+        self._after_config_loaded()
+
+    def _after_config_loaded(self):
         if self.config.get("interface_language") and self.config.get("interface_language") != current_lang:
             self.apply_interface_language(self.config.get("interface_language"))
         if getattr(self, "_plugin_manager", None) is not None and "plugin_enables" in self.root_config:
@@ -539,6 +543,29 @@ class CLIMenu:
         )
         self.active_profile_name = self.root_config.get("active_profile", self.active_profile_name)
         self.active_rules_profile_name = self.root_config.get("active_rules_profile", self.active_rules_profile_name)
+
+    def switch_active_profiles(self, profile_name=None, rules_profile_name=None):
+        if profile_name is not None:
+            profile_name = sanitize_profile_name(profile_name)
+        if rules_profile_name is not None:
+            rules_profile_name = sanitize_profile_name(rules_profile_name, allow_none=True)
+
+        self.root_config = load_root_config()
+        if profile_name is not None:
+            self.root_config["active_profile"] = profile_name
+            self.active_profile_name = profile_name
+        if rules_profile_name is not None:
+            self.root_config["active_rules_profile"] = rules_profile_name
+            self.active_rules_profile_name = rules_profile_name
+        self._migrate_and_load_profiles()
+        self._after_config_loaded()
+        save_root_config(self.root_config)
+
+    def switch_active_profile(self, profile_name):
+        self.switch_active_profiles(profile_name=profile_name)
+
+    def switch_active_rules_profile(self, rules_profile_name):
+        self.switch_active_profiles(rules_profile_name=rules_profile_name)
 
     def _update_recent_projects(self, project_path):
         recent = self.root_config.get("recent_projects", [])
@@ -1195,7 +1222,7 @@ class CLIMenu:
                         if r_p_name and r_p_name != self.active_rules_profile_name:
                             self.active_rules_profile_name = r_p_name
                             self.root_config["active_rules_profile"] = r_p_name
-                            console.print(f"[dim]Auto-switched Rules Profile to: {r_p_name}[/dim]")
+                            console.print(f"[dim]{i18n.get('msg_auto_switched_rules_profile').format(r_p_name)}[/dim]")
 
                         if p_name or r_p_name:
                             save_root_config(self.root_config)

@@ -1,0 +1,32 @@
+## 旧译文参考资料抽取模式
+用户提供的文本主要是目标语言 "{target_language}" 的既有译文。你的任务是从旧译文中整理“参考资料”，而不是生成可直接命中原文的正式术语表。
+
+## 标准 JSON 输出契约
+无论整理到多少内容，都必须只输出一个合法 JSON 对象，不要输出 Markdown、代码块或解释文字。
+
+JSON 对象必须包含以下字段，字段名不可替换：
+
+{
+  "glossary": [],
+  "exclusion_list": [],
+  "characterization": [],
+  "world_building": "",
+  "writing_style": "",
+  "translation_examples": []
+}
+
+条目格式仍然沿用标准术语分析格式：
+- glossary 每项为 {"src": "旧译文中出现的译名或设定名", "dst": "", "type": "类别", "category": "大类", "info": "简短说明或 null"}。
+- exclusion_list 每项为 {"markers": "需要原样保留的文本", "info": "原因或用途", "regex": ""}。
+- characterization 每项必须包含 original_name、translated_name、aliases、gender、age、personality、speech_style、pronouns、speech_quirks、additional_info。
+- translation_examples 每项为 {"src": "旧译文中的稳定表达或例句", "dst": ""}。
+- 没有内容时返回空数组或空字符串，不要省略字段。
+
+请遵守：
+- glossary.src 填旧译文中已经出现的译名或设定名，dst 留空。
+- characterization.original_name 填旧译文中出现的人物译名；translated_name 可与 original_name 相同，用于记录既有译名体系。
+- characterization.aliases 只能填旧译文中实际出现、可直接用于匹配该人物的纯别名或称呼；不要在 aliases 里写括号备注、玩梗说明、来源说明或解释性文字，这类信息必须写入 additional_info。
+- 可以充分整理人物性格、身份、关系、称谓、口吻、世界观、组织关系、文风和翻译习惯。
+- 不要反推、猜测日文或其他源语言写法；没有原文证据时，不要生成原文术语。
+- 输出内容会被系统打上内部 legacy 标记，后续用于辅助“原文 -> 译文”映射。
+- 不要主动输出 _glossary_origin、_mapping_status、_legacy_id 等内部字段；这些字段由系统自动写入。

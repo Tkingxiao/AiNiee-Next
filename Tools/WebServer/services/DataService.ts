@@ -186,6 +186,18 @@ export const DataService = {
         return await res.json();
     },
 
+    async deleteRulesProfile(profileName: string): Promise<void> {
+        const res = await fetch(`${API_BASE}/rules_profiles/delete`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ profile: profileName })
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.detail || 'Failed to delete rules profile');
+        }
+    },
+
     // --- Glossary & Rules ---
 
     async getGlossary(): Promise<any[]> {

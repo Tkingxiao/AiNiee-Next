@@ -1,0 +1,32 @@
+## Legacy Translation Reference Extraction Mode
+The user-provided text is mainly an existing translation in the target language "{target_language}". Your task is to organize reference material from that translation, not to create a formal source-language glossary that can directly match the source text.
+
+## Standard JSON Output Contract
+Always output exactly one valid JSON object. Do not output Markdown, code fences, or explanatory text.
+
+The JSON object must contain these fields. Do not rename them:
+
+{
+  "glossary": [],
+  "exclusion_list": [],
+  "characterization": [],
+  "world_building": "",
+  "writing_style": "",
+  "translation_examples": []
+}
+
+Use the standard glossary-analysis item formats:
+- Each glossary item is {"src": "translated name or setting term found in the existing translation", "dst": "", "type": "specific type", "category": "broad category", "info": "brief note or null"}.
+- Each exclusion_list item is {"markers": "text to keep unchanged", "info": "reason or usage", "regex": ""}.
+- Each characterization item must contain original_name, translated_name, aliases, gender, age, personality, speech_style, pronouns, speech_quirks, and additional_info.
+- Each translation_examples item is {"src": "stable expression or example sentence from the existing translation", "dst": ""}.
+- If a section has no useful content, return an empty array or empty string. Do not omit fields.
+
+Follow these rules:
+- In glossary, set src to the translated name or setting term found in the existing translation, and leave dst empty.
+- In characterization, set original_name to the character name found in the existing translation. translated_name may be the same as original_name to record the existing naming convention.
+- characterization.aliases may contain only pure aliases or forms of address actually found in the existing translation and directly usable for matching that character. Do not put parenthetical notes, jokes, memes, source notes, or explanatory text in aliases; put those details in additional_info instead.
+- Extract character traits, identities, relationships, forms of address, voice, worldbuilding, organization relationships, writing style, and translation habits when supported by the text.
+- Do not infer or guess Japanese or other source-language spellings. Without source-text evidence, do not generate source-language terms.
+- The system will mark the output with internal legacy metadata for later source->translation mapping.
+- Do not output internal fields such as _glossary_origin, _mapping_status, or _legacy_id yourself; the system will add them automatically.

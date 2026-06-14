@@ -1,0 +1,46 @@
+## 旧译文资料映射 + 原文增量抽取模式
+你正在阅读当前用户提供的原文文本，并获得一份从既有 "{target_language}" 译文中抽取的参考资料。请把旧译文资料作为参考，而不是不可违背的事实。
+本节是最高优先级附加指令，会覆盖基础提示词中“译名留空”或“只做普通抽取”的要求。
+
+## 标准 JSON 输出契约
+无论映射到多少内容，都必须只输出一个合法 JSON 对象，不要输出 Markdown、代码块或解释文字。
+
+JSON 对象必须包含以下字段，字段名不可替换：
+
+{
+  "glossary": [],
+  "exclusion_list": [],
+  "characterization": [],
+  "world_building": "",
+  "writing_style": "",
+  "translation_examples": []
+}
+
+条目格式仍然沿用标准术语分析格式：
+- glossary 每项为 {"src": "当前原文中的实际写法", "dst": "可靠映射到的既有译名或空字符串", "type": "类别", "category": "大类", "info": "简短说明或 null"}。
+- exclusion_list 每项为 {"markers": "需要原样保留的原文文本", "info": "原因或用途", "regex": ""}。
+- characterization 每项必须包含 original_name、translated_name、aliases、gender、age、personality、speech_style、pronouns、speech_quirks、additional_info。
+- translation_examples 每项为 {"src": "当前原文例句", "dst": "可可靠对应的既有译文例句或空字符串"}。
+- 没有内容时返回空数组或空字符串，不要省略字段。
+
+证据优先级：
+1. 当前原文文本中的明确证据最高。
+2. 已能可靠映射的旧译文资料可用于保持译名、人物和世界观一致。
+3. 旧译文资料可能来自不同译者或不同版本，不能强行覆盖当前原文证据。
+
+任务：
+- 首要任务是把旧译文参考资料中能在当前原文找到对应证据的条目，映射成正式的“当前原文写法 -> 既有译名”规则；其次才是抽取当前原文中新出现的内容。
+- 如果当前原文术语或人物能可靠对应旧译文资料，请输出正式规则：glossary.src 必须是当前原文中的实际写法，glossary.dst 使用旧译文译名。
+- 对人物，characterization.original_name 必须是当前原文中的实际名字或稳定称呼，translated_name 必须使用旧译文译名；可继承旧译文中的性格、关系、身份和口吻信息，但必须与当前原文证据不冲突。
+- characterization.aliases 只能填当前原文中实际出现、可直接用于匹配该人物的纯别名或称呼；不要把旧译文里的备注、玩梗说明、括号解释或来源说明写进 aliases，这类信息必须写入 additional_info。
+- 当前原文中新出现、旧译文资料没有覆盖的内容，也要按普通增量抽取输出；这些新增未映射条目可以让 dst/translated_name 为空，但不能带 _mapped_from。
+- 不确定的映射不要强行写入正式 glossary/characterization；可在 info/additional_info 中标注“需要人工确认”，但不要编造映射。
+- 对于已经可靠映射到旧译文资料的 glossary 或 characterization 条目，只能在该条目内保留 _mapped_from、_mapping_confidence、_mapping_note 字段用于审核和来源追踪。
+- _mapped_from 填对应旧译文参考资料的 _legacy_id；如果没有 _legacy_id，则填旧译文中的译名或参考项名称。
+- _mapping_confidence 使用 high、medium、low 之一；只有 high 或 medium 才能写入正式 dst/translated_name。
+- 已映射条目的 dst/translated_name 不能留空；如果无法确定译名，就不要把该条目标为映射。
+- 不要输出 _glossary_origin、_mapping_status、_legacy_id；这些字段由程序内部生成，不能从旧译文参考资料复制。
+- 如果保留映射审核字段，必须把它们作为对应 JSON 条目的普通字段输出，不要另写解释段落。
+
+旧译文参考资料如下：
+{legacy_context}

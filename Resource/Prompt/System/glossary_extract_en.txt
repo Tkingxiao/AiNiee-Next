@@ -80,7 +80,8 @@ Each item format:
 Rules:
 - original_name is required.
 - Do not guess translated_name; leave it empty.
-- aliases should contain source-side short names, nicknames, honorific forms, or aliases actually seen in the text, such as マヒル or マヒルさん. Do not put translated names here and do not invent unseen aliases. For Japanese names, capture surname/given-name/kana short forms or honorific forms when the text uses them; use an empty array if there is no evidence.
+- aliases should contain only source-side short names, nicknames, honorific forms, or aliases actually seen in the text, such as マヒル or マヒルさん. Do not put translated names here and do not invent unseen aliases. For Japanese names, capture surname/given-name/kana short forms or honorific forms when the text uses them; use an empty array if there is no evidence.
+- Each aliases element must be a pure alias string that can be used for matching. Do not include parenthetical notes, source notes, jokes, memes, or explanatory text in aliases; put those details in additional_info instead.
 - personality should contain traits supported by the text.
 - speech_style should capture tone, verbal habits, politeness, slang, catchphrases, or register.
 - pronouns should capture first-person/second-person pronouns and address patterns, such as 私, 俺, 僕, あなた, 君. If they change across the text, describe the change.

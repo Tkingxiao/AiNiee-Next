@@ -6,6 +6,8 @@ TIMELINE_TEXT_KEYS = {
     "writing_style_content": "writing_style_history",
 }
 
+LEGACY_REFERENCE_ORIGIN = "legacy_translation"
+
 
 def normalize_volume(value):
     if value is None or value == "" or isinstance(value, bool):
@@ -34,7 +36,7 @@ def apply_dynamic_glossary(config, current_volume):
         for selected in (
             _select_timeline_item(item, volume, "src", ("dst", "info"))
             for item in _get_original_list(config, "prompt_dictionary_data")
-            if isinstance(item, dict)
+            if isinstance(item, dict) and not _is_legacy_reference_item(item)
         )
         if selected is not None
     ]
@@ -58,7 +60,7 @@ def apply_dynamic_glossary(config, current_volume):
                 ),
             )
             for item in _get_original_list(config, "characterization_data")
-            if isinstance(item, dict)
+            if isinstance(item, dict) and not _is_legacy_reference_item(item)
         )
         if selected is not None
     ]
@@ -69,6 +71,18 @@ def apply_dynamic_glossary(config, current_volume):
             setattr(config, data_key, selected)
         elif isinstance(getattr(config, history_key, None), list) and getattr(config, history_key, None):
             setattr(config, data_key, "")
+
+
+def filter_legacy_references_for_prompt(config):
+    for attr_name in (
+        "prompt_dictionary_data",
+        "exclusion_list_data",
+        "characterization_data",
+        "translation_example_data",
+    ):
+        values = getattr(config, attr_name, None)
+        if isinstance(values, list):
+            setattr(config, attr_name, [item for item in values if not _is_legacy_reference_item(item)])
 
 
 def _get_original_list(config, attr_name):
@@ -113,6 +127,8 @@ def _select_text_history(history, current_volume):
         return None
     selected = ""
     for entry in sorted((item for item in history if isinstance(item, dict)), key=_history_sort_key):
+        if _is_legacy_reference_item(entry):
+            continue
         volume = normalize_volume(entry.get("volume"))
         if volume is None or volume > current_volume:
             continue
@@ -129,6 +145,8 @@ def _select_effective_history_entry(history, current_volume, key_field, tracked_
     selected_source = ""
     for entry in sorted((item for item in history if isinstance(item, dict)), key=_history_sort_key):
         if not isinstance(entry, dict):
+            continue
+        if _is_legacy_reference_item(entry):
             continue
         volume = normalize_volume(entry.get("volume"))
         if volume is None or volume > current_volume:
@@ -161,6 +179,14 @@ def _has_text(value):
     if isinstance(value, (list, tuple, set)):
         return any(_has_text(item) for item in value)
     return bool(str(value).strip()) if value is not None else False
+
+
+def _is_legacy_reference_item(item):
+    if not isinstance(item, dict):
+        return False
+    origin = str(item.get("_glossary_origin") or "").strip()
+    status = str(item.get("_mapping_status") or "").strip()
+    return origin == LEGACY_REFERENCE_ORIGIN or status == "seed"
 
 
 def _append_timeline_text_block(existing, addition):

@@ -262,6 +262,25 @@ export const Rules: React.FC = () => {
         }
     };
 
+    const handleRulesProfileDelete = async (profileName: string) => {
+        if (profileName === 'None' || config?.active_rules_profile === profileName) return;
+        const confirmed = await nativeConfirm(
+            t('msg_profile_delete_confirm').replace('{}', profileName),
+            { title: t('menu_profile_delete') }
+        );
+        if (!confirmed) return;
+
+        setLoading(true);
+        try {
+            await DataService.deleteRulesProfile(profileName);
+            await loadProfiles();
+        } catch (e: any) {
+            alert(e?.message || "Failed to delete rules profile");
+        } finally {
+            setLoading(false);
+        }
+    };
+
     const loadData = async () => {
         setLoading(true);
         try {
@@ -1121,16 +1140,33 @@ export const Rules: React.FC = () => {
                         {isProfileMenuOpen && (
                             <>
                                 <div className="fixed inset-0 z-30" onClick={() => setIsProfileMenuOpen(false)} />
-                                <div className="absolute top-full left-0 mt-2 w-48 bg-slate-900 border border-slate-700 rounded-lg shadow-xl z-40 py-1 max-h-60 overflow-y-auto no-scrollbar">
-                                    {profiles.map(p => (
-                                        <button
-                                            key={p}
-                                            onClick={() => handleProfileSwitch(p)}
-                                            className={`w-full text-left px-4 py-2 text-sm hover:bg-slate-800 transition-colors ${config?.active_rules_profile === p ? 'text-primary font-bold' : 'text-slate-300'}`}
-                                        >
-                                            {p}
-                                        </button>
-                                    ))}
+                                <div className="absolute top-full left-0 mt-2 w-56 bg-slate-900 border border-slate-700 rounded-lg shadow-xl z-40 py-1 max-h-60 overflow-y-auto no-scrollbar">
+                                    {profiles.map(p => {
+                                        const isActive = config?.active_rules_profile === p;
+                                        const canDelete = p !== 'None' && !isActive;
+                                        return (
+                                            <div key={p} className="flex items-center hover:bg-slate-800 transition-colors">
+                                                <button
+                                                    onClick={() => handleProfileSwitch(p)}
+                                                    className={`min-w-0 flex-1 text-left px-4 py-2 text-sm truncate ${isActive ? 'text-primary font-bold' : 'text-slate-300'}`}
+                                                >
+                                                    {p}
+                                                </button>
+                                                {canDelete && (
+                                                    <button
+                                                        onClick={(event) => {
+                                                            event.stopPropagation();
+                                                            void handleRulesProfileDelete(p);
+                                                        }}
+                                                        title={t('menu_profile_delete')}
+                                                        className="shrink-0 p-2 mr-1 text-slate-500 hover:text-red-300 rounded transition-colors"
+                                                    >
+                                                        <Trash2 size={14} />
+                                                    </button>
+                                                )}
+                                            </div>
+                                        );
+                                    })}
                                 </div>
                             </>
                         )}

@@ -183,14 +183,10 @@ class CommandModeRunner:
             return self._run_manga_runtime_check(args)
 
         if args.profile:
-            self.host.root_config["active_profile"] = args.profile
-            self.host.save_config(save_root=True)
-            self.host.load_config()
+            self.host.switch_active_profile(args.profile)
 
         if args.rules_profile:
-            self.host.root_config["active_rules_profile"] = args.rules_profile
-            self.host.save_config(save_root=True)
-            self.host.load_config()
+            self.host.switch_active_rules_profile(args.rules_profile)
 
         self._apply_config_overrides(args)
         self.host.save_config()

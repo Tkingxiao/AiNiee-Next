@@ -7,7 +7,6 @@ from rich.prompt import Confirm, IntPrompt, Prompt
 from rich.table import Table
 
 from ModuleFolders.Infrastructure.TaskConfig.TaskType import TaskType
-from ModuleFolders.Infrastructure.TaskConfig.ConfigProfileService import save_root_config
 from ModuleFolders.UserInterface.ConfigExperience import calculate_output_path
 from ModuleFolders.UserInterface.RulePreview import i18n_text
 
@@ -167,14 +166,11 @@ class RecentProjectsMenu:
 
         profile = item.get("profile")
         rules_profile = item.get("rules_profile")
-        if profile:
-            self.host.active_profile_name = profile
-            self.host.root_config["active_profile"] = profile
-        if rules_profile:
-            self.host.active_rules_profile_name = rules_profile
-            self.host.root_config["active_rules_profile"] = rules_profile
-        save_root_config(self.host.root_config)
-        self.host.load_config()
+        if profile or rules_profile:
+            self.host.switch_active_profiles(
+                profile_name=profile if profile else None,
+                rules_profile_name=rules_profile if rules_profile else None,
+            )
         task_mode = self._ask_task_mode()
         if task_mode is not None:
             self.host.run_task(task_mode, target_path=path)

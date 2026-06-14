@@ -52,6 +52,31 @@ def _extract_exclusion_markers(item):
     return []
 
 
+def _is_legacy_reference_item(item):
+    if not isinstance(item, dict):
+        return False
+    origin = str(item.get("_glossary_origin") or "").strip()
+    status = str(item.get("_mapping_status") or "").strip()
+    return origin == "legacy_translation" or status == "seed"
+
+
+def _active_rule_items(value):
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if not _is_legacy_reference_item(item)]
+
+
+def _effective_data_count(data_key, value):
+    if data_key in {
+        "prompt_dictionary_data",
+        "exclusion_list_data",
+        "characterization_data",
+        "translation_example_data",
+    }:
+        return len(_active_rule_items(value))
+    return data_count(value)
+
+
 class RuleInspector:
     def __init__(self, config, i18n):
         self.config = config or {}
@@ -75,7 +100,7 @@ class RuleInspector:
                     "label": i18n_text(self.i18n, label_key, fallback),
                     "saved_enabled": saved_enabled,
                     "effective_enabled": effective_enabled,
-                    "count": data_count(value),
+                    "count": _effective_data_count(data_key, value),
                 }
             )
 
@@ -91,10 +116,8 @@ class RuleInspector:
                 }
             )
 
-        glossary = self.config.get("prompt_dictionary_data", [])
-        glossary = glossary if isinstance(glossary, list) else []
-        exclusions = self.config.get("exclusion_list_data", [])
-        exclusions = exclusions if isinstance(exclusions, list) else []
+        glossary = _active_rule_items(self.config.get("prompt_dictionary_data", []))
+        exclusions = _active_rule_items(self.config.get("exclusion_list_data", []))
 
         by_src = defaultdict(list)
         for index, item in enumerate(glossary, 1):
@@ -146,24 +169,22 @@ class RuleInspector:
                 }
             )
 
-        characters = self.config.get("characterization_data", [])
-        if isinstance(characters, list):
-            for item in characters:
-                if not isinstance(item, dict) or not any(str(value).strip() for value in item.values()):
-                    continue
-                original_name = str(item.get("original_name", "")).strip()
-                translated_name = str(item.get("translated_name", "")).strip()
-                if not original_name and not translated_name:
-                    issues.append(
-                        {
-                            "level": i18n_text(self.i18n, "label_warning", "Warning"),
-                            "message": i18n_text(
-                                self.i18n,
-                                "issue_character_name_missing",
-                                "Character entry is missing both original and translated names.",
-                            ),
-                        }
-                    )
+        for item in _active_rule_items(self.config.get("characterization_data", [])):
+            if not isinstance(item, dict) or not any(str(value).strip() for value in item.values()):
+                continue
+            original_name = str(item.get("original_name", "")).strip()
+            translated_name = str(item.get("translated_name", "")).strip()
+            if not original_name and not translated_name:
+                issues.append(
+                    {
+                        "level": i18n_text(self.i18n, "label_warning", "Warning"),
+                        "message": i18n_text(
+                            self.i18n,
+                            "issue_character_name_missing",
+                            "Character entry is missing both original and translated names.",
+                        ),
+                    }
+                )
 
         world_content = str(self.config.get("world_building_content", "") or "")
         if len(world_content) > 4000:
@@ -265,8 +286,8 @@ class RulePreviewMenu:
         sample_table.add_column(i18n_text(self.i18n, "label_preview", "Preview"))
         has_rows = False
 
-        glossary = self.config.get("prompt_dictionary_data", [])
-        if isinstance(glossary, list) and glossary:
+        glossary = _active_rule_items(self.config.get("prompt_dictionary_data", []))
+        if glossary:
             preview = []
             for item in glossary[:5]:
                 if isinstance(item, dict):
@@ -275,8 +296,8 @@ class RulePreviewMenu:
                 sample_table.add_row(i18n_text(self.i18n, "menu_dict_settings", "Glossary"), "\n".join(preview))
                 has_rows = True
 
-        characters = self.config.get("characterization_data", [])
-        if isinstance(characters, list) and characters:
+        characters = _active_rule_items(self.config.get("characterization_data", []))
+        if characters:
             preview = []
             for item in characters[:3]:
                 if isinstance(item, dict):

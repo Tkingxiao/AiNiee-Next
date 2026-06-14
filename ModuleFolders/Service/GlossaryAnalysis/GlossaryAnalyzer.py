@@ -33,7 +33,18 @@ STRUCTURED_RULE_KEYS = (
     "translation_example_data",
 )
 
-GLOSSARY_TIMELINE_FIELDS = ("dst", "info")
+LEGACY_ANALYSIS_MODES = ("normal_extract", "legacy_translation_extract", "legacy_mapping_extract")
+LEGACY_GLOSSARY_ORIGIN = "legacy_translation"
+LEGACY_MAPPED_ORIGIN = "mapped_from_legacy_translation"
+LEGACY_METADATA_FIELDS = (
+    "_glossary_origin",
+    "_mapping_status",
+    "_legacy_id",
+    "_mapped_from",
+    "_mapping_confidence",
+    "_mapping_note",
+)
+GLOSSARY_TIMELINE_FIELDS = ("dst", "info", *LEGACY_METADATA_FIELDS)
 CHARACTER_TIMELINE_FIELDS = (
     "translated_name",
     "aliases",
@@ -44,6 +55,7 @@ CHARACTER_TIMELINE_FIELDS = (
     "pronouns",
     "speech_quirks",
     "additional_info",
+    *LEGACY_METADATA_FIELDS,
 )
 DEFAULT_GLOSSARY_TOKEN_WARNING_THRESHOLD = 256_000
 DEFAULT_INCREMENTAL_SPLIT_TARGET_TOKENS = 200_000
@@ -106,6 +118,101 @@ class GlossaryAnalyzer:
     def get_incremental_split_target_token_limit(self):
         return MAX_INCREMENTAL_SPLIT_TARGET_TOKENS
 
+    def normalize_legacy_mode(self, value):
+        mode = self._normalize_glossary_text(value or "normal_extract")
+        return mode if mode in LEGACY_ANALYSIS_MODES else "normal_extract"
+
+    def has_legacy_translation_references(self):
+        for item in self.config.get("prompt_dictionary_data", []) or []:
+            if self._is_legacy_reference_item(item):
+                return True
+        for item in self.config.get("characterization_data", []) or []:
+            if self._is_legacy_reference_item(item):
+                return True
+        for history_key in ("world_building_history", "writing_style_history"):
+            for entry in self.config.get(history_key, []) or []:
+                if self._is_legacy_reference_item(entry):
+                    return True
+        return False
+
+    def scan_is_target_language(self, scan_result, threshold=0.65):
+        profile = (scan_result or {}).get("language_profile") or {}
+        target_codes = self._target_language_codes()
+        if not target_codes:
+            return False
+        total = max(int(profile.get("total") or 0), 0)
+        if total <= 0:
+            return False
+        target_count = sum(
+            int(count or 0)
+            for lang, count in (profile.get("counts") or {}).items()
+            if self._normalize_language_code(lang) in target_codes
+        )
+        return (target_count / total) >= threshold
+
+    def _build_analysis_language_profile(self, items):
+        counts = {}
+        confidence = {}
+        total = 0
+        for item in items or []:
+            lang_code = getattr(item, "lang_code", None)
+            if not lang_code or len(lang_code) < 1:
+                continue
+            lang = self._normalize_language_code(lang_code[0])
+            if not lang or lang == "un":
+                continue
+            total += 1
+            counts[lang] = counts.get(lang, 0) + 1
+            try:
+                confidence[lang] = confidence.get(lang, 0.0) + float(lang_code[1])
+            except (TypeError, ValueError, IndexError):
+                pass
+        ranked = sorted(
+            (
+                {
+                    "lang": lang,
+                    "count": count,
+                    "ratio": count / total if total else 0.0,
+                    "avg_confidence": confidence.get(lang, 0.0) / count if count else 0.0,
+                }
+                for lang, count in counts.items()
+            ),
+            key=lambda row: (-row["count"], -row["avg_confidence"], row["lang"]),
+        )
+        return {"total": total, "counts": counts, "ranked": ranked}
+
+    def _target_language_codes(self):
+        from ModuleFolders.Service.TaskExecutor.TranslatorUtil import map_language_name_to_code
+
+        target = self._normalize_glossary_text(self.config.get("target_language"))
+        if not target:
+            return set()
+        candidates = {target, map_language_name_to_code(target)}
+        normalized = {self._normalize_language_code(item) for item in candidates if item}
+        if "zh" in normalized or "zh-hans" in normalized:
+            normalized.update({"zh", "zh-cn", "zh-hans"})
+        if "zh-hant" in normalized or "zh-tw" in normalized or "yue" in normalized:
+            normalized.update({"zh-hant", "zh-tw", "yue"})
+        return normalized
+
+    def _normalize_language_code(self, value):
+        text = self._normalize_glossary_text(value).replace("_", "-").lower()
+        aliases = {
+            "chinese": "zh",
+            "chinese-simplified": "zh",
+            "simplified-chinese": "zh",
+            "chinese-traditional": "zh-hant",
+            "traditional-chinese": "zh-hant",
+            "japanese": "ja",
+            "english": "en",
+            "korean": "ko",
+            "russian": "ru",
+            "spanish": "es",
+            "french": "fr",
+            "german": "de",
+        }
+        return aliases.get(text, text)
+
     def prepare_analysis_scan(self, input_path, analysis_percent=100, analysis_lines=None):
         console.print(f"[cyan]{self.i18n.get('msg_reading_file') or '正在读取文件...'}[/cyan]")
 
@@ -132,6 +239,7 @@ class GlossaryAnalyzer:
         items_to_analyze = all_items[:lines_to_analyze]
         selected_text = "\n".join([item.source_text for item in items_to_analyze])
         estimated_tokens = self._estimate_token_count(selected_text)
+        language_profile = self._build_analysis_language_profile(items_to_analyze)
 
         return {
             "all_items": all_items,
@@ -140,6 +248,7 @@ class GlossaryAnalyzer:
             "items_to_analyze": items_to_analyze,
             "selected_text": selected_text,
             "estimated_tokens": estimated_tokens,
+            "language_profile": language_profile,
         }
 
     def execute_analysis(
@@ -158,6 +267,7 @@ class GlossaryAnalyzer:
         existing_rules_context=None,
         output_dir=None,
         incremental_split_target_tokens=None,
+        legacy_mode="normal_extract",
     ):
         """
         执行术语表分析的核心逻辑
@@ -192,6 +302,7 @@ class GlossaryAnalyzer:
         selected_text = scan_result["selected_text"]
         estimated_tokens = scan_result["estimated_tokens"]
         normalized_mode = self._normalize_analysis_mode(analysis_mode)
+        legacy_mode = self.normalize_legacy_mode(legacy_mode)
 
         console.print(f"[green]{self.i18n.get('msg_total_lines') or '总行数'}: {total_lines}[/green]")
         console.print(f"[green]{self.i18n.get('msg_lines_to_analyze') or '将分析行数'}: {lines_to_analyze}[/green]")
@@ -270,6 +381,18 @@ class GlossaryAnalyzer:
                 f"{'/'.join(mode_bits) or 'metadata'} | {incremental_options.get('source_label') or '-'}[/cyan]"
             )
 
+        if legacy_mode == "legacy_translation_extract":
+            system_prompt = self._append_legacy_translation_extract_instruction(system_prompt, target_language)
+            console.print(
+                f"[cyan]{self._tr('msg_legacy_translation_extract_enabled')}[/cyan]"
+            )
+        elif legacy_mode == "legacy_mapping_extract":
+            legacy_context = self._build_legacy_mapping_context()
+            system_prompt = self._append_legacy_mapping_instruction(system_prompt, legacy_context, target_language)
+            console.print(
+                f"[cyan]{self._tr('msg_legacy_mapping_enabled')}[/cyan]"
+            )
+
         base_system_prompt = system_prompt
         all_terms = []
         structured_analysis = self._empty_analysis_payload()
@@ -285,7 +408,7 @@ class GlossaryAnalyzer:
                     messages, system_prompt, platform_config
                 )
                 if not skip and response:
-                    parsed = self._parse_glossary_response(response)
+                    parsed = self._mark_legacy_payload(self._parse_glossary_response(response), legacy_mode)
                     terms = parsed.get("terms", [])
                     all_terms.extend(terms)
                     self._merge_analysis_payload(structured_analysis, parsed)
@@ -342,7 +465,7 @@ class GlossaryAnalyzer:
                     )
 
                     if not skip and response:
-                        parsed = self._parse_glossary_response(response)
+                        parsed = self._mark_legacy_payload(self._parse_glossary_response(response), legacy_mode)
                         terms = parsed.get("terms", [])
                         with terms_lock:
                             all_terms.extend(terms)
@@ -430,7 +553,7 @@ class GlossaryAnalyzer:
                         messages, batch_system_prompt, platform_config
                     )
                     if not skip and response:
-                        parsed = self._parse_glossary_response(response)
+                        parsed = self._mark_legacy_payload(self._parse_glossary_response(response), legacy_mode)
                         terms = parsed.get("terms", [])
                         all_terms.extend(terms)
                         self._merge_analysis_payload(
@@ -469,7 +592,10 @@ class GlossaryAnalyzer:
         if normalized_mode == "incremental_split":
             all_terms = self._dedupe_terms_for_context(all_terms)
 
-        structured_analysis = self._finalize_analysis_payload(structured_analysis, all_terms)
+        structured_analysis = self._mark_legacy_payload(
+            self._finalize_analysis_payload(structured_analysis, all_terms),
+            legacy_mode,
+        )
 
         # 统计词频
         term_freq = self._calculate_term_frequency(all_terms, selected_text)
@@ -498,6 +624,7 @@ class GlossaryAnalyzer:
             'structured_analysis': structured_analysis,
             'translate_during_analysis': translate_during_analysis,
             'incremental_options': incremental_options,
+            'legacy_mode': legacy_mode,
             'raw_response_diagnostics': raw_response_diagnostics,
             'output_dir': output_dir,
         }
@@ -522,6 +649,7 @@ class GlossaryAnalyzer:
         prompt_file = analysis_result.get('prompt_file', '')
         structured_analysis = analysis_result.get('structured_analysis') or self._empty_analysis_payload()
         incremental_options = analysis_result.get('incremental_options') or {}
+        legacy_mode = self.normalize_legacy_mode(analysis_result.get('legacy_mode'))
         raw_response_diagnostics = analysis_result.get('raw_response_diagnostics') or []
         output_dir = output_dir or analysis_result.get("output_dir") or None
 
@@ -563,12 +691,28 @@ class GlossaryAnalyzer:
             console.print(f"[bold green]{self.i18n.get('msg_glossary_saved') or '术语表已保存'}: {glossary_path}[/bold green]")
 
         structured_rules = self._build_structured_rules_config(filtered_terms, structured_analysis)
+        structured_rules = self._annotate_text_history_legacy(structured_rules, incremental_options, legacy_mode)
         if incremental_options.get("enabled"):
             self._annotate_structured_rules_source(structured_rules, incremental_options)
         if self._has_structured_rules(structured_rules):
             with open(structured_path, 'w', encoding='utf-8') as f:
                 json.dump(structured_rules, f, indent=2, ensure_ascii=False)
             console.print(f"[bold green]{self._tr('msg_structured_rules_saved', '分类规则配置已保存: {}', structured_path)}[/bold green]")
+
+        legacy_mapping_stats = {}
+        if legacy_mode == "legacy_mapping_extract":
+            legacy_mapping_stats = self.summarize_legacy_mapping_result(structured_rules, glossary_data)
+            if legacy_mapping_stats.get("mapped_total", 0) <= 0:
+                console.print(
+                    "[yellow]"
+                    + self._tr(
+                        "msg_legacy_mapping_no_reliable_results",
+                        "旧译文映射结果没有检测到可靠 mapped 条目（术语 {}，角色 {}）。本次结果更像普通抽取；导入当前配置前会要求再次确认。",
+                        legacy_mapping_stats.get("glossary_total", 0),
+                        legacy_mapping_stats.get("character_total", 0),
+                    )
+                    + "[/yellow]"
+                )
 
         # 保存分析日志
         self._save_glossary_analysis_log(
@@ -579,6 +723,7 @@ class GlossaryAnalyzer:
             prompt_file=prompt_file,
             structured_rules=structured_rules,
             incremental_options=incremental_options,
+            legacy_mode=legacy_mode,
             raw_response_diagnostics=raw_response_diagnostics,
         )
 
@@ -591,6 +736,8 @@ class GlossaryAnalyzer:
             'structured_rules': structured_rules,
             'structured_path': structured_path,
             'incremental_options': incremental_options,
+            'legacy_mode': legacy_mode,
+            'legacy_mapping_stats': legacy_mapping_stats,
         }
 
     def save_glossary_directly(self, glossary_data, save_mode="import", base_glossary_path=None, merge_options=None):
@@ -714,6 +861,55 @@ class GlossaryAnalyzer:
         console.print(f"[bold green]{self._tr('msg_rules_profile_created_selected', '已新建并切换到规则配置: {}', profile_name)}[/bold green]")
         console.print(f"[green]{self._tr('msg_rules_profile_file', '配置文件: {}', profile_path)}[/green]")
         return {"profile": profile_name, "path": profile_path}
+
+    def summarize_legacy_mapping_result(self, structured_rules=None, glossary_data=None):
+        structured_rules = structured_rules if isinstance(structured_rules, dict) else {}
+        glossary_items = []
+        if isinstance(glossary_data, list):
+            glossary_items.extend(item for item in glossary_data if isinstance(item, dict))
+        glossary_items.extend(
+            item for item in structured_rules.get("prompt_dictionary_data", []) or []
+            if isinstance(item, dict)
+        )
+        character_items = [
+            item for item in structured_rules.get("characterization_data", []) or []
+            if isinstance(item, dict)
+        ]
+
+        glossary_items = self._dedupe_mapping_summary_items(glossary_items, "src")
+        character_items = self._dedupe_mapping_summary_items(character_items, "original_name")
+        mapped_glossary = [
+            item for item in glossary_items
+            if self._is_reliable_legacy_mapping_result(item, "glossary")
+        ]
+        mapped_characters = [
+            item for item in character_items
+            if self._is_reliable_legacy_mapping_result(item, "character")
+        ]
+        return {
+            "glossary_total": len(glossary_items),
+            "character_total": len(character_items),
+            "mapped_glossary": len(mapped_glossary),
+            "mapped_characters": len(mapped_characters),
+            "mapped_total": len(mapped_glossary) + len(mapped_characters),
+        }
+
+    def _dedupe_mapping_summary_items(self, items, key_field):
+        result = []
+        seen = set()
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            marker = (
+                self._normalize_glossary_text(item.get(key_field)),
+                self._normalize_glossary_text(item.get("source")),
+                self._normalize_volume_number(item.get("volume")),
+            )
+            if marker in seen:
+                continue
+            seen.add(marker)
+            result.append(item)
+        return result
 
     def _sanitize_rules_profile_name(self, profile_name):
         try:
@@ -865,6 +1061,11 @@ class GlossaryAnalyzer:
         return context
 
     def _trim_existing_rule_value(self, value, max_items=300, max_chars=12000):
+        if isinstance(value, dict):
+            return {
+                key: self._trim_existing_rule_value(item, max_items=max_items, max_chars=max_chars)
+                for key, item in value.items()
+            }
         if isinstance(value, list):
             trimmed = value[:max_items]
             if len(value) > max_items:
@@ -995,6 +1196,37 @@ class GlossaryAnalyzer:
             for item in structured_rules.get("characterization_data", []) or []
             if isinstance(item, dict)
         ]
+        return structured_rules
+
+    def _annotate_text_history_legacy(self, structured_rules, options, mode):
+        mode = self.normalize_legacy_mode(mode)
+        if mode != "legacy_translation_extract" or not structured_rules:
+            return structured_rules
+        source_label = self._normalize_glossary_text(options.get("source_label"))
+        source_volume = self._normalize_volume_number(options.get("source_volume"))
+        if not source_label and source_volume is not None:
+            source_label = self._format_volume_label(source_volume)
+        for data_key, history_key in (
+            ("world_building_content", "world_building_history"),
+            ("writing_style_content", "writing_style_history"),
+        ):
+            content = self._normalize_glossary_text(structured_rules.get(data_key))
+            if not content:
+                continue
+            entry = {
+                "source": source_label or self._tr("label_legacy_translation_reference"),
+                "content": content,
+                "_glossary_origin": LEGACY_GLOSSARY_ORIGIN,
+                "_mapping_status": "seed",
+                "_legacy_id": self._make_legacy_id(history_key, {"src": content[:80]}, 1),
+            }
+            if source_volume is not None:
+                entry["volume"] = source_volume
+            history = structured_rules.get(history_key)
+            if not isinstance(history, list):
+                history = []
+            history.append(entry)
+            structured_rules[history_key] = history
         return structured_rules
 
     def _merge_structured_rules_into_config(self, structured_rules, merge_options=None):
@@ -1132,6 +1364,46 @@ class GlossaryAnalyzer:
             self.config["writing_style_switch"] = True
             summary["writing_style_content"] = 1
 
+        for history_key in ("world_building_history", "writing_style_history"):
+            incoming_history = [
+                item for item in structured_rules.get(history_key, []) or []
+                if isinstance(item, dict)
+            ]
+            if not incoming_history:
+                continue
+            existing_history = self.config.get(history_key)
+            if not isinstance(existing_history, list):
+                existing_history = []
+            existing_by_marker = {
+                (
+                    self._history_key(item),
+                    self._normalize_glossary_text(item.get("content")),
+                ): item
+                for item in existing_history
+                if isinstance(item, dict)
+            }
+            for item in incoming_history:
+                marker = (
+                    self._history_key(item),
+                    self._normalize_glossary_text(item.get("content")),
+                )
+                existing = existing_by_marker.get(marker)
+                if existing:
+                    changed = False
+                    for meta_key in LEGACY_METADATA_FIELDS:
+                        value = item.get(meta_key)
+                        if self._rule_field_has_content(value) and existing.get(meta_key) != value:
+                            existing[meta_key] = value
+                            changed = True
+                    if changed:
+                        summary[history_key] += 1
+                    continue
+                existing_history.append(item)
+                existing_by_marker[marker] = item
+                summary[history_key] += 1
+            existing_history.sort(key=lambda entry: self._history_sort_key(entry))
+            self.config[history_key] = existing_history
+
         example_items = structured_rules.get("translation_example_data") or []
         existing_examples = self.config.get("translation_example_data", [])
         example_keys = {
@@ -1156,7 +1428,7 @@ class GlossaryAnalyzer:
 
         return summary
 
-    def multi_translate_and_select(self, filtered_terms, temp_config=None, rounds=3, save_mode="import", base_glossary_path=None):
+    def multi_translate_and_select(self, filtered_terms, temp_config=None, rounds=3, save_mode="import", base_glossary_path=None, merge_options=None):
         """
         多翻译选择功能
 
@@ -1230,13 +1502,7 @@ class GlossaryAnalyzer:
         def save_single_term(term_data):
             if save_mode not in ("import", "both"):
                 return
-            existing_data = self.config.get("prompt_dictionary_data", [])
-            existing_srcs = {item['src'] for item in existing_data}
-            if term_data['src'] not in existing_srcs:
-                existing_data.append(term_data)
-                self.config["prompt_dictionary_data"] = existing_data
-                self.config["prompt_dictionary_switch"] = True
-                self.save_config()
+            self.save_glossary_directly([term_data], save_mode="import", merge_options=merge_options)
 
         # 定义重试翻译回调
         def retry_translation(src, term_type, avoid_set=None):
@@ -1256,10 +1522,11 @@ class GlossaryAnalyzer:
             selected_results,
             filtered_terms,
             save_mode=save_mode,
-            base_glossary_path=base_glossary_path
+            base_glossary_path=base_glossary_path,
+            merge_options=merge_options,
         )
 
-    def batch_translate_and_select(self, filtered_terms, temp_config=None, save_mode="import", base_glossary_path=None):
+    def batch_translate_and_select(self, filtered_terms, temp_config=None, save_mode="import", base_glossary_path=None, merge_options=None):
         """批量翻译 - 所有术语一次性发送给AI"""
         from ModuleFolders.UserInterface.TermSelector.TermSelector import TermSelector
         from ModuleFolders.Infrastructure.TaskConfig.TaskConfig import TaskConfig
@@ -1347,13 +1614,7 @@ Only output the JSON array, no other text."""
         def save_single_term(term_data):
             if save_mode not in ("import", "both"):
                 return
-            existing_data = self.config.get("prompt_dictionary_data", [])
-            existing_srcs = {item['src'] for item in existing_data}
-            if term_data['src'] not in existing_srcs:
-                existing_data.append(term_data)
-                self.config["prompt_dictionary_data"] = existing_data
-                self.config["prompt_dictionary_switch"] = True
-                self.save_config()
+            self.save_glossary_directly([term_data], save_mode="import", merge_options=merge_options)
 
         def retry_translation(src, term_type, avoid_set=None):
             source = filtered_terms.get(src, {})
@@ -1371,24 +1632,18 @@ Only output the JSON array, no other text."""
             selected_results,
             filtered_terms,
             save_mode=save_mode,
-            base_glossary_path=base_glossary_path
+            base_glossary_path=base_glossary_path,
+            merge_options=merge_options,
         )
 
-    def _save_selected_translations(self, selected_results, filtered_terms, save_mode="import", base_glossary_path=None):
+    def _save_selected_translations(self, selected_results, filtered_terms, save_mode="import", base_glossary_path=None, merge_options=None):
         """保存用户选择的翻译到术语表"""
         added_count = 0
         if save_mode in ("import", "both"):
-            existing_data = self.config.get("prompt_dictionary_data", [])
-            existing_srcs = {item['src'] for item in existing_data}
-            for item in selected_results:
-                if item['src'] not in existing_srcs:
-                    existing_data.append(item)
-                    existing_srcs.add(item['src'])
-                    added_count += 1
-
-            self.config["prompt_dictionary_data"] = existing_data
-            self.config["prompt_dictionary_switch"] = True
-            self.save_config()
+            before = self._count_glossary_history_entries(self.config.get("prompt_dictionary_data", []))
+            self.save_glossary_directly(selected_results, save_mode="import", merge_options=merge_options)
+            after = self._count_glossary_history_entries(self.config.get("prompt_dictionary_data", []))
+            added_count = max(0, after - before)
             console.print(f"[bold green]{self.i18n.get('msg_terms_added') or '已添加'} {added_count} {self.i18n.get('msg_terms_to_glossary') or '个术语到术语表'}[/bold green]")
 
         if save_mode in ("standalone", "both"):
@@ -1416,6 +1671,17 @@ Only output the JSON array, no other text."""
             save_path = self._build_output_glossary_path(base_glossary_path, "_独立术语表_翻译结果")
             self._save_glossary_json_to_path(merged_glossary, save_path)
             console.print(f"[bold green]{self.i18n.get('msg_glossary_saved') or '术语表已保存'}: {save_path}[/bold green]")
+
+    def _count_glossary_history_entries(self, items):
+        count = 0
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            count += 1
+            history = item.get("history")
+            if isinstance(history, list):
+                count += len([entry for entry in history if isinstance(entry, dict)])
+        return count
 
     def _save_glossary_json_to_path(self, glossary_data, output_path):
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -1745,6 +2011,7 @@ Translation|Note"""
                 "type": term_type,
                 "category": category,
                 "info": self._clean_analysis_info(raw_info, term_type, category),
+                **self._extract_legacy_metadata(item),
             })
         return terms
 
@@ -1785,7 +2052,12 @@ Translation|Note"""
             if key in seen:
                 continue
             seen.add(key)
-            result.append({"markers": markers, "info": info, "regex": regex})
+            result.append({
+                "markers": markers,
+                "info": info,
+                "regex": regex,
+                **self._extract_legacy_metadata(item),
+            })
         return result
 
     def _normalize_character_items(self, items):
@@ -1821,11 +2093,7 @@ Translation|Note"""
                 value = self._normalize_glossary_text(item.get(key))
                 if value:
                     additional_parts.append(value)
-            additional_info = self._normalize_glossary_text(
-                item.get("additional_info") or item.get("附加信息"),
-                "；".join(dict.fromkeys(additional_parts)),
-            )
-            aliases = self._normalize_aliases(
+            aliases, alias_notes = self._normalize_aliases_with_notes(
                 item.get("aliases")
                 or item.get("alias")
                 or item.get("nicknames")
@@ -1835,6 +2103,11 @@ Translation|Note"""
                 or item.get("称呼")
                 or item.get("其他称呼")
             )
+            additional_parts.extend(alias_notes)
+            explicit_additional = self._normalize_glossary_text(item.get("additional_info") or item.get("附加信息"))
+            if explicit_additional:
+                additional_parts.insert(0, explicit_additional)
+            additional_info = "；".join(dict.fromkeys(part for part in additional_parts if part))
             result.append({
                 "original_name": original_name,
                 "translated_name": self._normalize_glossary_text(
@@ -1854,6 +2127,7 @@ Translation|Note"""
                     item.get("speech_quirks") or item.get("verbal_quirks") or item.get("catchphrase") or item.get("ending_particles") or item.get("口癖") or item.get("语尾")
                 ),
                 "additional_info": additional_info,
+                **self._extract_legacy_metadata(item),
             })
         return result
 
@@ -1878,7 +2152,11 @@ Translation|Note"""
             if key in seen:
                 continue
             seen.add(key)
-            result.append({"src": src, "dst": dst})
+            result.append({
+                "src": src,
+                "dst": dst,
+                **self._extract_legacy_metadata(item),
+            })
         return result
 
     def _format_analysis_sections(self, value):
@@ -2109,6 +2387,8 @@ Translation|Note"""
             if self._normalize_glossary_text(existing.get(key)) != self._normalize_glossary_text(value):
                 existing[key] = value
                 changed = True
+        if changed:
+            self._sync_latest_timeline_metadata(existing)
         return changed
 
     def _upsert_timeline_history(self, item, snapshot):
@@ -2153,7 +2433,14 @@ Translation|Note"""
             merged["source"] = snapshot.get("source")
         if self._normalize_volume_number(snapshot.get("volume")) is not None:
             merged["volume"] = self._normalize_volume_number(snapshot.get("volume"))
+        carry_legacy_metadata = self._has_legacy_mapping_evidence(effective)
         for field in tracked_fields:
+            if field in LEGACY_METADATA_FIELDS:
+                if carry_legacy_metadata and self._rule_field_has_content(effective.get(field)):
+                    merged[field] = effective.get(field)
+                if self._rule_field_has_content(snapshot.get(field)):
+                    merged[field] = snapshot.get(field)
+                continue
             if self._normalize_glossary_text(effective.get(field)):
                 merged[field] = effective.get(field)
             if self._rule_field_has_content(snapshot.get(field)):
@@ -2217,6 +2504,11 @@ Translation|Note"""
             item["updated_volume"] = volume
             if not label:
                 item["updated_in"] = self._format_volume_label(volume)
+        for meta_key in LEGACY_METADATA_FIELDS:
+            if self._rule_field_has_content(latest.get(meta_key)):
+                item[meta_key] = latest.get(meta_key)
+            else:
+                item.pop(meta_key, None)
 
     def _build_history_snapshot(self, item, source_label, source_volume, tracked_fields, key_field="src"):
         if not isinstance(item, dict):
@@ -2280,6 +2572,10 @@ Translation|Note"""
         version_text = self._append_timeline_text_block(base_text, incoming_text)
         if version_text:
             entry = {"source": label, "content": version_text}
+            if self._contains_legacy_reference_text(incoming_text):
+                entry["_glossary_origin"] = LEGACY_GLOSSARY_ORIGIN
+                entry["_mapping_status"] = "seed"
+                entry["_legacy_id"] = self._make_legacy_id(history_key, {"src": incoming_text[:80]}, 1)
             if volume is not None:
                 entry["volume"] = volume
                 if not label:
@@ -2378,20 +2674,30 @@ Translation|Note"""
         return bool(self._normalize_glossary_text(value))
 
     def _normalize_aliases(self, value):
+        aliases, _ = self._normalize_aliases_with_notes(value)
+        return aliases
+
+    def _normalize_aliases_with_notes(self, value):
         if value is None:
-            return []
+            return [], []
         if isinstance(value, (list, tuple, set)):
             raw_items = value
         else:
             text = self._normalize_glossary_text(value)
             if not text:
-                return []
+                return [], []
             raw_items = re.split(r"[,;|/，、；／\n]+", text.replace("[Separator]", "\n"))
 
         aliases = []
+        notes = []
         seen = set()
         for item in raw_items:
             alias = self._normalize_glossary_text(item)
+            if not alias:
+                continue
+            alias, note = self._split_alias_note(alias)
+            if note:
+                notes.append(note)
             if not alias:
                 continue
             marker = alias.casefold()
@@ -2399,7 +2705,362 @@ Translation|Note"""
                 continue
             seen.add(marker)
             aliases.append(alias)
-        return aliases
+        return aliases, list(dict.fromkeys(notes))
+
+    def _split_alias_note(self, alias):
+        alias = self._normalize_glossary_text(alias)
+        if not alias:
+            return "", ""
+
+        note_parts = []
+        patterns = (
+            r"^(?P<alias>.+?)（(?P<note>[^（）]{2,80})）$",
+            r"^(?P<alias>.+?)\((?P<note>[^()]{2,80})\)$",
+        )
+        changed = True
+        while changed:
+            changed = False
+            for pattern in patterns:
+                match = re.match(pattern, alias)
+                if not match:
+                    continue
+                candidate = self._normalize_glossary_text(match.group("alias"))
+                note = self._normalize_glossary_text(match.group("note"))
+                if candidate and note and self._alias_note_looks_like_note(note):
+                    alias = candidate
+                    note_parts.append(note)
+                    changed = True
+                    break
+
+        return alias, "；".join(dict.fromkeys(note_parts))
+
+    def _alias_note_looks_like_note(self, note):
+        note = self._normalize_glossary_text(note)
+        if not note:
+            return False
+        if len(note) > 80:
+            return False
+        note_markers = (
+            "玩梗", "备注", "说明", "注", "称呼", "昵称", "别称", "旧译",
+            "译名", "梗", "调侃", "误称", "假名", "化名", "自称", "他称",
+            "joke", "note", "alias", "nickname", "translation", "translated",
+            "legacy", "pun", "meme", "called", "reference",
+        )
+        return any(marker.casefold() in note.casefold() for marker in note_markers)
+
+    def _extract_legacy_metadata(self, item):
+        if not isinstance(item, dict):
+            return {}
+        metadata = {}
+        for key in LEGACY_METADATA_FIELDS:
+            if key not in item:
+                continue
+            value = item.get(key)
+            if self._rule_field_has_content(value):
+                metadata[key] = value
+        for source_key, target_key in (
+            ("legacy_id", "_legacy_id"),
+            ("mapped_from", "_mapped_from"),
+            ("mapping_confidence", "_mapping_confidence"),
+            ("mapping_note", "_mapping_note"),
+            ("mapping_status", "_mapping_status"),
+            ("glossary_origin", "_glossary_origin"),
+        ):
+            if target_key in metadata:
+                continue
+            value = item.get(source_key)
+            if self._rule_field_has_content(value):
+                metadata[target_key] = value
+        return metadata
+
+    def _mark_legacy_payload(self, payload, mode):
+        mode = self.normalize_legacy_mode(mode)
+        if mode not in ("legacy_translation_extract", "legacy_mapping_extract"):
+            return payload
+
+        legacy_lookup = self._build_legacy_reference_lookup() if mode == "legacy_mapping_extract" else {}
+        for index, item in enumerate(payload.get("terms", []) or [], start=1):
+            if mode == "legacy_translation_extract":
+                self._mark_legacy_item(item, LEGACY_GLOSSARY_ORIGIN, "seed", "term", index, force=True)
+            else:
+                self._normalize_legacy_mapping_item(item, "term", index, legacy_lookup)
+        for index, item in enumerate(payload.get("exclusion_list_data", []) or [], start=1):
+            if mode == "legacy_translation_extract":
+                self._mark_legacy_item(item, LEGACY_GLOSSARY_ORIGIN, "seed", "exclusion", index, force=True)
+            else:
+                self._strip_legacy_metadata(item)
+        for index, item in enumerate(payload.get("characterization_data", []) or [], start=1):
+            if mode == "legacy_translation_extract":
+                self._mark_legacy_item(item, LEGACY_GLOSSARY_ORIGIN, "seed", "character", index, force=True)
+            else:
+                self._normalize_legacy_mapping_item(item, "character", index, legacy_lookup)
+        for index, item in enumerate(payload.get("translation_example_data", []) or [], start=1):
+            if mode == "legacy_translation_extract":
+                self._mark_legacy_item(item, LEGACY_GLOSSARY_ORIGIN, "seed", "example", index, force=True)
+            else:
+                self._strip_legacy_metadata(item)
+        for key in ("world_building_content", "writing_style_content"):
+            text = self._normalize_glossary_text(payload.get(key))
+            if mode == "legacy_translation_extract" and text:
+                payload[key] = text
+        return payload
+
+    def _mark_legacy_item(self, item, origin, status, prefix, index, force=False):
+        if not isinstance(item, dict):
+            return item
+        if force:
+            item["_glossary_origin"] = origin
+            item["_mapping_status"] = status
+            item["_legacy_id"] = self._make_legacy_id(prefix, item, index)
+            return item
+        item.setdefault("_glossary_origin", origin)
+        item.setdefault("_mapping_status", status)
+        item.setdefault("_legacy_id", self._make_legacy_id(prefix, item, index))
+        return item
+
+    def _normalize_legacy_mapping_item(self, item, prefix, index, legacy_lookup=None):
+        if not isinstance(item, dict):
+            return item
+
+        if legacy_lookup:
+            self._apply_exact_legacy_reference_mapping(item, prefix, legacy_lookup)
+
+        copied_seed_id = self._normalize_glossary_text(item.get("_legacy_id"))
+        if self._has_legacy_mapping_evidence(item) or self._looks_like_copied_legacy_seed_mapping(item):
+            if copied_seed_id and not self._rule_field_has_content(item.get("_mapped_from")):
+                item["_mapped_from"] = copied_seed_id
+            self._mark_legacy_item(
+                item,
+                LEGACY_MAPPED_ORIGIN,
+                "mapped",
+                f"mapped_{prefix}",
+                index,
+                force=True,
+            )
+            return item
+
+        self._strip_legacy_metadata(item)
+        return item
+
+    def _apply_exact_legacy_reference_mapping(self, item, item_type, legacy_lookup):
+        if not isinstance(item, dict):
+            return item
+        if self._has_legacy_mapping_evidence(item):
+            return item
+
+        lookup_key = "character" if item_type == "character" else "term"
+        source_field = "original_name" if lookup_key == "character" else "src"
+        translation_field = "translated_name" if lookup_key == "character" else "dst"
+        source_text = self._normalize_glossary_text(item.get(source_field))
+        if not source_text:
+            return item
+
+        legacy_item = (legacy_lookup.get(lookup_key) or {}).get(source_text)
+        if not legacy_item:
+            return item
+
+        mapped_from = self._normalize_glossary_text(legacy_item.get("_legacy_id"))
+        translated_name = self._legacy_reference_translation(legacy_item, lookup_key)
+        if not mapped_from or not translated_name:
+            return item
+
+        if not self._rule_field_has_content(item.get(translation_field)):
+            item[translation_field] = translated_name
+        item["_mapped_from"] = mapped_from
+        item.setdefault("_mapping_confidence", "medium")
+        item.setdefault("_mapping_note", "Auto-matched exact legacy reference name.")
+        return item
+
+    def _legacy_reference_translation(self, item, item_type):
+        if not isinstance(item, dict):
+            return ""
+        if item_type == "character":
+            return self._normalize_glossary_text(
+                item.get("translated_name") or item.get("original_name")
+            )
+        return self._normalize_glossary_text(item.get("dst") or item.get("src"))
+
+    def _build_legacy_reference_lookup(self):
+        lookup = {"term": {}, "character": {}}
+        for item in self.config.get("prompt_dictionary_data", []) or []:
+            if not self._is_legacy_reference_item(item):
+                continue
+            self._add_legacy_reference_lookup_item(lookup["term"], item, "term")
+        for item in self.config.get("characterization_data", []) or []:
+            if not self._is_legacy_reference_item(item):
+                continue
+            self._add_legacy_reference_lookup_item(lookup["character"], item, "character")
+        return lookup
+
+    def _add_legacy_reference_lookup_item(self, lookup, item, item_type):
+        if not isinstance(lookup, dict) or not isinstance(item, dict):
+            return
+        legacy_id = self._normalize_glossary_text(item.get("_legacy_id"))
+        translated_name = self._legacy_reference_translation(item, item_type)
+        if not legacy_id or not translated_name:
+            return
+        keys = []
+        if item_type == "character":
+            keys.extend((
+                item.get("original_name"),
+                item.get("translated_name"),
+            ))
+        else:
+            keys.extend((
+                item.get("src"),
+                item.get("dst"),
+            ))
+        for key in keys:
+            text = self._normalize_glossary_text(key)
+            if text and text not in lookup:
+                lookup[text] = item
+
+    def _looks_like_copied_legacy_seed_mapping(self, item):
+        if not isinstance(item, dict):
+            return False
+        origin = self._normalize_glossary_text(item.get("_glossary_origin"))
+        status = self._normalize_glossary_text(item.get("_mapping_status"))
+        legacy_id = self._normalize_glossary_text(item.get("_legacy_id"))
+        copied_seed_marker = (
+            origin == LEGACY_GLOSSARY_ORIGIN
+            or status == "seed"
+            or legacy_id.startswith("legacy_")
+        )
+        if not copied_seed_marker:
+            return False
+        return self._rule_field_has_content(item.get("dst")) or self._rule_field_has_content(item.get("translated_name"))
+
+    def _strip_legacy_metadata(self, item):
+        if not isinstance(item, dict):
+            return item
+        for key in LEGACY_METADATA_FIELDS:
+            item.pop(key, None)
+        return item
+
+    def _is_reliable_legacy_mapping_result(self, item, item_type):
+        if not isinstance(item, dict):
+            return False
+        if not self._has_legacy_mapping_evidence(item):
+            return False
+        if item_type == "character":
+            return self._rule_field_has_content(item.get("translated_name"))
+        return self._rule_field_has_content(item.get("dst"))
+
+    def _has_legacy_mapping_evidence(self, item):
+        if not isinstance(item, dict):
+            return False
+        if self._normalize_glossary_text(item.get("_glossary_origin")) == LEGACY_MAPPED_ORIGIN:
+            return True
+        if self._normalize_glossary_text(item.get("_mapping_status")) == "mapped":
+            return True
+        return self._rule_field_has_content(item.get("_mapped_from")) or self._rule_field_has_content(item.get("mapped_from"))
+
+    def _make_legacy_id(self, prefix, item, index):
+        base = (
+            item.get("src")
+            or item.get("original_name")
+            or item.get("translated_name")
+            or index
+        )
+        text = self._normalize_glossary_text(base) or str(index)
+        checksum = sum(ord(char) for char in text) % 100000
+        return f"legacy_{prefix}_{checksum:05d}_{index:04d}"
+
+    def _is_legacy_reference_item(self, item):
+        if not isinstance(item, dict):
+            return False
+        origin = self._normalize_glossary_text(item.get("_glossary_origin"))
+        status = self._normalize_glossary_text(item.get("_mapping_status"))
+        return origin == LEGACY_GLOSSARY_ORIGIN or status == "seed"
+
+    def _contains_legacy_reference_text(self, value):
+        text = self._normalize_glossary_text(value)
+        if not text:
+            return False
+        return self._tr("label_legacy_translation_reference") in text
+
+    def _build_legacy_mapping_context(self):
+        glossary = [
+            self._clean_legacy_context_item(item, "glossary")
+            for item in self.config.get("prompt_dictionary_data", []) or []
+            if self._is_legacy_reference_item(item)
+        ]
+        characters = [
+            self._clean_legacy_context_item(item, "character")
+            for item in self.config.get("characterization_data", []) or []
+            if self._is_legacy_reference_item(item)
+        ]
+        world_history = [
+            self._clean_legacy_text_history_item(item)
+            for item in self.config.get("world_building_history", []) or []
+            if self._is_legacy_reference_item(item)
+        ]
+        style_history = [
+            self._clean_legacy_text_history_item(item)
+            for item in self.config.get("writing_style_history", []) or []
+            if self._is_legacy_reference_item(item)
+        ]
+        world_history = self._dedupe_legacy_text_history(world_history)
+        style_history = self._dedupe_legacy_text_history(style_history)
+        return self._trim_existing_rule_value({
+            "legacy_glossary_terms": [item for item in glossary if item],
+            "legacy_character_profiles": [item for item in characters if item],
+            "legacy_world_building_history": [item for item in world_history if item],
+            "legacy_writing_style_history": [item for item in style_history if item],
+        })
+
+    def _clean_legacy_context_item(self, item, item_type):
+        if not isinstance(item, dict):
+            return {}
+        if item_type == "character":
+            keys = (
+                "_legacy_id", "original_name", "translated_name", "aliases",
+                "gender", "age", "personality", "speech_style", "pronouns",
+                "speech_quirks", "additional_info", "source", "volume",
+            )
+        else:
+            keys = ("_legacy_id", "src", "dst", "info", "source", "volume")
+        cleaned = {
+            key: item.get(key)
+            for key in keys
+            if self._rule_field_has_content(item.get(key))
+        }
+        if item_type == "character":
+            aliases, alias_notes = self._normalize_aliases_with_notes(cleaned.get("aliases"))
+            if aliases:
+                cleaned["aliases"] = aliases
+            else:
+                cleaned.pop("aliases", None)
+            if alias_notes:
+                additional_info = self._normalize_glossary_text(cleaned.get("additional_info"))
+                note_text = "；".join(dict.fromkeys(alias_notes))
+                cleaned["additional_info"] = self._append_text_block(additional_info, note_text)
+        return cleaned
+
+    def _clean_legacy_text_history_item(self, item):
+        if not isinstance(item, dict):
+            return {}
+        return {
+            key: item.get(key)
+            for key in ("source", "volume", "content", "_legacy_id")
+            if self._rule_field_has_content(item.get(key))
+        }
+
+    def _dedupe_legacy_text_history(self, items):
+        result = []
+        seen = set()
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            content = self._normalize_glossary_text(item.get("content"))
+            if not content:
+                continue
+            marker = (self._normalize_glossary_text(item.get("source")), content)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            result.append(item)
+        return result
 
     def _normalize_volume_number(self, value):
         if value is None or value == "":
@@ -2452,6 +3113,37 @@ Additional output requirement:
 - For exclusion_list_data.markers, keep the original text that must not be translated; write its "info" in "{target_language}".
 """
         return f"{system_prompt.rstrip()}\n{instruction.strip()}\n"
+
+    def _append_legacy_translation_extract_instruction(self, system_prompt, target_language):
+        instruction = self._load_system_prompt_fragment(
+            "glossary_legacy_extract_zh.txt",
+            "glossary_legacy_extract_en.txt",
+        ).replace("{target_language}", str(target_language))
+        return f"{system_prompt.rstrip()}\n{instruction.strip()}\n"
+
+    def _append_legacy_mapping_instruction(self, system_prompt, legacy_context, target_language):
+        context_json = json.dumps(legacy_context, ensure_ascii=False, indent=2)
+        instruction = self._load_system_prompt_fragment(
+            "glossary_legacy_mapping_zh.txt",
+            "glossary_legacy_mapping_en.txt",
+        )
+        instruction = (
+            instruction
+            .replace("{target_language}", str(target_language))
+            .replace("{legacy_context}", context_json)
+        )
+        return f"{system_prompt.rstrip()}\n{instruction.strip()}\n"
+
+    def _load_system_prompt_fragment(self, zh_filename, en_filename):
+        lang = getattr(self.i18n, "lang", "zh_CN")
+        preferred = zh_filename if str(lang).startswith("zh") else en_filename
+        fallback = en_filename if preferred == zh_filename else zh_filename
+        for filename in (preferred, fallback):
+            path = os.path.join(self.PROJECT_ROOT, "Resource", "Prompt", "System", filename)
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as reader:
+                    return reader.read().strip()
+        return ""
 
     def _clean_analysis_info(self, info, term_type="", category=""):
         info = self._normalize_glossary_text(info, "null")
@@ -2617,6 +3309,9 @@ Additional output requirement:
                     freq[src]['dst'] = term.get('dst')
                 if freq[src].get('info') in ("", "null") and term.get('info') not in ("", None, "null"):
                     freq[src]['info'] = term.get('info')
+                for meta_key in LEGACY_METADATA_FIELDS:
+                    if meta_key not in freq[src] and self._rule_field_has_content(term.get(meta_key)):
+                        freq[src][meta_key] = term.get(meta_key)
             else:
                 freq[src] = {
                     'count': count,
@@ -2625,6 +3320,9 @@ Additional output requirement:
                     'dst': term.get('dst', ''),
                     'info': term.get('info', 'null')
                 }
+                for meta_key in LEGACY_METADATA_FIELDS:
+                    if self._rule_field_has_content(term.get(meta_key)):
+                        freq[src][meta_key] = term.get(meta_key)
 
         # 按词频排序
         sorted_freq = dict(sorted(freq.items(), key=lambda x: x[1]['count'], reverse=True))
@@ -2644,7 +3342,7 @@ Additional output requirement:
                 "dst": self._normalize_glossary_text(data.get('dst')),
                 "info": self._clean_analysis_info(data.get('info'), data.get('type'), data.get('category'))
             }
-            for meta_key in ("source", "volume", "updated_in", "updated_volume", "history"):
+            for meta_key in ("source", "volume", "updated_in", "updated_volume", "history", *LEGACY_METADATA_FIELDS):
                 if meta_key in data:
                     item[meta_key] = data.get(meta_key)
             glossary.append(item)
@@ -2664,6 +3362,7 @@ Additional output requirement:
         prompt_file="",
         structured_rules=None,
         incremental_options=None,
+        legacy_mode="normal_extract",
         raw_response_diagnostics=None,
     ):
         """保存分析日志文件"""
@@ -2692,6 +3391,15 @@ Additional output requirement:
             f"{self._tr('glossary_log_estimated_tokens', '预估Token')}: {estimated_tokens}",
             f"{self._tr('glossary_log_prompt_file', '提示词文件')}: {prompt_label}",
         ]
+        legacy_mode = self.normalize_legacy_mode(legacy_mode)
+        if legacy_mode != "normal_extract":
+            legacy_mode_label = self._tr(
+                f"glossary_log_legacy_mode_{legacy_mode}",
+                legacy_mode,
+            )
+            log_lines.append(
+                f"{self._tr('glossary_log_legacy_mode')}: {legacy_mode_label}"
+            )
         if incremental_options and incremental_options.get("enabled"):
             modes = []
             if incremental_options.get("new"):

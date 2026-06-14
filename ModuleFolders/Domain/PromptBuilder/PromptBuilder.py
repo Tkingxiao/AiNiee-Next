@@ -6,7 +6,10 @@ from ModuleFolders.Base.Base import Base
 from ModuleFolders.Service.TaskExecutor import TranslatorUtil
 from ModuleFolders.Infrastructure.TaskConfig.TaskConfig import TaskConfig
 from ModuleFolders.Domain.PromptBuilder.PromptBuilderEnum import PromptBuilderEnum
-from ModuleFolders.Domain.PromptBuilder.DynamicGlossary import apply_dynamic_glossary
+from ModuleFolders.Domain.PromptBuilder.DynamicGlossary import (
+    apply_dynamic_glossary,
+    filter_legacy_references_for_prompt,
+)
 from ModuleFolders.Domain.PromptBuilder.CharacterRecall import recall_characters
 class PromptBuilder(Base):
     def __init__(self) -> None:
@@ -542,6 +545,7 @@ class PromptBuilder(Base):
     def build_glossary_prompt(config: TaskConfig, input_dict: dict) -> str:
         if getattr(config, "dynamic_glossary_switch", False):
             apply_dynamic_glossary(config, getattr(config, "dynamic_glossary_volume", None))
+        filter_legacy_references_for_prompt(config)
 
         # 将输入字典中的所有值合并为一个字符串，方便正则全局匹配
         full_text = "\n".join(input_dict.values())
@@ -588,6 +592,7 @@ class PromptBuilder(Base):
 
     # 构造禁翻表
     def build_ntl_prompt(config: TaskConfig, source_text_dict) -> str:
+        filter_legacy_references_for_prompt(config)
 
         # 获取禁翻表内容
         exclusion_list_data = config.exclusion_list_data.copy()
@@ -647,6 +652,7 @@ class PromptBuilder(Base):
     ) -> str:
         if getattr(config, "dynamic_glossary_switch", False):
             apply_dynamic_glossary(config, getattr(config, "dynamic_glossary_volume", None))
+        filter_legacy_references_for_prompt(config)
 
         # 将数据存储到中间字典中
         dictionary = {}
@@ -822,6 +828,7 @@ class PromptBuilder(Base):
 
     # 构建翻译示例
     def build_translation_example(config: TaskConfig) -> str:
+        filter_legacy_references_for_prompt(config)
         data = config.translation_example_data
 
         # 数据校验
