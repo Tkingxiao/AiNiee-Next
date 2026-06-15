@@ -656,6 +656,31 @@ class QueueManager(Base):
             return True
         return False
 
+    def resume_stopped_task(self, run_id: str = "", input_path: str = "") -> bool:
+        target_input = os.path.abspath(input_path) if input_path else ""
+        for task in self.tasks:
+            matches_run = run_id and getattr(task, "automation_run_id", None) == run_id
+            matches_path = target_input and os.path.abspath(getattr(task, "input_path", "") or "") == target_input
+            if not (matches_run or matches_path):
+                continue
+            if getattr(task, "status", "") not in {"stopped", "interrupted"}:
+                continue
+            task.status = "waiting"
+            task.locked = False
+            task.is_processing = False
+            task.process_start_time = None
+            task.last_activity_time = None
+            task.automation_run_id = None
+            task.automation_progress_file = None
+            task.automation_worker_pid = None
+            task.extra = getattr(task, "extra", {}) or {}
+            task.extra.pop("partial_step_type", None)
+            task.extra.pop("partial_step_index", None)
+            task.extra.pop("partial_message", None)
+            self.save_tasks()
+            return True
+        return False
+
     def _workflow_steps_for_partial_resume(self, task):
         steps = [
             dict(step)

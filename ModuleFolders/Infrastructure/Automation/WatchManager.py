@@ -1301,8 +1301,12 @@ class WatchManager(Base):
 
     def _generate_output_path(self, input_path: str) -> str:
         """生成输出路径"""
-        parent = os.path.dirname(input_path)
-        return os.path.join(parent, "output")
+        abs_input = os.path.abspath(input_path)
+        parent = os.path.dirname(abs_input)
+        base_name = os.path.basename(os.path.normpath(abs_input))
+        if os.path.isfile(abs_input):
+            base_name = os.path.splitext(base_name)[0]
+        return os.path.join(parent, f"{base_name}_AiNiee_Output")
 
     def _load_processed_files(self):
         """加载已处理文件记录"""

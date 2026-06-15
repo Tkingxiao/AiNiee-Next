@@ -1083,6 +1083,7 @@ class AutomationMenu:
         """自动化状态总览"""
         console.print(f"[dim]{self.i18n.get('automation_status_live_hint')}[/dim]")
         console.print(f"[dim]{self.i18n.get('automation_status_press_c_hint')}[/dim]")
+        console.print(f"[dim]{self.i18n.get('automation_status_press_r_hint')}[/dim]")
         scheduler_was_running = self.scheduler_manager.running
         watch_was_running = self.watch_manager.running
         self._automation_status_view_active = True
@@ -1107,6 +1108,8 @@ class AutomationMenu:
                         break
                     if key == "c":
                         self._continue_partial_automation_task()
+                    if key == "r":
+                        self._resume_stopped_automation_task()
                     live.update(self._build_automation_status_renderable())
                     time.sleep(0.25)
         except KeyboardInterrupt:
@@ -1189,6 +1192,31 @@ class AutomationMenu:
                 self._run_queue_if_needed()
         else:
             self.watch_manager._log("warning", self.i18n.get("automation_resume_partial_no_task"))
+
+    def _resume_stopped_automation_task(self):
+        from ModuleFolders.Service.TaskQueue.QueueManager import QueueManager
+
+        queue_manager = QueueManager()
+        if not queue_manager.is_running:
+            queue_manager.hot_reload_queue(quiet=True)
+
+        stopped_tasks = [
+            task for task in queue_manager.tasks
+            if getattr(task, "status", "") in {"stopped", "interrupted"}
+        ]
+        if not stopped_tasks:
+            self.watch_manager._log("info", self.i18n.get("automation_resume_stopped_no_task"))
+            return
+
+        task = stopped_tasks[0]
+        run_id = getattr(task, "automation_run_id", "") or ""
+        if queue_manager.resume_stopped_task(run_id=run_id, input_path=getattr(task, "input_path", "")):
+            self.watch_manager._log(
+                "info",
+                self.i18n.get("automation_resume_stopped_started").format(os.path.basename(getattr(task, "input_path", "") or "-")),
+            )
+            if not queue_manager.is_running:
+                self._run_queue_if_needed()
 
     def _build_automation_status_renderable(self):
         from ModuleFolders.Infrastructure.Automation.AutomationProcessRunner import AutomationProcessRunner
@@ -1277,6 +1305,7 @@ class AutomationMenu:
             Panel(log_table, title=self.i18n.get("automation_recent_events"), border_style="magenta"),
             f"[dim]{self.i18n.get('automation_status_live_hint')}[/dim]",
             f"[dim]{self.i18n.get('automation_status_press_c_hint')}[/dim]",
+            f"[dim]{self.i18n.get('automation_status_press_r_hint')}[/dim]",
             f"[dim]{self.i18n.get('watch_auto_glossary_ignored_tip')}[/dim]",
         )
 
