@@ -264,6 +264,75 @@ class AutomationMenu:
             return
         TaskQueueMenu(self.host).show()
 
+    def automation_output_collection_settings(self):
+        while True:
+            self.host.display_banner()
+            config = self._get_automation_output_collection_config()
+            path_value = config["output_path"] or self.i18n.get("label_not_set")
+
+            console.print(Panel(
+                f"[bold]{self.i18n.get('automation_output_collection_title')}[/bold]\n\n"
+                f"{self.i18n.get('automation_output_collection_desc')}",
+                border_style="blue",
+            ))
+
+            status_table = Table(show_header=False, box=None)
+            status_table.add_row(
+                self.i18n.get("automation_output_collection_enabled"),
+                f"[{'green' if config['enabled'] else 'red'}]{'ON' if config['enabled'] else 'OFF'}[/]",
+            )
+            status_table.add_row(self.i18n.get("automation_output_collection_path"), path_value)
+            console.print(status_table)
+
+            option_table = Table(show_header=False, box=None)
+            option_table.add_row("[cyan]1.[/]", self.i18n.get("automation_output_collection_toggle"))
+            option_table.add_row("[cyan]2.[/]", self.i18n.get("automation_output_collection_set_path"))
+            option_table.add_row("[cyan]3.[/]", self.i18n.get("automation_output_collection_clear_path"))
+            console.print(option_table)
+            console.print(f"\n[dim]0. {self.i18n.get('menu_back')}[/dim]")
+
+            choice = IntPrompt.ask(self.i18n.get("prompt_select"), choices=["0", "1", "2", "3"], show_choices=False)
+            if choice == 0:
+                break
+            if choice == 1:
+                config["enabled"] = not config["enabled"]
+                self._save_automation_output_collection_config(config)
+                console.print(f"[green]{self.i18n.get('automation_output_collection_saved')}[/green]")
+                if config["enabled"] and not config["output_path"]:
+                    console.print(f"[yellow]{self.i18n.get('automation_output_collection_no_path')}[/yellow]")
+            elif choice == 2:
+                new_path = Prompt.ask(
+                    self.i18n.get("automation_output_collection_path_prompt"),
+                    default=config["output_path"],
+                ).strip().strip('"').strip("'")
+                if new_path:
+                    config["output_path"] = new_path
+                    self._save_automation_output_collection_config(config)
+                    console.print(f"[green]{self.i18n.get('automation_output_collection_saved')}[/green]")
+            elif choice == 3:
+                config["output_path"] = ""
+                self._save_automation_output_collection_config(config)
+                console.print(f"[green]{self.i18n.get('automation_output_collection_saved')}[/green]")
+
+    def _get_automation_output_collection_config(self):
+        from ModuleFolders.Infrastructure.Automation.OutputCollector import (
+            AUTOMATION_OUTPUT_COLLECTION_CONFIG_KEY,
+            normalize_output_collection_config,
+        )
+
+        return normalize_output_collection_config(
+            self.config.get(AUTOMATION_OUTPUT_COLLECTION_CONFIG_KEY, {})
+        )
+
+    def _save_automation_output_collection_config(self, config: dict):
+        from ModuleFolders.Infrastructure.Automation.OutputCollector import (
+            AUTOMATION_OUTPUT_COLLECTION_CONFIG_KEY,
+            normalize_output_collection_config,
+        )
+
+        self.config[AUTOMATION_OUTPUT_COLLECTION_CONFIG_KEY] = normalize_output_collection_config(config)
+        self.host.save_config()
+
     def scheduler_submenu(self):
         """定时任务子菜单"""
         from ModuleFolders.Infrastructure.Automation.SchedulerManager import ScheduledTask
@@ -576,6 +645,9 @@ class AutomationMenu:
             table.add_row("[cyan]5.[/]", self.i18n.get('watch_view_logs'))
             table.add_row("[cyan]6.[/]", self.i18n.get('watch_clear_history'))
             table.add_row("[cyan]7.[/]", self.i18n.get('watch_requeue_detected_file'))
+            collection_config = self._get_automation_output_collection_config()
+            collection_status = self.i18n.get("label_enabled") if collection_config["enabled"] else self.i18n.get("label_disabled")
+            table.add_row("[cyan]8.[/]", self.i18n.get('menu_automation_output_collection'), collection_status)
             console.print(table)
 
             # 显示规则列表
@@ -613,7 +685,7 @@ class AutomationMenu:
                 console.print(f"\n[dim]{self.i18n.get('watch_no_rules')}[/dim]")
 
             console.print(f"\n[dim]0. {self.i18n.get('menu_back')}[/dim]")
-            choice = IntPrompt.ask(self.i18n.get('prompt_select'), choices=["0", "1", "2", "3", "4", "5", "6", "7"], show_choices=False)
+            choice = IntPrompt.ask(self.i18n.get('prompt_select'), choices=["0", "1", "2", "3", "4", "5", "6", "7", "8"], show_choices=False)
 
             if choice == 0:
                 break
@@ -635,6 +707,8 @@ class AutomationMenu:
                 console.print(f"[green]{self.i18n.get('watch_history_cleared')}[/green]")
             elif choice == 7:
                 self.requeue_detected_watch_file()
+            elif choice == 8:
+                self.automation_output_collection_settings()
 
     def _render_watch_file_status(self):
         snapshots = self.watch_manager.get_file_status_snapshot(limit_per_rule=15, include_unmatched=True)

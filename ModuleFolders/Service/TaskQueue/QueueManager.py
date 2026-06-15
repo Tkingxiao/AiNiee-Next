@@ -610,9 +610,43 @@ class QueueManager(Base):
                 task.extra["partial_step_type"] = final_state.get("step_type") or ""
                 task.extra["partial_step_index"] = final_state.get("step_index") or 0
                 task.extra["partial_message"] = final_state.get("message") or ""
+            if final_status == "completed":
+                self._collect_completed_automation_outputs(task)
             self.save_tasks()
             return True
         return False
+
+    def _collect_completed_automation_outputs(self, task):
+        try:
+            from ModuleFolders.Infrastructure.Automation.OutputCollector import (
+                AUTOMATION_OUTPUT_COLLECTION_CONFIG_KEY,
+                collect_automation_outputs,
+                normalize_output_collection_config,
+                should_collect_automation_outputs,
+            )
+
+            if not should_collect_automation_outputs(task):
+                return
+
+            config = self.load_config()
+            collection_config = normalize_output_collection_config(
+                config.get(AUTOMATION_OUTPUT_COLLECTION_CONFIG_KEY, {})
+            )
+            if not collection_config["enabled"] or not collection_config["output_path"]:
+                return
+
+            copied = collect_automation_outputs(task, collection_config)
+            file_name = os.path.basename(getattr(task, "input_path", "") or "-")
+            if copied:
+                self._log_queue_operation(
+                    f"Automation output collection copied {len(copied)} file(s) for {file_name} -> {collection_config['output_path']}"
+                )
+            else:
+                self._log_queue_operation(
+                    f"Automation output collection found no product files for {file_name}"
+                )
+        except Exception as e:
+            self._log_queue_operation(f"Automation output collection failed: {e}")
 
     def mark_automation_interrupted(self, run_id: str, final_status: str = "stopped") -> bool:
         if not run_id:
