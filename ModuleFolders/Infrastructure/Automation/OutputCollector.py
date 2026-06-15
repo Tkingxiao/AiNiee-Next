@@ -17,6 +17,7 @@ RUNTIME_DIR_NAMES = {
     "backups",
     "cache",
     "logs",
+    "mangaProject",
     "temp",
     "temp_conv",
     "temp_xlsx_conv",
@@ -97,32 +98,41 @@ def collect_automation_outputs(task, config: dict | None) -> list[dict]:
 
 
 def _iter_product_files(source_dir: Path):
-    product_files = []
-    final_dir = source_dir / "final"
-    if final_dir.is_dir():
-        product_files.extend(_walk_product_files(final_dir, final_dir, final_only=True))
+    yielded = set()
+    collected = False
     for product_dir in _iter_product_dirs(source_dir):
-        if product_dir == final_dir:
-            continue
-        product_files.extend(_walk_product_files(product_dir, product_dir, final_only=True))
+        for source_file, relative_path in _walk_product_files(product_dir, product_dir):
+            key = source_file.resolve()
+            if key in yielded:
+                continue
+            yielded.add(key)
+            collected = True
+            yield source_file, relative_path
 
-    if product_files:
-        yield from product_files
+    for source_file in sorted(source_dir.iterdir(), key=lambda path: path.name.lower()):
+        if not source_file.is_file() or _is_runtime_file(source_file):
+            continue
+        key = source_file.resolve()
+        if key in yielded:
+            continue
+        yielded.add(key)
+        collected = True
+        yield source_file, source_file.relative_to(source_dir)
+
+    if collected:
         return
 
-    yield from _walk_product_files(source_dir, source_dir)
+    yield from _walk_product_files(source_dir, source_dir, exclude_product_dirs=False)
 
 
-def _walk_product_files(root_dir: Path, relative_root: Path, final_only: bool = False):
+def _walk_product_files(root_dir: Path, relative_root: Path, exclude_product_dirs: bool = True):
     for current_dir, dir_names, file_names in os.walk(root_dir):
-        if final_only:
-            dir_names[:] = [name for name in dir_names if not _is_runtime_dir_name(name)]
-        else:
-            dir_names[:] = [
-                name
-                for name in dir_names
-                if not _is_runtime_dir_name(name) and _should_enter_dir(name)
-            ]
+        dir_names[:] = [
+            name
+            for name in dir_names
+            if not _is_runtime_dir_name(name)
+            and not (exclude_product_dirs and _is_product_dir_name(name))
+        ]
 
         current_path = Path(current_dir)
         for file_name in file_names:
@@ -139,12 +149,12 @@ def _iter_product_dirs(source_dir: Path):
         dir_names[:] = [
             name
             for name in dir_names
-            if not _is_runtime_dir_name(name)
+            if not _is_runtime_dir_name(name) or name == "mangaProject"
         ]
         current_path = Path(current_dir)
         for dir_name in list(dir_names):
             candidate = current_path / dir_name
-            if dir_name in PRODUCT_DIR_NAMES:
+            if _is_product_dir_name(dir_name):
                 yield candidate
 
 
@@ -152,7 +162,7 @@ def _is_runtime_dir_name(name: str) -> bool:
     return str(name or "").strip() in RUNTIME_DIR_NAMES
 
 
-def _should_enter_dir(name: str) -> bool:
+def _is_product_dir_name(name: str) -> bool:
     return str(name or "").strip() in PRODUCT_DIR_NAMES
 
 

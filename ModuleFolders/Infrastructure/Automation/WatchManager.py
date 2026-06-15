@@ -23,6 +23,10 @@ from ModuleFolders.Infrastructure.Automation.AutomationPaths import (
     is_under_automation_glossary_dir,
     is_under_automation_output_dir,
 )
+from ModuleFolders.Infrastructure.Automation.OutputCollector import (
+    AUTOMATION_OUTPUT_COLLECTION_CONFIG_KEY,
+    normalize_output_collection_config,
+)
 
 
 SERIES_VOLUME_PATTERNS = (
@@ -457,7 +461,34 @@ class WatchManager(Base):
         return (
             is_under_automation_glossary_dir(path, watch_root)
             or is_under_automation_output_dir(path, watch_root)
+            or self._is_under_output_collection_dir(path, watch_root)
         )
+
+    def _is_under_output_collection_dir(self, path: str, watch_root: str = "") -> bool:
+        try:
+            config = normalize_output_collection_config(
+                self.config.get(AUTOMATION_OUTPUT_COLLECTION_CONFIG_KEY, {})
+            )
+        except Exception:
+            return False
+        collection_path = config.get("output_path")
+        if not collection_path:
+            return False
+        try:
+            path = os.path.abspath(path)
+            collection_path = os.path.abspath(os.path.expanduser(collection_path))
+            if watch_root:
+                relative_collection = os.path.relpath(collection_path, os.path.abspath(watch_root))
+                if self._relative_escapes_root(relative_collection):
+                    return False
+            relative = os.path.relpath(path, collection_path)
+            return not self._relative_escapes_root(relative)
+        except (OSError, ValueError):
+            return False
+
+    @staticmethod
+    def _relative_escapes_root(relative_path: str) -> bool:
+        return relative_path == ".." or relative_path.startswith(f"..{os.sep}") or relative_path.startswith("../") or relative_path.startswith("..\\")
 
     def _filter_system_dirs(self, root: str, dirs: List[str], rule: WatchRule, excluded_dirs: Set[str] = None) -> None:
         excluded_dirs = excluded_dirs or set()
