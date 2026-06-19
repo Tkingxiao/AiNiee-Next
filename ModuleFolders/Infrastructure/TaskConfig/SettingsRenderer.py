@@ -277,10 +277,15 @@ class SettingsMenuBuilder:
                     return None
             return not current
         elif item.config_type == ConfigType.INT:
-            return IntPrompt.ask(
+            value = IntPrompt.ask(
                 self.i18n.get(item.i18n_key),
                 default=current
             )
+            if item.min_value is not None:
+                value = max(int(item.min_value), value)
+            if item.max_value is not None:
+                value = min(int(item.max_value), value)
+            return value
         elif item.config_type == ConfigType.PATH:
             return Prompt.ask(
                 self.i18n.get(item.i18n_key),

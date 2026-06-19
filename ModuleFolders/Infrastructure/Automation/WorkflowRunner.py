@@ -282,7 +282,7 @@ class WorkflowRunner:
             cfg["lines_limit"] = task_config.get("lines_limit")
         if task_config.get("tokens_limit") is not None:
             cfg["tokens_limit_switch"] = True
-            cfg["tokens_limit"] = task_config.get("tokens_limit")
+            cfg["tokens_limit"] = max(400, int(task_config.get("tokens_limit")))
 
         if task_config.get("think_depth") is not None:
             cfg["think_depth"] = task_config.get("think_depth")

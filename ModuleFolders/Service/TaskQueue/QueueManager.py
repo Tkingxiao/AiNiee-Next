@@ -1081,7 +1081,7 @@ class QueueManager(Base):
                 cfg["lines_limit"] = task.lines_limit
             if task.tokens_limit is not None:
                 cfg["tokens_limit_switch"] = True
-                cfg["tokens_limit"] = task.tokens_limit
+                cfg["tokens_limit"] = max(400, int(task.tokens_limit))
                 
             if task.think_depth is not None:
                 cfg["think_depth"] = task.think_depth

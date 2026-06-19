@@ -143,6 +143,11 @@ export const Settings: React.FC = () => {
   // Generic Change Handler for Global Config
   const handleChange = (field: keyof AppConfig, value: any) => {
     if (!config) return;
+    if (field === 'tokens_limit') {
+        value = Math.max(400, Math.min(16000, parseInt(value) || 400));
+    } else if (field === 'lines_limit') {
+        value = Math.max(1, Math.min(100, parseInt(value) || 1));
+    }
     
     // --- Easter Eggs Triggers ---
     
@@ -1003,16 +1008,17 @@ export const Settings: React.FC = () => {
                {!config.tokens_limit_switch ? (
                  <div className="space-y-2">
                    <label className="text-xs font-semibold text-slate-400 uppercase">{t('prompt_limit_val')} (Lines)</label>
-                   <input type="number" value={config.lines_limit} onChange={(e) => handleChange('lines_limit', parseInt(e.target.value))}
+                   <input type="number" min={1} max={100} value={config.lines_limit} onChange={(e) => handleChange('lines_limit', Math.max(1, Math.min(100, parseInt(e.target.value) || 1)))}
                      className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-slate-200 focus:border-primary text-sm" />
                  </div>
                ) : (
                  <div className="space-y-2">
+                   <label className="text-xs font-semibold text-slate-400 uppercase">{t('prompt_limit_val')} (Tokens)</label>
                    <div className="flex items-center gap-2 text-yellow-500 mb-1">
                      <AlertTriangle size={14} />
                      <span className="text-[10px] font-bold uppercase">{t('warn_token_mode_severe')}</span>
                    </div>
-                   <input type="number" value={config.lines_limit * 100} onChange={(e) => handleChange('lines_limit', Math.floor(parseInt(e.target.value)/100))}
+                   <input type="number" min={400} max={16000} step={100} value={config.tokens_limit ?? 1500} onChange={(e) => handleChange('tokens_limit', Math.max(400, Math.min(16000, parseInt(e.target.value) || 400)))}
                      className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-slate-200 focus:border-primary text-sm" />
                  </div>
                )}

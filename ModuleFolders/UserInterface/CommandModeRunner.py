@@ -254,10 +254,10 @@ class CommandModeRunner:
 
         if args.lines is not None:
             self.host.config["tokens_limit_switch"] = False
-            self.host.config["lines_limit"] = args.lines
+            self.host.config["lines_limit"] = max(1, min(100, int(args.lines)))
         if args.tokens is not None:
             self.host.config["tokens_limit_switch"] = True
-            self.host.config["tokens_limit"] = args.tokens
+            self.host.config["tokens_limit"] = max(400, min(16000, int(args.tokens)))
 
         if args.platform:
             self.host.config["target_platform"] = args.platform

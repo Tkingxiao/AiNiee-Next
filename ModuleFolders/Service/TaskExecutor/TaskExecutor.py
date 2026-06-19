@@ -876,7 +876,7 @@ class TaskExecutor(Base):
                 if current_round > 0:
                     if self.config.tokens_limit_switch:
                         if hasattr(self.config, 'tokens_limit'):
-                            self.config.tokens_limit = max(100, int(self.config.tokens_limit / 2))
+                            self.config.tokens_limit = max(400, int(self.config.tokens_limit / 2))
                     else:
                         self.config.lines_limit = _halve_line_limit(
                             self.config.lines_limit,
@@ -1208,7 +1208,7 @@ class TaskExecutor(Base):
                 if current_round > 0:
                     if self.config.tokens_limit_switch:
                         if hasattr(self.config, 'tokens_limit'):
-                            self.config.tokens_limit = max(100, int(self.config.tokens_limit / 2))
+                            self.config.tokens_limit = max(400, int(self.config.tokens_limit / 2))
                     else:
                         self.config.lines_limit = _halve_line_limit(
                             self.config.lines_limit,

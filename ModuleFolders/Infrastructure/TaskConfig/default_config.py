@@ -5,8 +5,8 @@ import json
 # It serves as the master template for creating new user profiles.
 
 DEFAULT_CONFIG = {
-    "pre_translation_data": {},
-    "post_translation_data": {},
+    "pre_translation_data": [],
+    "post_translation_data": [],
     "exclusion_list_data": [],
     "auto_process_text_code_segment": False,
     "pre_translation_switch": False,
@@ -69,6 +69,7 @@ DEFAULT_CONFIG = {
     "chunk_soft_limit_extra_lines": 10,
     "line_split_optimization_mode": "off",
     "retry_split_min_lines": 15,
+    "tokens_limit": 1500,
     "pre_line_counts": 3,
     "output_filename_suffix": "",
     "enable_bilingual_output": False,

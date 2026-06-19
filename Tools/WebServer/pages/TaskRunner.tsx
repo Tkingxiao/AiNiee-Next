@@ -295,8 +295,8 @@ export const TaskRunner: React.FC = () => {
           
           failover: !!config.enable_api_failover,
           
-          lines: !config.tokens_limit_switch ? Number(config.lines_limit || 20) : undefined,
-          tokens: config.tokens_limit_switch ? Number(config.tokens_limit || 1500) : undefined,
+          lines: !config.tokens_limit_switch ? Math.max(1, Math.min(100, Number(config.lines_limit || 20))) : undefined,
+          tokens: config.tokens_limit_switch ? Math.max(400, Math.min(16000, Number(config.tokens_limit || 1500))) : undefined,
           
           run_all_in_one: isAllInOne,
           manga: mangaMode

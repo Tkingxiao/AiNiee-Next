@@ -47,8 +47,8 @@ class TaskConfig(Base):
         # --- 初始化默认属性以防止 AttributeError ---
         
         # 文本处理相关数据
-        self.pre_translation_data = {}
-        self.post_translation_data = {}
+        self.pre_translation_data = []
+        self.post_translation_data = []
         self.exclusion_list_data = [] 
         self.auto_process_text_code_segment = False
         self.pre_translation_switch = False
@@ -248,6 +248,18 @@ class TaskConfig(Base):
         )
         self.sdk_request_mode = synced["sdk_request_mode"]
         self.use_openai_sdk = synced["use_openai_sdk"]
+        self._normalize_runtime_limits()
+
+    def _normalize_runtime_limits(self) -> None:
+        try:
+            self.lines_limit = max(1, min(100, int(getattr(self, "lines_limit", 20) or 20)))
+        except (TypeError, ValueError):
+            self.lines_limit = 20
+
+        try:
+            self.tokens_limit = max(400, min(16000, int(getattr(self, "tokens_limit", 1500) or 1500)))
+        except (TypeError, ValueError):
+            self.tokens_limit = 1500
 
     def get_next_apikey(self) -> str:
         """

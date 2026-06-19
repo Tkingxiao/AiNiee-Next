@@ -16,6 +16,8 @@ RULES_PROFILES_PATH = os.path.join(RESOURCE_PATH, "rules_profiles")
 PRESET_PATH = os.path.join(RESOURCE_PATH, "platforms", "preset.json")
 
 RULE_DATA_KEYS = (
+    "pre_translation_data",
+    "post_translation_data",
     "prompt_dictionary_data",
     "exclusion_list_data",
     "characterization_data",
@@ -27,6 +29,8 @@ RULE_DATA_KEYS = (
 )
 
 RULE_SWITCH_KEYS = (
+    "pre_translation_switch",
+    "post_translation_switch",
     "prompt_dictionary_switch",
     "exclusion_list_switch",
     "characterization_switch",
@@ -168,6 +172,8 @@ def load_master_preset() -> dict:
 
 def default_rules_payload() -> dict:
     return {
+        "pre_translation_data": [],
+        "post_translation_data": [],
         "prompt_dictionary_data": [],
         "exclusion_list_data": [],
         "characterization_data": [],
@@ -176,6 +182,8 @@ def default_rules_payload() -> dict:
         "writing_style_content": "",
         "writing_style_history": [],
         "translation_example_data": [],
+        "pre_translation_switch": False,
+        "post_translation_switch": False,
         "prompt_dictionary_switch": False,
         "exclusion_list_switch": False,
         "characterization_switch": False,
@@ -203,6 +211,8 @@ def normalize_rules_payload(payload: dict, *, infer_missing_switches: bool = Tru
 
     if infer_missing_switches and isinstance(payload, dict):
         inferred = {
+            "pre_translation_switch": "pre_translation_data",
+            "post_translation_switch": "post_translation_data",
             "prompt_dictionary_switch": "prompt_dictionary_data",
             "exclusion_list_switch": "exclusion_list_data",
             "characterization_switch": "characterization_data",

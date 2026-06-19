@@ -340,16 +340,23 @@ class TextProcessor():
 
     def _compile_translation_rules(self, rules_data: Optional[List[Dict]]) -> List[Dict]:
         compiled_rules = []
-        if not rules_data:
+        if not isinstance(rules_data, list):
             return compiled_rules
 
         # 遍历文本替换的数据
         for rule in rules_data:
+            if not isinstance(rule, dict):
+                continue
+            if not str(rule.get("src", "")).strip() and not str(rule.get("regex", "")).strip():
+                continue
             new_rule = rule.copy()
 
             # 如果有正则，则进行预编译，如果没有则原样
             if regex_str := rule.get("regex"):
-                new_rule["compiled_regex"] = re.compile(regex_str)
+                try:
+                    new_rule["compiled_regex"] = re.compile(regex_str)
+                except re.error as e:
+                    print(f"警告：编译正则表达式 '{regex_str}' 时出错: {e}")
 
             compiled_rules.append(new_rule)
         return compiled_rules

@@ -507,6 +507,14 @@ class ExclusionItem(BaseModel):
     class Config:
         extra = 'allow'
 
+class ReplacementRuleItem(BaseModel):
+    src: Optional[str] = ""
+    dst: Optional[str] = ""
+    regex: Optional[str] = ""
+    info: Optional[str] = None
+    class Config:
+        extra = 'allow'
+
 class CharacterizationItem(BaseModel):
     original_name: str
     translated_name: str
@@ -560,6 +568,16 @@ class QueueTaskItem(BaseModel):
     think_depth: Optional[str] = None
     thinking_budget: Optional[int] = None
     status: Optional[str] = "waiting"
+
+
+def normalize_queue_limits(item: QueueTaskItem) -> QueueTaskItem:
+    if item.tokens_limit is not None:
+        item.tokens_limit = max(400, min(16000, int(item.tokens_limit)))
+        item.lines_limit = None
+    elif item.lines_limit is not None:
+        item.lines_limit = max(1, min(100, int(item.lines_limit)))
+        item.tokens_limit = None
+    return item
 
 class QueueMoveRequest(BaseModel):
     to_index: int
@@ -795,6 +813,62 @@ def save_config_generic(key: str, value: Any):
         return True
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save setting {key}: {e}")
+
+def _new_replacement_rule_id() -> str:
+    return f"rr_{secrets.token_urlsafe(12)}"
+
+def _normalize_replacement_rule_items(items: Any) -> List[Dict[str, Any]]:
+    if not isinstance(items, list):
+        return []
+
+    normalized: List[Dict[str, Any]] = []
+    seen_ids = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        next_item = dict(item)
+        next_item.pop("_serverIndex", None)
+        item_id = str(next_item.get("_id") or "").strip()
+        if not item_id or item_id in seen_ids:
+            item_id = _new_replacement_rule_id()
+            while item_id in seen_ids:
+                item_id = _new_replacement_rule_id()
+        next_item["_id"] = item_id
+        seen_ids.add(item_id)
+        normalized.append(next_item)
+    return normalized
+
+def delete_rule_item_generic(key: str, index: int):
+    config = _load_active_config_payload()
+    items = config.get(key, [])
+    if not isinstance(items, list):
+        raise HTTPException(status_code=400, detail=f"{key} is not a list rule")
+    if index < 0 or index >= len(items):
+        raise HTTPException(status_code=404, detail="Rule item not found")
+    next_items = list(items)
+    deleted = next_items.pop(index)
+    save_rule_generic(key, next_items)
+    return {"message": "Rule item deleted.", "deleted": deleted, "deleted_index": index, "items": next_items}
+
+def delete_rule_item_by_id_generic(key: str, item_id: str):
+    config = _load_active_config_payload()
+    items = config.get(key, [])
+    if not isinstance(items, list):
+        raise HTTPException(status_code=400, detail=f"{key} is not a list rule")
+
+    for index, item in enumerate(items):
+        if isinstance(item, dict) and str(item.get("_id") or "") == item_id:
+            next_items = list(items)
+            deleted = next_items.pop(index)
+            save_rule_generic(key, next_items)
+            return {
+                "message": "Rule item deleted.",
+                "deleted": deleted,
+                "deleted_index": index,
+                "items": next_items,
+            }
+
+    raise HTTPException(status_code=404, detail="Rule item not found")
 
 def _file_cache_token(path: str) -> tuple:
     """Return a cheap freshness token for config/profile files."""
@@ -1058,6 +1132,46 @@ async def get_exclusion():
 async def save_exclusion(items: List[Dict[str, Any]]):
     save_rule_generic("exclusion_list_data", items)
     return {"message": "Exclusion list saved successfully."}
+
+@app.get("/api/pre_translation")
+async def get_pre_translation():
+    config = _load_active_config_payload()
+    items = _normalize_replacement_rule_items(config.get("pre_translation_data", []))
+    return items
+
+@app.post("/api/pre_translation")
+async def save_pre_translation(items: List[Dict[str, Any]]):
+    normalized = _normalize_replacement_rule_items(items)
+    save_rule_generic("pre_translation_data", normalized)
+    return {"message": "Pre-translation rules saved.", "items": normalized}
+
+@app.delete("/api/pre_translation/by-id/{item_id}")
+async def delete_pre_translation_item_by_id(item_id: str):
+    return delete_rule_item_by_id_generic("pre_translation_data", item_id)
+
+@app.delete("/api/pre_translation/{index}")
+async def delete_pre_translation_item(index: int):
+    return delete_rule_item_generic("pre_translation_data", index)
+
+@app.get("/api/post_translation")
+async def get_post_translation():
+    config = _load_active_config_payload()
+    items = _normalize_replacement_rule_items(config.get("post_translation_data", []))
+    return items
+
+@app.post("/api/post_translation")
+async def save_post_translation(items: List[Dict[str, Any]]):
+    normalized = _normalize_replacement_rule_items(items)
+    save_rule_generic("post_translation_data", normalized)
+    return {"message": "Post-translation rules saved.", "items": normalized}
+
+@app.delete("/api/post_translation/by-id/{item_id}")
+async def delete_post_translation_item_by_id(item_id: str):
+    return delete_rule_item_by_id_generic("post_translation_data", item_id)
+
+@app.delete("/api/post_translation/{index}")
+async def delete_post_translation_item(index: int):
+    return delete_rule_item_generic("post_translation_data", index)
 
 # --- New Features Endpoints ---
 
@@ -2816,6 +2930,22 @@ async def save_exclusion_draft(items: List[Dict[str, Any]]):
 async def get_exclusion_draft():
     return get_draft_generic("exclusion_draft.json") or []
 
+@app.post("/api/draft/pre_translation")
+async def save_pre_translation_draft(items: List[Dict[str, Any]]):
+    return save_draft_generic("pre_translation_draft.json", items)
+
+@app.get("/api/draft/pre_translation")
+async def get_pre_translation_draft():
+    return get_draft_generic("pre_translation_draft.json") or []
+
+@app.post("/api/draft/post_translation")
+async def save_post_translation_draft(items: List[Dict[str, Any]]):
+    return save_draft_generic("post_translation_draft.json", items)
+
+@app.get("/api/draft/post_translation")
+async def get_post_translation_draft():
+    return get_draft_generic("post_translation_draft.json") or []
+
 @app.post("/api/draft/characterization")
 async def save_characterization_draft(items: List[Dict[str, Any]]):
     return save_draft_generic("characterization_draft.json", items)
@@ -3646,6 +3776,7 @@ async def get_queue(request: Request):
 async def add_to_queue(item: QueueTaskItem, request: Request):
     """Add a new task to the queue"""
     try:
+        item = normalize_queue_limits(item)
         if is_mcp_request(request) and item.api_key == MCP_SECRET_PLACEHOLDER:
             raise HTTPException(
                 status_code=400,
@@ -3705,6 +3836,7 @@ async def remove_from_queue(index: int):
 async def update_queue_item(index: int, item: QueueTaskItem, request: Request):
     """Update a task in the queue"""
     try:
+        item = normalize_queue_limits(item)
         qm = get_queue_manager()
         if index < 0 or index >= len(qm.tasks):
             raise HTTPException(status_code=400, detail="Invalid task index")
@@ -3746,10 +3878,8 @@ async def update_queue_item(index: int, item: QueueTaskItem, request: Request):
             task.rounds = item.rounds
         if item.pre_lines is not None:
             task.pre_lines = item.pre_lines
-        if item.lines_limit is not None:
-            task.lines_limit = item.lines_limit
-        if item.tokens_limit is not None:
-            task.tokens_limit = item.tokens_limit
+        task.lines_limit = item.lines_limit
+        task.tokens_limit = item.tokens_limit
         if item.think_depth:
             task.think_depth = item.think_depth
         if item.thinking_budget is not None:

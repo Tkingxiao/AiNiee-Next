@@ -28,10 +28,14 @@ class PolishTextProcessor():
         编译翻译替换规则，将规则中的正则表达式字符串预编译成 re.Pattern 对象。
         """
         compiled_rules = []
-        if not rules_data:
+        if not isinstance(rules_data, list):
             return compiled_rules
 
         for rule in rules_data:
+            if not isinstance(rule, dict):
+                continue
+            if not str(rule.get("src", "")).strip() and not str(rule.get("regex", "")).strip():
+                continue
             new_rule = rule.copy()
             # 如果规则中包含 "regex" 键，则进行编译
             if regex_str := rule.get("regex"):

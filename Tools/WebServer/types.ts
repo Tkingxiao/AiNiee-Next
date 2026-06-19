@@ -168,6 +168,14 @@ export interface ExclusionItem {
   [key: string]: any;
 }
 
+export interface ReplacementRuleItem {
+  src?: string;
+  dst?: string;
+  regex?: string;
+  info?: string;
+  [key: string]: any;
+}
+
 export interface CharacterizationItem {
   original_name: string;
   translated_name: string;
@@ -298,8 +306,8 @@ export interface AppConfig {
   auto_process_text_code_segment: boolean;
 
   // --- Data Containers ---
-  pre_translation_data: any;
-  post_translation_data: any;
+  pre_translation_data: ReplacementRuleItem[];
+  post_translation_data: ReplacementRuleItem[];
   exclusion_list_data: ExclusionItem[];
   prompt_dictionary_data: GlossaryItem[];
   characterization_data: CharacterizationItem[];

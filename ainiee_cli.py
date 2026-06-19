@@ -1792,9 +1792,9 @@ class CLIMenu:
                             elif key == '[' or key == ']':
                                 cfg = self.task_executor.config
                                 if cfg.tokens_limit_switch:
-                                    current_val = cfg.tokens_limit
+                                    current_val = max(400, int(getattr(cfg, "tokens_limit", 1500) or 1500))
                                     step = 100
-                                    new_val = max(100, current_val - step) if key == '[' else min(16000, current_val + step)
+                                    new_val = max(400, current_val - step) if key == '[' else min(16000, current_val + step)
                                     cfg.tokens_limit = new_val
                                     self.ui.log(i18n.get('msg_split_limit_changed').format(new_val, "tokens"))
                                 else:

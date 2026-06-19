@@ -327,6 +327,7 @@ export const ZH_CN_LOCALE: Record<string, string> = {
     "ui_rules_tip_save": "提示: 请注意保存您的配置，以防下次启动丢失内容。",
     "ui_rules_tip_advanced": "高级设置: 正则表达式 (Regex) 优先级高于普通文本标记。请谨慎使用，错误的正则可能导致匹配异常。",
     "ui_rules_no_items": "暂无数据，点击上方按钮添加。",
+    "ui_rules_delete_confirm": "确认删除这个条目吗？",
     "msg_recover_draft_confirm": "恢复未保存的草稿将覆盖当前编辑。确认继续吗？",
     "msg_draft_recovered": "草稿恢复成功！",
     "msg_import_success": "导入成功！",
@@ -1394,6 +1395,7 @@ export const EN_LOCALE: Record<string, string> = {
     "ui_rules_tip_save": "Tip: Please remember to save your configuration to prevent data loss.",
     "ui_rules_tip_advanced": "Advanced: Regex has higher priority than text markers. Use with caution.",
     "ui_rules_no_items": "No items found. Click 'Add Entry' to create one.",
+    "ui_rules_delete_confirm": "Delete this item?",
     "ui_rules_metadata": "Metadata",
     "menu_glossary_rules": "Glossary & Text Rules",
     "msg_recover_draft_confirm": "Restoring unsaved draft will overwrite current edits. Continue?",
@@ -2355,8 +2357,8 @@ export const DEFAULT_CONFIG: AppConfig = {
   auto_process_text_code_segment: false,
 
   // Data Containers
-  pre_translation_data: null,
-  post_translation_data: null,
+  pre_translation_data: [],
+  post_translation_data: [],
   exclusion_list_data: [],
   prompt_dictionary_data: [],
   characterization_data: [],

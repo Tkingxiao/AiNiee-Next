@@ -1,13 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Save, Plus, Trash2, BookOpen, Ban, AlertTriangle, RefreshCw, Search, ToggleLeft, ToggleRight, Download, Upload, History, Users, Map as MapIcon, PenTool, Languages, FileJson, ChevronDown, Sparkles, Play, Square, Layers } from 'lucide-react';
-import { AppConfig, GlossaryItem, ExclusionItem, CharacterizationItem, TranslationExampleItem, TermItem, TermOption } from '../types';
+import { AppConfig, GlossaryItem, ExclusionItem, ReplacementRuleItem, CharacterizationItem, TranslationExampleItem, TermItem, TermOption } from '../types';
 import { DataService } from '../services/DataService';
 import { nativeConfirm } from '../services/nativeDialog';
 import { useI18n } from '../contexts/I18nContext';
 import { useGlobal } from '../contexts/GlobalContext';
 import { TermSelector } from '../components/TermSelector';
 
-type TabType = 'glossary' | 'exclusion' | 'characterization' | 'world' | 'style' | 'example' | 'timeline' | 'ai_glossary';
+type TabType = 'pre_translation' | 'post_translation' | 'glossary' | 'exclusion' | 'characterization' | 'world' | 'style' | 'example' | 'timeline' | 'ai_glossary';
+type ReplacementRuleKind = 'pre' | 'post';
 
 export const Rules: React.FC = () => {
     const { t } = useI18n();
@@ -38,6 +39,8 @@ export const Rules: React.FC = () => {
     
     // Data State
     const [glossary, setGlossary] = useState<GlossaryItem[]>([]);
+    const [preTranslationRules, setPreTranslationRules] = useState<ReplacementRuleItem[]>([]);
+    const [postTranslationRules, setPostTranslationRules] = useState<ReplacementRuleItem[]>([]);
     const [exclusion, setExclusion] = useState<ExclusionItem[]>([]);
     const [characterization, setCharacterization] = useState<CharacterizationItem[]>([]);
     const [worldBuilding, setWorldBuilding] = useState<string>("");
@@ -90,6 +93,54 @@ export const Rules: React.FC = () => {
     const hasText = (value: any) => {
         if (Array.isArray(value)) return value.some(item => hasText(item));
         return value !== null && value !== undefined && String(value).trim().length > 0;
+    };
+
+    const createReplacementRuleId = () => {
+        const randomValue = typeof crypto !== 'undefined' && 'randomUUID' in crypto
+            ? crypto.randomUUID()
+            : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        return `rr_${randomValue}`;
+    };
+
+    const normalizeReplacementRuleItems = (items: any, persisted = false, preserveServerIndex = false): ReplacementRuleItem[] => {
+        if (!Array.isArray(items)) return [];
+        return items
+            .filter(item => item && typeof item === 'object')
+            .map((item, index) => {
+                const normalized: ReplacementRuleItem = {
+                    ...item,
+                    src: item.src ?? '',
+                    dst: item.dst ?? '',
+                    regex: item.regex ?? '',
+                    info: item.info ?? '',
+                    _id: String(item._id || createReplacementRuleId()),
+                };
+                delete normalized._serverIndex;
+                if (persisted) normalized._serverIndex = index;
+                else if (preserveServerIndex && Number.isInteger(item._serverIndex)) normalized._serverIndex = item._serverIndex;
+                return normalized;
+            });
+    };
+
+    const stripReplacementRuleUiFields = (items: ReplacementRuleItem[]) => (
+        items.map(item => {
+            const { _serverIndex, ...persistedItem } = item;
+            return persistedItem;
+        })
+    );
+
+    const mergeReplacementRuleServerState = (
+        localItems: ReplacementRuleItem[],
+        serverItems: ReplacementRuleItem[],
+    ): ReplacementRuleItem[] => {
+        const serverById = new Map(
+            normalizeReplacementRuleItems(serverItems, true).map(item => [item._id, item])
+        );
+        return localItems.map(item => {
+            const serverItem = serverById.get(item._id);
+            if (!serverItem) return item;
+            return { ...item, _serverIndex: serverItem._serverIndex };
+        });
     };
 
     const getHistory = (item: any): Record<string, any>[] => (
@@ -177,6 +228,8 @@ export const Rules: React.FC = () => {
     const fileInputRef = useRef<HTMLInputElement>(null);
     const latestRulesRef = useRef({
         glossary,
+        preTranslationRules,
+        postTranslationRules,
         exclusion,
         characterization,
         worldBuilding,
@@ -187,13 +240,15 @@ export const Rules: React.FC = () => {
     useEffect(() => {
         latestRulesRef.current = {
             glossary,
+            preTranslationRules,
+            postTranslationRules,
             exclusion,
             characterization,
             worldBuilding,
             writingStyle,
             translationExample
         };
-    }, [glossary, exclusion, characterization, worldBuilding, writingStyle, translationExample]);
+    }, [glossary, preTranslationRules, postTranslationRules, exclusion, characterization, worldBuilding, writingStyle, translationExample]);
 
     useEffect(() => {
         loadData();
@@ -284,8 +339,10 @@ export const Rules: React.FC = () => {
     const loadData = async () => {
         setLoading(true);
         try {
-            const [g, e, c, w, s, ex] = await Promise.allSettled([
+            const [g, pre, post, e, c, w, s, ex] = await Promise.allSettled([
                 DataService.getGlossary(),
+                DataService.getPreTranslationRules(),
+                DataService.getPostTranslationRules(),
                 DataService.getExclusion(),
                 DataService.getCharacterization(),
                 DataService.getWorldBuilding(),
@@ -293,6 +350,8 @@ export const Rules: React.FC = () => {
                 DataService.getTranslationExample()
             ]);
             if (g.status === 'fulfilled') setGlossary(g.value || []);
+            if (pre.status === 'fulfilled') setPreTranslationRules(normalizeReplacementRuleItems(pre.value, true));
+            if (post.status === 'fulfilled') setPostTranslationRules(normalizeReplacementRuleItems(post.value, true));
             if (e.status === 'fulfilled') setExclusion(e.value || []);
             if (c.status === 'fulfilled') setCharacterization(c.value || []);
             if (w.status === 'fulfilled') setWorldBuilding(w.value || "");
@@ -313,6 +372,10 @@ export const Rules: React.FC = () => {
     const buildSwitchPatch = (): Partial<AppConfig> => {
         if (!config) return {};
         switch (activeTab) {
+            case 'pre_translation':
+                return { pre_translation_switch: config.pre_translation_switch };
+            case 'post_translation':
+                return { post_translation_switch: config.post_translation_switch };
             case 'glossary':
                 return { prompt_dictionary_switch: config.prompt_dictionary_switch };
             case 'exclusion':
@@ -340,6 +403,8 @@ export const Rules: React.FC = () => {
         try {
             const drafts = await Promise.all([
                 DataService.getGlossaryDraft(),
+                DataService.getPreTranslationDraft(),
+                DataService.getPostTranslationDraft(),
                 DataService.getExclusionDraft(),
                 DataService.getCharacterizationDraft(),
                 DataService.getWorldBuildingDraft(),
@@ -355,8 +420,10 @@ export const Rules: React.FC = () => {
     const recoverDraft = async () => {
         if (!(await nativeConfirm(t('msg_recover_draft_confirm')))) return;
         try {
-            const [gd, ed, cd, wd, sd, exd] = await Promise.all([
+            const [gd, pred, postd, ed, cd, wd, sd, exd] = await Promise.all([
                 DataService.getGlossaryDraft(),
+                DataService.getPreTranslationDraft(),
+                DataService.getPostTranslationDraft(),
                 DataService.getExclusionDraft(),
                 DataService.getCharacterizationDraft(),
                 DataService.getWorldBuildingDraft(),
@@ -367,6 +434,16 @@ export const Rules: React.FC = () => {
             if (gd && gd.length > 0) {
                 latestRulesRef.current = { ...latestRulesRef.current, glossary: gd };
                 setGlossary(gd);
+            }
+            if (pred && pred.length > 0) {
+                const next = normalizeReplacementRuleItems(pred, false, true);
+                latestRulesRef.current = { ...latestRulesRef.current, preTranslationRules: next };
+                setPreTranslationRules(next);
+            }
+            if (postd && postd.length > 0) {
+                const next = normalizeReplacementRuleItems(postd, false, true);
+                latestRulesRef.current = { ...latestRulesRef.current, postTranslationRules: next };
+                setPostTranslationRules(next);
             }
             if (ed && ed.length > 0) {
                 latestRulesRef.current = { ...latestRulesRef.current, exclusion: ed };
@@ -404,6 +481,28 @@ export const Rules: React.FC = () => {
                 case 'glossary':
                     await DataService.saveGlossary(glossary);
                     dataPatch = { prompt_dictionary_data: glossary };
+                    break;
+                case 'pre_translation':
+                    {
+                        const saved = normalizeReplacementRuleItems(
+                            await DataService.savePreTranslationRules(stripReplacementRuleUiFields(preTranslationRules)),
+                            true,
+                        );
+                        latestRulesRef.current = { ...latestRulesRef.current, preTranslationRules: saved };
+                        setPreTranslationRules(saved);
+                        dataPatch = { pre_translation_data: stripReplacementRuleUiFields(saved) };
+                    }
+                    break;
+                case 'post_translation':
+                    {
+                        const saved = normalizeReplacementRuleItems(
+                            await DataService.savePostTranslationRules(stripReplacementRuleUiFields(postTranslationRules)),
+                            true,
+                        );
+                        latestRulesRef.current = { ...latestRulesRef.current, postTranslationRules: saved };
+                        setPostTranslationRules(saved);
+                        dataPatch = { post_translation_data: stripReplacementRuleUiFields(saved) };
+                    }
                     break;
                 case 'exclusion':
                     await DataService.saveExclusion(exclusion);
@@ -443,6 +542,8 @@ export const Rules: React.FC = () => {
             const latest = latestRulesRef.current;
             switch (activeTab) {
                 case 'glossary': await DataService.saveGlossaryDraft(latest.glossary); break;
+                case 'pre_translation': await DataService.savePreTranslationDraft(latest.preTranslationRules); break;
+                case 'post_translation': await DataService.savePostTranslationDraft(latest.postTranslationRules); break;
                 case 'exclusion': await DataService.saveExclusionDraft(latest.exclusion); break;
                 case 'characterization': await DataService.saveCharacterizationDraft(latest.characterization); break;
                 case 'world': await DataService.saveWorldBuildingDraft(latest.worldBuilding); break;
@@ -460,6 +561,8 @@ export const Rules: React.FC = () => {
 
         switch (activeTab) {
             case 'glossary': data = glossary; break;
+            case 'pre_translation': data = stripReplacementRuleUiFields(preTranslationRules); break;
+            case 'post_translation': data = stripReplacementRuleUiFields(postTranslationRules); break;
             case 'exclusion': data = exclusion; break;
             case 'characterization': data = characterization; break;
             case 'world': data = worldBuilding; filename = 'world_building.txt'; isText = true; break;
@@ -502,6 +605,20 @@ export const Rules: React.FC = () => {
                             case 'glossary':
                                 latestRulesRef.current = { ...latestRulesRef.current, glossary: json };
                                 setGlossary(json);
+                                break;
+                            case 'pre_translation':
+                                {
+                                    const next = normalizeReplacementRuleItems(json);
+                                    latestRulesRef.current = { ...latestRulesRef.current, preTranslationRules: next };
+                                    setPreTranslationRules(next);
+                                }
+                                break;
+                            case 'post_translation':
+                                {
+                                    const next = normalizeReplacementRuleItems(json);
+                                    latestRulesRef.current = { ...latestRulesRef.current, postTranslationRules: next };
+                                    setPostTranslationRules(next);
+                                }
                                 break;
                             case 'exclusion':
                                 latestRulesRef.current = { ...latestRulesRef.current, exclusion: json };
@@ -676,6 +793,25 @@ export const Rules: React.FC = () => {
         triggerDraftSave();
     };
 
+    const updateReplacementRuleItem = (
+        kind: 'pre' | 'post',
+        originalIdx: number,
+        field: keyof ReplacementRuleItem,
+        val: ReplacementRuleItem[keyof ReplacementRuleItem],
+    ) => {
+        const source = kind === 'pre' ? preTranslationRules : postTranslationRules;
+        const next = [...source];
+        next[originalIdx] = { ...next[originalIdx], [field]: val };
+        if (kind === 'pre') {
+            latestRulesRef.current = { ...latestRulesRef.current, preTranslationRules: next };
+            setPreTranslationRules(next);
+        } else {
+            latestRulesRef.current = { ...latestRulesRef.current, postTranslationRules: next };
+            setPostTranslationRules(next);
+        }
+        triggerDraftSave();
+    };
+
     const updateCharacterItem = (originalIdx: number, field: keyof CharacterizationItem, val: CharacterizationItem[keyof CharacterizationItem]) => {
         const newItems = [...characterization];
         newItems[originalIdx] = { ...newItems[originalIdx], [field]: val };
@@ -688,6 +824,54 @@ export const Rules: React.FC = () => {
         const next = glossary.filter((_, i) => i !== originalIdx);
         latestRulesRef.current = { ...latestRulesRef.current, glossary: next };
         setGlossary(next);
+        triggerDraftSave();
+    };
+
+    const deleteReplacementRuleItem = async (kind: ReplacementRuleKind, originalIdx: number) => {
+        try {
+            if (!(await nativeConfirm(t('ui_rules_delete_confirm')))) return;
+            const source = kind === 'pre' ? preTranslationRules : postTranslationRules;
+            const item = source[originalIdx];
+            const serverIndex = typeof item?._serverIndex === 'number' ? item._serverIndex : undefined;
+            const hasPersistedTarget = Boolean(item?._id) && serverIndex !== undefined;
+            const result = hasPersistedTarget
+                ? (kind === 'pre'
+                    ? await DataService.deletePreTranslationRule(serverIndex, item._id)
+                    : await DataService.deletePostTranslationRule(serverIndex, item._id))
+                : null;
+            const localAfterDelete = source.filter((_, idx) => idx !== originalIdx);
+            const next = result
+                ? mergeReplacementRuleServerState(localAfterDelete, result.items)
+                : localAfterDelete;
+            const persistedItems = result
+                ? stripReplacementRuleUiFields(normalizeReplacementRuleItems(result.items, true))
+                : stripReplacementRuleUiFields(next);
+            if (kind === 'pre') {
+                latestRulesRef.current = { ...latestRulesRef.current, preTranslationRules: next };
+                setPreTranslationRules(next);
+                if (result) applyLocalConfigPatch({ pre_translation_data: persistedItems });
+            } else {
+                latestRulesRef.current = { ...latestRulesRef.current, postTranslationRules: next };
+                setPostTranslationRules(next);
+                if (result) applyLocalConfigPatch({ post_translation_data: persistedItems });
+            }
+            triggerDraftSave();
+        } catch (error) {
+            console.error("Failed to delete replacement rule", error);
+            alert("Delete failed.");
+        }
+    };
+
+    const addReplacementRuleItem = (kind: ReplacementRuleKind) => {
+        const source = kind === 'pre' ? preTranslationRules : postTranslationRules;
+        const next = [{ _id: createReplacementRuleId(), src: '', dst: '', regex: '', info: '' }, ...source];
+        if (kind === 'pre') {
+            latestRulesRef.current = { ...latestRulesRef.current, preTranslationRules: next };
+            setPreTranslationRules(next);
+        } else {
+            latestRulesRef.current = { ...latestRulesRef.current, postTranslationRules: next };
+            setPostTranslationRules(next);
+        }
         triggerDraftSave();
     };
 
@@ -1220,6 +1404,8 @@ export const Rules: React.FC = () => {
             {/* Navigation Tabs */}
             <div className="flex gap-2 bg-slate-900/50 p-2 rounded-lg border border-slate-800 overflow-x-auto no-scrollbar whitespace-nowrap">
                 <TabButton id="glossary" icon={BookOpen} label={t('ui_rules_glossary')} />
+                <TabButton id="pre_translation" icon={FileJson} label={t('feature_pre_translation_switch')} />
+                <TabButton id="post_translation" icon={FileJson} label={t('feature_post_translation_switch')} />
                 <TabButton id="exclusion" icon={Ban} label={t('ui_rules_exclusion')} />
                 <TabButton id="characterization" icon={Users} label={t('feature_characterization_switch')} />
                 <TabButton id="world" icon={MapIcon} label={t('feature_world_building_switch')} />
@@ -1315,6 +1501,60 @@ export const Rules: React.FC = () => {
                                 </div>
                             </div>
                         )}
+
+                        {/* Tab Content: Pre/Post Translation Replacement Rules */}
+                        {(activeTab === 'pre_translation' || activeTab === 'post_translation') && (() => {
+                            const kind = activeTab === 'pre_translation' ? 'pre' : 'post';
+                            const items = kind === 'pre' ? preTranslationRules : postTranslationRules;
+                            const switchKey = kind === 'pre' ? 'pre_translation_switch' : 'post_translation_switch';
+                            const enabled = kind === 'pre' ? config.pre_translation_switch : config.post_translation_switch;
+                            return (
+                                <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
+                                    <div className="flex justify-between items-center bg-slate-900/50 p-3 rounded-lg border border-slate-800"
+                                         style={activeTheme !== 'default' ? { borderColor: `${themeColor}20` } : {}}>
+                                        <div className="flex items-center gap-2">
+                                            <button onClick={() => toggleSwitch(switchKey)}
+                                                className="transition-all hover:scale-110"
+                                                style={{ color: enabled ? themeColor : '#475569' }}
+                                            >
+                                                {enabled ? <ToggleRight size={32} /> : <ToggleLeft size={32} />}
+                                            </button>
+                                            <span className={`text-sm font-semibold ${isLightCityTheme ? 'text-pink-700' : 'text-slate-300'}`}>
+                                                {kind === 'pre' ? t('feature_pre_translation_switch') : t('feature_post_translation_switch')}
+                                            </span>
+                                        </div>
+                                        <button onClick={() => addReplacementRuleItem(kind)}
+                                            className="flex items-center gap-1 text-sm font-bold px-3 py-1.5 rounded transition-all hover:scale-105 active:scale-95"
+                                            style={{
+                                                backgroundColor: `${themeColor}20`,
+                                                color: isLightCityTheme ? '#ff4d6d' : themeColor,
+                                                border: `1px solid ${themeColor}40`
+                                            }}
+                                        >
+                                            <Plus size={16} /> {t('ui_rules_add')}
+                                        </button>
+                                    </div>
+                                    <div className="grid gap-4">
+                                        {items.map((item, originalIdx) => {
+                                            if (filter && !`${item.src || ''} ${item.dst || ''} ${item.regex || ''} ${item.info || ''}`.toLowerCase().includes(filter.toLowerCase())) return null;
+                                            return (
+                                                <div key={originalIdx} className={`p-4 border rounded-lg transition-all group space-y-3 ${isLightCityTheme ? 'bg-white/60 border-pink-100 hover:border-pink-300' : 'bg-slate-900 border-slate-800 hover:border-slate-600'}`}>
+                                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                                        <input type="text" placeholder={t('ui_rules_source')} value={item.src || ''} onChange={(e) => updateReplacementRuleItem(kind, originalIdx, 'src', e.target.value)} className="bg-slate-950 border border-slate-700 rounded px-3 py-2 text-green-300 focus:border-primary outline-none transition-all" />
+                                                        <input type="text" placeholder={t('ui_rules_target')} value={item.dst || ''} onChange={(e) => updateReplacementRuleItem(kind, originalIdx, 'dst', e.target.value)} className="bg-slate-950 border border-slate-700 rounded px-3 py-2 text-blue-300 focus:border-primary outline-none transition-all" />
+                                                    </div>
+                                                    <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-3">
+                                                        <input type="text" placeholder={t('ui_rules_regex')} value={item.regex || ''} onChange={(e) => updateReplacementRuleItem(kind, originalIdx, 'regex', e.target.value)} className="bg-slate-950 border border-slate-700 rounded px-3 py-2 text-purple-300 focus:border-primary outline-none transition-all font-mono text-sm" />
+                                                        <button onClick={() => { void deleteReplacementRuleItem(kind, originalIdx); }} className={`p-2 transition-colors rounded border ${isLightCityTheme ? 'text-pink-300 hover:text-red-500 bg-white/80 border-pink-100' : 'text-slate-600 hover:text-red-400 bg-slate-950 border-slate-800'}`}><Trash2 size={18} /></button>
+                                                    </div>
+                                                    <input type="text" placeholder={t('ui_rules_note')} value={item.info || ''} onChange={(e) => updateReplacementRuleItem(kind, originalIdx, 'info', e.target.value)} className="w-full bg-slate-950 border border-slate-700 rounded px-3 py-2 text-slate-400 focus:border-primary outline-none transition-all" />
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                            );
+                        })()}
 
                         {/* Tab Content: Exclusion */}
                         {activeTab === 'exclusion' && (

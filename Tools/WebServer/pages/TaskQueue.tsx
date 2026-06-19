@@ -118,11 +118,19 @@ export const TaskQueue: React.FC = () => {
         alert(t('msg_enter_input_path'));
         return;
     }
+    const payload = { ...taskForm };
+    if (payload.tokens_limit !== undefined && payload.tokens_limit !== null) {
+      payload.tokens_limit = Math.max(400, Math.min(16000, Number(payload.tokens_limit) || 400));
+      payload.lines_limit = undefined;
+    } else if (payload.lines_limit !== undefined && payload.lines_limit !== null) {
+      payload.lines_limit = Math.max(1, Math.min(100, Number(payload.lines_limit) || 1));
+      payload.tokens_limit = undefined;
+    }
     try {
       if (editIndex !== null) {
-          await DataService.updateQueueItem(editIndex, taskForm);
+          await DataService.updateQueueItem(editIndex, payload);
       } else {
-          await DataService.addToQueue(taskForm);
+          await DataService.addToQueue(payload);
       }
       setShowModal(false);
       fetchQueue();
@@ -253,6 +261,30 @@ export const TaskQueue: React.FC = () => {
   };
 
   const isElysia = activeTheme === 'elysia' || activeTheme === 'herrscher_of_human';
+  const limitMode = taskForm.tokens_limit !== undefined && taskForm.tokens_limit !== null
+    ? 'tokens'
+    : taskForm.lines_limit !== undefined && taskForm.lines_limit !== null
+      ? 'lines'
+      : 'profile';
+  const setLimitMode = (mode: 'profile' | 'lines' | 'tokens') => {
+    if (mode === 'profile') {
+      setTaskForm({ ...taskForm, lines_limit: undefined, tokens_limit: undefined });
+    } else if (mode === 'lines') {
+      const fallback = Number(config?.lines_limit ?? 20);
+      setTaskForm({
+        ...taskForm,
+        lines_limit: Math.max(1, Math.min(100, Number(taskForm.lines_limit ?? fallback) || 20)),
+        tokens_limit: undefined
+      });
+    } else {
+      const fallback = Number(config?.tokens_limit ?? 1500);
+      setTaskForm({
+        ...taskForm,
+        lines_limit: undefined,
+        tokens_limit: Math.max(400, Math.min(16000, Number(taskForm.tokens_limit ?? fallback) || 1500))
+      });
+    }
+  };
 
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500 pb-24">
@@ -389,6 +421,8 @@ export const TaskQueue: React.FC = () => {
                                 <div className="flex items-center gap-1.5"><Settings2 size={12}/> {task.profile || 'Default'} / {task.rules_profile || 'Default'}</div>
                                 {task.model && <div className="flex items-center gap-1.5 text-cyan-400/80"><Cpu size={12}/> {task.model}</div>}
                                 {task.threads !== undefined && <div className="flex items-center gap-1.5 text-amber-400/80"><Zap size={12}/> {task.threads === 0 ? 'Auto' : task.threads} Threads</div>}
+                                {task.tokens_limit !== undefined && task.tokens_limit !== null && <div className="flex items-center gap-1.5 text-purple-400/80"><MessageSquare size={12}/> {task.tokens_limit} Tokens</div>}
+                                {task.lines_limit !== undefined && task.lines_limit !== null && <div className="flex items-center gap-1.5 text-blue-400/80"><MessageSquare size={12}/> {task.lines_limit} Lines</div>}
                             </div>
                         </div>
                     </div>
@@ -625,14 +659,59 @@ export const TaskQueue: React.FC = () => {
                                 </div>
                                 
                                 <div className="space-y-2">
-                                    <label className="text-[10px] font-bold text-slate-500 uppercase">{t('label_lines_limit')}</label>
-                                    <input
-                                        type="number"
-                                        placeholder={t('tip_follow_profile')}
-                                        value={taskForm.lines_limit ?? ''}
-                                        onChange={e => setTaskForm({...taskForm, lines_limit: e.target.value ? parseInt(e.target.value) : undefined})}
-                                        className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-xs text-white outline-none"
-                                    />
+                                    <label className="text-[10px] font-bold text-slate-500 uppercase">{t('setting_limit_mode')}</label>
+                                    <div className="grid grid-cols-3 gap-1 bg-slate-950 border border-slate-800 rounded-lg p-1">
+                                        <button
+                                            type="button"
+                                            onClick={() => setLimitMode('profile')}
+                                            className={`px-2 py-1.5 rounded text-[10px] font-bold transition-all ${limitMode === 'profile' ? 'bg-primary text-slate-900' : 'text-slate-500 hover:text-slate-200'}`}
+                                        >
+                                            {t('tip_follow_profile')}
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => setLimitMode('lines')}
+                                            className={`px-2 py-1.5 rounded text-[10px] font-bold transition-all ${limitMode === 'lines' ? 'bg-primary text-slate-900' : 'text-slate-500 hover:text-slate-200'}`}
+                                        >
+                                            Lines
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => setLimitMode('tokens')}
+                                            className={`px-2 py-1.5 rounded text-[10px] font-bold transition-all ${limitMode === 'tokens' ? 'bg-primary text-slate-900' : 'text-slate-500 hover:text-slate-200'}`}
+                                        >
+                                            Tokens
+                                        </button>
+                                    </div>
+                                    {limitMode === 'lines' && (
+                                        <input
+                                            type="number"
+                                            min={1}
+                                            max={100}
+                                            value={taskForm.lines_limit ?? ''}
+                                            onChange={e => setTaskForm({
+                                                ...taskForm,
+                                                lines_limit: e.target.value ? Math.max(1, Math.min(100, parseInt(e.target.value) || 1)) : undefined,
+                                                tokens_limit: undefined
+                                            })}
+                                            className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-xs text-white outline-none"
+                                        />
+                                    )}
+                                    {limitMode === 'tokens' && (
+                                        <input
+                                            type="number"
+                                            min={400}
+                                            max={16000}
+                                            step={100}
+                                            value={taskForm.tokens_limit ?? ''}
+                                            onChange={e => setTaskForm({
+                                                ...taskForm,
+                                                lines_limit: undefined,
+                                                tokens_limit: e.target.value ? Math.max(400, Math.min(16000, parseInt(e.target.value) || 400)) : undefined
+                                            })}
+                                            className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-xs text-white outline-none"
+                                        />
+                                    )}
                                 </div>
                                 <div className="space-y-2">
                                     <label className="text-[10px] font-bold text-slate-500 uppercase">{t('label_think_budget')}</label>

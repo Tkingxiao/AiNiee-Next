@@ -227,12 +227,12 @@ register_config(ConfigItem(
 
 register_config(ConfigItem(
     key="tokens_limit",
-    default=512,
+    default=1500,
     level=ConfigLevel.ADVANCED,
     config_type=ConfigType.INT,
     i18n_key="setting_tokens_limit",
-    min_value=64,
-    max_value=8192,
+    min_value=400,
+    max_value=16000,
     depends_on="tokens_limit_switch",
     category="translation"
 ))
@@ -561,17 +561,21 @@ register_config(ConfigItem(
 # --- 数据存储 (SYSTEM) - 不对用户显示 ---
 register_config(ConfigItem(
     key="pre_translation_data",
-    default={},
-    level=ConfigLevel.SYSTEM,
-    config_type=ConfigType.DICT,
+    default=[],
+    level=ConfigLevel.USER,
+    config_type=ConfigType.LIST,
+    i18n_key="feature_pre_translation_switch",
+    depends_on="pre_translation_switch",
     category="data"
 ))
 
 register_config(ConfigItem(
     key="post_translation_data",
-    default={},
-    level=ConfigLevel.SYSTEM,
-    config_type=ConfigType.DICT,
+    default=[],
+    level=ConfigLevel.USER,
+    config_type=ConfigType.LIST,
+    i18n_key="feature_post_translation_switch",
+    depends_on="post_translation_switch",
     category="data"
 ))
 

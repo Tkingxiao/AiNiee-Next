@@ -298,6 +298,96 @@ export const DataService = {
         }
     },
 
+    async getPreTranslationRules(): Promise<any[]> {
+        const res = await fetch(`${API_BASE}/pre_translation`);
+        if (!res.ok) throw new Error('Failed to fetch pre-translation rules');
+        return await res.json();
+    },
+
+    async savePreTranslationRules(items: any[]): Promise<any[]> {
+        const res = await fetch(`${API_BASE}/pre_translation`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(items)
+        });
+        if (!res.ok) throw new Error('Failed to save pre-translation rules');
+        const data = await res.json();
+        return data.items || items;
+    },
+
+    async deletePreTranslationRule(index: number, itemId?: string): Promise<{ items: any[]; deleted_index?: number }> {
+        let res = itemId
+            ? await fetch(`${API_BASE}/pre_translation/by-id/${encodeURIComponent(itemId)}`, { method: 'DELETE' })
+            : await fetch(`${API_BASE}/pre_translation/${index}`, { method: 'DELETE' });
+        if (!res.ok && itemId) {
+            res = await fetch(`${API_BASE}/pre_translation/${index}`, { method: 'DELETE' });
+        }
+        if (!res.ok) throw new Error('Failed to delete pre-translation rule');
+        const data = await res.json();
+        return { items: data.items || [], deleted_index: data.deleted_index };
+    },
+
+    async getPreTranslationDraft(): Promise<any[]> {
+        try {
+            const res = await fetch(`${API_BASE}/draft/pre_translation`);
+            if (!res.ok) return [];
+            return await res.json();
+        } catch { return []; }
+    },
+
+    async savePreTranslationDraft(items: any[]): Promise<void> {
+        await fetch(`${API_BASE}/draft/pre_translation`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(items)
+        });
+    },
+
+    async getPostTranslationRules(): Promise<any[]> {
+        const res = await fetch(`${API_BASE}/post_translation`);
+        if (!res.ok) throw new Error('Failed to fetch post-translation rules');
+        return await res.json();
+    },
+
+    async savePostTranslationRules(items: any[]): Promise<any[]> {
+        const res = await fetch(`${API_BASE}/post_translation`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(items)
+        });
+        if (!res.ok) throw new Error('Failed to save post-translation rules');
+        const data = await res.json();
+        return data.items || items;
+    },
+
+    async deletePostTranslationRule(index: number, itemId?: string): Promise<{ items: any[]; deleted_index?: number }> {
+        let res = itemId
+            ? await fetch(`${API_BASE}/post_translation/by-id/${encodeURIComponent(itemId)}`, { method: 'DELETE' })
+            : await fetch(`${API_BASE}/post_translation/${index}`, { method: 'DELETE' });
+        if (!res.ok && itemId) {
+            res = await fetch(`${API_BASE}/post_translation/${index}`, { method: 'DELETE' });
+        }
+        if (!res.ok) throw new Error('Failed to delete post-translation rule');
+        const data = await res.json();
+        return { items: data.items || [], deleted_index: data.deleted_index };
+    },
+
+    async getPostTranslationDraft(): Promise<any[]> {
+        try {
+            const res = await fetch(`${API_BASE}/draft/post_translation`);
+            if (!res.ok) return [];
+            return await res.json();
+        } catch { return []; }
+    },
+
+    async savePostTranslationDraft(items: any[]): Promise<void> {
+        await fetch(`${API_BASE}/draft/post_translation`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(items)
+        });
+    },
+
     async saveGlossaryDraft(items: any[]): Promise<void> {
         try {
             await fetch(`${API_BASE}/draft/glossary`, {

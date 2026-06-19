@@ -348,7 +348,8 @@ class TaskQueueMenu:
             task.tokens_limit = IntPrompt.ask(
                 f"{self.i18n.get('prompt_limit_val')} (Tokens){self.i18n.get('tip_follow_profile')}",
                 default=task.tokens_limit or self.config.get("tokens_limit"),
-            ) or None
+            )
+            task.tokens_limit = max(400, task.tokens_limit) if task.tokens_limit else None
             task.lines_limit = None
         else:
             task.lines_limit = None

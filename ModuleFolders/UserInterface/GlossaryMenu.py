@@ -133,6 +133,10 @@ class GlossaryMenu:
     def _child_label(self, text):
         return text if self._rules_master_enabled() else f"[dim]{text}[/dim]"
 
+    def manage_translation_replacement_rules(self, switch_key, data_key, title):
+        """管理译前/译后替换规则。"""
+        self._manage_replacement_rules(switch_key, data_key, title)
+
     def _toggle_rules_master_switch(self):
         next_enabled = not self._rules_master_enabled()
         self.config["prompt_dictionary_switch"] = next_enabled
@@ -1364,6 +1368,96 @@ class GlossaryMenu:
                     self.config[data_key] = []
                     console.print(f"[yellow]{self.i18n.get('msg_data_cleared')}[/yellow]")
             self.save_config()
+
+    def _manage_replacement_rules(self, switch_key, data_key, title):
+        """管理文本替换规则（译前/译后）。"""
+        while True:
+            sw = self._saved_rule_switch(switch_key)
+            data = self.config.get(data_key, [])
+            if not isinstance(data, list):
+                data = []
+
+            console.print(Panel(f"[bold]{title}[/bold]"))
+            table = Table(show_header=False, box=None)
+            table.add_row(
+                "[cyan]1.[/]",
+                f"{self.i18n.get('menu_toggle_switch')} (Current: {self._switch_status(sw)})",
+            )
+            table.add_row("[cyan]2.[/]", f"{self.i18n.get('prompt_json_path')} (Current items: {len(data)})")
+            table.add_row("[cyan]3.[/]", f"{self.i18n.get('menu_edit_in_editor')}")
+            table.add_row("[cyan]4.[/]", f"{self.i18n.get('menu_clear_data')}")
+            console.print(table)
+            console.print(f"\n[dim]0. {self.i18n.get('menu_back')}[/dim]")
+
+            c = IntPrompt.ask(self.i18n.get('prompt_select'), choices=["0", "1", "2", "3", "4"], show_choices=False)
+
+            if c == 0:
+                break
+            elif c == 1:
+                self.config[switch_key] = not bool(self.config.get(switch_key, False))
+            elif c == 2:
+                path = Prompt.ask(self.i18n.get('prompt_json_path')).strip().strip('"').strip("'")
+                if os.path.exists(path):
+                    try:
+                        with open(path, 'r', encoding='utf-8') as f:
+                            new_data = json.load(f)
+                        loaded_data = self._normalize_replacement_rules(new_data)
+                        self.config[data_key] = loaded_data
+                        console.print(f"[green]{self.i18n.get('msg_data_loaded').format(len(loaded_data))}[/green]")
+                    except Exception as e:
+                        console.print(f"[red]Error loading file: {e}[/red]")
+                else:
+                    console.print(f"[red]{self.i18n.get('err_not_file')}[/red]")
+                time.sleep(1)
+            elif c == 3:
+                temp_dir = os.path.join(self.cli.PROJECT_ROOT, "output", "temp_edit")
+                os.makedirs(temp_dir, exist_ok=True)
+                temp_path = os.path.join(temp_dir, f"{data_key}.json")
+                edit_data = data or [{"src": "", "dst": "", "regex": ""}]
+
+                try:
+                    with open(temp_path, 'w', encoding='utf-8') as f:
+                        json.dump(edit_data, f, indent=4, ensure_ascii=False)
+
+                    if open_in_editor(temp_path):
+                        Prompt.ask(f"\n{self.i18n.get('msg_press_enter_after_save')}")
+                        with open(temp_path, 'r', encoding='utf-8') as f:
+                            new_data = json.load(f)
+                        normalized = self._normalize_replacement_rules(new_data)
+                        self.config[data_key] = normalized
+                        console.print(f"[green]{self.i18n.get('msg_data_loaded').format(len(normalized))}[/green]")
+                except Exception as e:
+                    console.print(f"[red]Error during editing: {e}[/red]")
+                finally:
+                    if os.path.exists(temp_path):
+                        os.remove(temp_path)
+                time.sleep(1)
+            elif c == 4:
+                if Confirm.ask(self.i18n.get("menu_clear_data") + "?"):
+                    self.config[data_key] = []
+                    console.print(f"[yellow]{self.i18n.get('msg_data_cleared')}[/yellow]")
+
+            self.save_config()
+
+    def _normalize_replacement_rules(self, raw_data):
+        if not isinstance(raw_data, list):
+            raise ValueError(self.i18n.get('msg_json_root_error'))
+
+        normalized = []
+        for item in raw_data:
+            if not isinstance(item, dict):
+                continue
+            src = str(item.get("src", ""))
+            dst = str(item.get("dst", ""))
+            regex = str(item.get("regex", ""))
+            rule = {
+                "src": src,
+                "dst": dst,
+                "regex": regex,
+                "info": str(item.get("info", "")) if item.get("info") is not None else "",
+            }
+            normalized.append(rule)
+        return normalized
 
     def manage_feature_content(self, switch_key, data_key, title, is_list=False):
         """管理特性内容（角色设定/世界观/写作风格/翻译示例）"""
